@@ -413,25 +413,6 @@ class AppendQueue {
     this.state = 'running';
     this.pump();
   }
-  async removeAfter(time) {
-    await this.quiesce();
-    try {
-      if (this.error || this.mediaSource.readyState !== 'open') return;
-      const ranges = this.sourceBuffer.buffered;
-      let removeStart = null;
-      let removeEnd = null;
-      for (let index = 0; index < ranges.length; index += 1) {
-        if (ranges.end(index) <= time) continue;
-        removeStart = removeStart === null ? Math.max(time, ranges.start(index)) : removeStart;
-        removeEnd = ranges.end(index);
-      }
-      if (removeStart === null || removeEnd <= removeStart) return;
-      this.sourceBuffer.remove(removeStart, removeEnd);
-      await once(this.sourceBuffer, 'updateend');
-    } finally {
-      this.resume();
-    }
-  }
   destroy() {
     if (this.retryTimer !== null) clearTimeout(this.retryTimer);
     this.retryTimer = null;
@@ -752,7 +733,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       } catch (error) { callbackError = error; }
   };
   const onMseSegment = segment => {
-      if (segment.type === 'audio' && audioSwitching) return;
       try {
         if (!mseSegmentTypes.has(segment.type)) {
           mseSegmentTypes.add(segment.type);
@@ -762,8 +742,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       }
       catch (error) { callbackError = error; }
   };
-  let audioSwitching = false;
-  let audioSwitchSerial = 0;
   const wantedVideoPacketId = parsePacketId();
 
   const selectAudioTrack = track => {
@@ -863,17 +841,13 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     const track = [...tracks.values()].find(item => item.kind === 'audio' && item.packetId === packetId);
     if (!track) throw new Error(`音声 packet_id=0x${packetId.toString(16)} は利用できません`);
     if (track.trackId === selectedAudio) return;
-    const serial = ++audioSwitchSerial;
-    audioSwitching = true;
-    try {
-      const queue = activeQueueByType.get('audio');
-      if (queue) await queue.removeAfter(elements.video.currentTime + 0.05);
-      if (generation !== runGeneration || serial !== audioSwitchSerial) return;
-      selectAudioTrack(track);
-      appendLog(`音声切替 packet_id=0x${packetId.toString(16)}`);
-    } finally {
-      if (serial === audioSwitchSerial) audioSwitching = false;
-    }
+    if (generation !== runGeneration) return;
+    const restartTime = liveMode ? 0 : Math.max(0, elements.video.currentTime);
+    const label = liveMode
+      ? `音声切替 packet_id=0x${packetId.toString(16)}、Live を再接続します`
+      : `音声切替 packet_id=0x${packetId.toString(16)}、${restartTime.toFixed(3)}s から MSE を再構築します`;
+    stopPlayback(true, false);
+    await loadAndPlay(restartTime, false, label);
   };
   activeSubtitleSwitch = packetId => {
     const track = [...tracks.values()].find(
@@ -999,7 +973,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   appendLog(liveMode ? 'Live ストリームが終了しました' : 'ストリーム終端です');
 }
 
-async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false) {
+async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false, operationLabel = null) {
   if (!reuseMedia) {
     releaseMedia();
     knownAudioTracks = new Map();
@@ -1019,6 +993,7 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false) {
   elements.probeState.textContent = '入力情報を確認中';
   elements.mediaInfo.textContent = '準備中';
   elements.log.textContent = '';
+  if (operationLabel) appendLog(operationLabel);
   try {
     let liveMode = elements.liveMode.checked;
     currentLiveMode = liveMode;

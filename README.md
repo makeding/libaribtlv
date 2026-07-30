@@ -1,6 +1,6 @@
 # tlvdemux
 
-`tlvdemux` is a C++17, standard-library-only incremental demultiplexer for
+`tlvdemux` is a C++17 incremental demultiplexer for
 already-descrambled ARIB MMT/TLV streams. It is designed to emit player-ready
 HEVC, AAC-LATM/LOAS and ARIB STD-B62 TTML access units without converting the
 stream to MPEG-TS or exposing FFmpeg ABI types.
@@ -19,7 +19,9 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-No runtime dependency other than the C++ standard library is required.
+Zlib is the only non-standard runtime dependency. It is used to turn compressed
+data-broadcast items into browser-ready virtual files; Emscripten links its zlib
+port into the single-file WASM build.
 
 Shared-library builds are enabled by default. Linux produces
 `libtlvdemux.so.0` (with the versioned implementation file), while macOS
@@ -74,6 +76,49 @@ Audio tracks expose their MH audio component metadata through
 main-component flag and sampling rate. Select tracks from this metadata rather
 than assuming packet IDs remain fixed between programmes.
 
+## Data-broadcast applications and virtual files
+
+Application-resource collection is enabled by default. While media access units
+are emitted, the demuxer also combines application signalling, data-directory
+tables, asset-management tables and out-of-order data units into complete files.
+`Sink` receives `onApplicationState`, `onApplicationResource`, and
+`onApplicationResourcesReset` events. An application becomes `Ready` when its
+AIT entry path is present; other referenced files may continue arriving from the
+broadcast carousel.
+
+Completed bytes are moved to the sink rather than retained indefinitely by the
+demuxer. Native hosts can keep them in the thread-safe
+`ApplicationResourceStore`, whose `get`, `list`, and `waitFor` methods are
+intended for a loopback HTTP/WebView adapter:
+
+```cpp
+class ReceiverSink final : public tlvdemux::Sink {
+public:
+    tlvdemux::ApplicationResourceStore files;
+
+    void onApplicationState(const tlvdemux::ApplicationState& state) override {
+        files.onApplicationState(state);
+    }
+    void onApplicationResource(tlvdemux::ApplicationResource&& resource) override {
+        files.onApplicationResource(std::move(resource));
+    }
+    void onApplicationResourcesReset() override {
+        files.onApplicationResourcesReset();
+    }
+    // Implement the four required media/error callbacks as usual.
+};
+```
+
+The store contains no socket or HTTP dependency. A native application may bind
+a separate server to `127.0.0.1` and answer a request with
+`files.waitFor(context_id, path, timeout)`. WASM callers normally keep the same
+events in a JavaScript `Map` and expose them through a Service Worker instead.
+
+Resource collection can be disabled with
+`Limits::collect_application_resources`. `Limits` also bounds pending item
+count/bytes, catalogue size, and decompressed file size so a malformed carousel
+cannot grow memory without limit.
+
 ## Inspect a stream
 
 ```sh
@@ -122,6 +167,12 @@ const module = await createTlvDemuxModule();
 const demuxer = new module.TlvDemuxer({
   onTrack: track => console.log(track),
   onAccessUnitView: unit => consumeSynchronously(unit),
+  onApplicationState: application => console.log(application.state),
+  onApplicationResourceView: resource => {
+    // Copy here when retaining the file; the view expires after this callback.
+    virtualFiles.set(resource.path, resource.data.slice())
+  },
+  onApplicationResourcesReset: () => virtualFiles.clear(),
   onError: error => console.warn(error),
 });
 
@@ -136,6 +187,15 @@ receives 64-bit offsets, timestamps, and track IDs as `BigInt` values.
 `onAccessUnitView` avoids copying media output, but its `data` view is valid only
 for the duration of the callback and must be consumed synchronously. Use
 `onAccessUnit` instead when the callback needs an owned `Uint8Array` copy.
+`onApplicationResourceView` has the same callback-only lifetime; use
+`onApplicationResource` for an owned copy.
+
+Run the application-resource WASM integration test against a captured stream
+with:
+
+```sh
+node tests/wasm_application_resources.mjs build-wasm/tlvdemux.js test.tlv
+```
 
 `DurationProbe` drives fast head/tail reads without owning a file or HTTP
 client. Start it with the known file size, fulfill each object returned by

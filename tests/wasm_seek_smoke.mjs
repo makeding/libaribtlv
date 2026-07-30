@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { open } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 
-const [modulePath, mediaPath, targetText, durationText] = process.argv.slice(2);
+const [modulePath, mediaPath, targetText, durationText, audioPacketText] = process.argv.slice(2);
 assert.ok(modulePath && mediaPath && targetText && durationText,
-  'usage: node tests/wasm_seek_smoke.mjs TLVDEMUX_JS SAMPLE TARGET_S DURATION_S');
+  'usage: node tests/wasm_seek_smoke.mjs TLVDEMUX_JS SAMPLE TARGET_S DURATION_S [AUDIO_PACKET_ID]');
+const wantedAudioPacketId = audioPacketText === undefined ? null : Number(audioPacketText);
+if (wantedAudioPacketId !== null) assert.ok(Number.isInteger(wantedAudioPacketId), 'invalid audio packet id');
 const targetUs = BigInt(Math.round(Number(targetText) * 1000000));
 const durationUs = BigInt(Math.round(Number(durationText) * 1000000));
 const require = createRequire(import.meta.url);
@@ -27,7 +29,8 @@ demuxer = new module.TlvDemuxer({
       videoTrack = track.trackId;
       demuxer.selectTrack('video', videoTrack);
       assert.equal(demuxer.setIndexDuration(durationUs), true);
-    } else if (track.kind === 'audio' && audioTrack === null) {
+    } else if (track.kind === 'audio' && audioTrack === null &&
+               (wantedAudioPacketId === null || track.packetId === wantedAudioPacketId)) {
       audioTrack = track.trackId;
       demuxer.selectTrack('audio', audioTrack);
     }
@@ -119,6 +122,7 @@ console.log(JSON.stringify({
   restartOffset: firstSeekUnit.restartOffset.toString(),
   inputOffset: firstSeekUnit.inputOffset.toString(),
   mseSegments,
+  audioPacketId: wantedAudioPacketId,
 }, null, 2));
 demuxer.delete();
 assert.ok(Number(firstSeekUnit.ptsValue) / firstSeekUnit.ptsTimescale <= Number(targetText) + 0.25,

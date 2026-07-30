@@ -347,8 +347,19 @@ public:
             if (nalu.type == 8 || nalu.type == 9) rasl = true;
         }
         if (!has_vcl) return;
-        if (!started_) { if (irap < 0) return; started_ = true; drop_rasl_ = irap == 21; output_.video_start(irap, unit.random_access); }
-        else if (drop_rasl_) { if (rasl) return; drop_rasl_ = false; }
+        if (!started_) {
+            if (irap < 0) return;
+            started_ = true;
+            output_.video_start(irap, unit.random_access);
+        } else if (drop_rasl_) {
+            if (rasl) return;
+            drop_rasl_ = false;
+        }
+        // CRA_NUT may be followed in decoding order by RASL pictures whose
+        // presentation timestamps precede the CRA. MSE and VideoToolbox do
+        // not reliably support those leading pictures after any random access
+        // point, not just the first one used to start playback.
+        if (irap == 21) drop_rasl_ = true;
         if (!output_enabled) return;
         Bytes data;
         for (const auto& nalu : nalus) if (nalu.type != 32 && nalu.type != 33 && nalu.type != 34 && nalu.type != 35) {
