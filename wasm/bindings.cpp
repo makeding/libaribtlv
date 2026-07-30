@@ -232,7 +232,7 @@ public:
 
     void reposition(const std::uint64_t input_offset, const bool preserve_timeline) {
         demuxer_.reposition(tlvdemux::RepositionOptions{input_offset, preserve_timeline});
-        if (mse_enabled_) mse_remuxer_.reset();
+        if (mse_enabled_) mse_remuxer_.reposition();
     }
 
     void selectService(const val& context_id) {

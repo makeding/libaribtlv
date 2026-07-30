@@ -273,24 +273,25 @@ val copy_bytes(const Bytes& bytes) {
 class Output {
 public:
     explicit Output(val callbacks) : callbacks_(std::move(callbacks)) {}
+    void set_enabled(bool enabled) noexcept { enabled_ = enabled; }
     void init(const std::string& type, const Mp4Track& track) {
-        if (!has("onMseInit")) return; auto event = val::object(); event.set("type", type);
+        if (!enabled_ || !has("onMseInit")) return; auto event = val::object(); event.set("type", type);
         event.set("mime", std::string(track.video ? "video/mp4; codecs=\"" : "audio/mp4; codecs=\"") + track.codec + "\"");
         event.set("data", copy_bytes(init_segment(track))); event.set("width", track.width); event.set("height", track.height);
         event.set("sampleRate", track.sample_rate); event.set("channels", track.channels); emit("onMseInit", event);
     }
     void segment(const std::string& type, const Bytes& data) {
-        if (!has("onMseSegment")) return; auto event = val::object(); event.set("type", type);
+        if (!enabled_ || !has("onMseSegment")) return; auto event = val::object(); event.set("type", type);
         event.set("data", copy_bytes(data)); emit("onMseSegment", event);
     }
     void video_start(int nal_type, bool signalled) {
-        if (!has("onMseVideoStart")) return; auto event = val::object(); event.set("nalType", nal_type);
+        if (!enabled_ || !has("onMseVideoStart")) return; auto event = val::object(); event.set("nalType", nal_type);
         event.set("signalledRandomAccess", signalled); emit("onMseVideoStart", event);
     }
 private:
     bool has(const char* name) const { return callbacks_[name].typeOf().as<std::string>() == "function"; }
     void emit(const char* name, const val& event) { callbacks_[name].call<void>("call", callbacks_, event); }
-    val callbacks_;
+    val callbacks_; bool enabled_ = true;
 };
 
 class BaseMuxer {
@@ -330,7 +331,7 @@ public:
     explicit HevcMuxer(Output& output) : BaseMuxer("video", output), output_(output) {}
     bool started() const noexcept { return started_; }
     void reset() { reset_samples(); parameter_sets_.clear(); track_.reset(); started_ = false; drop_rasl_ = false; }
-    void push(const tlvdemux::AccessUnit& unit) {
+    void push(const tlvdemux::AccessUnit& unit, bool output_enabled) {
         if (unit.discontinuity) { reset_samples(); started_ = false; drop_rasl_ = false; }
         const auto nalus = annex_b(unit.data);
         for (const auto& nalu : nalus) if (nalu.type >= 32 && nalu.type <= 34) parameter_sets_[nalu.type] = nalu.data;
@@ -348,6 +349,7 @@ public:
         if (!has_vcl) return;
         if (!started_) { if (irap < 0) return; started_ = true; drop_rasl_ = irap == 21; output_.video_start(irap, unit.random_access); }
         else if (drop_rasl_) { if (rasl) return; drop_rasl_ = false; }
+        if (!output_enabled) return;
         Bytes data;
         for (const auto& nalu : nalus) if (nalu.type != 32 && nalu.type != 33 && nalu.type != 34 && nalu.type != 35) {
             append(data, u32(nalu.data.size())); append(data, nalu.data);
@@ -418,18 +420,23 @@ public:
     explicit Impl(val callbacks) : output(std::move(callbacks)), video(output) {}
     void select(tlvdemux::TrackKind kind, std::optional<std::uint64_t> id) {
         if (kind == tlvdemux::TrackKind::Video) { video_id = id; return; }
-        if (kind != tlvdemux::TrackKind::Audio) return; audio_id = id;
+        if (kind != tlvdemux::TrackKind::Audio) return;
+        if (audio_id == id && active_audio != nullptr) return;
+        audio_id = id;
         if (!id) { active_audio = nullptr; return; }
         auto [it, inserted] = audio.try_emplace(*id, output); active_audio = &it->second;
         if (!inserted) active_audio->activate();
     }
     void push(const tlvdemux::AccessUnit& unit) {
-        if (!enabled) return;
-        if (video_id && unit.track_id == *video_id) { if (unit.discontinuity && active_audio) active_audio->discontinuity(); video.push(unit); }
-        else if (audio_id && unit.track_id == *audio_id && active_audio) active_audio->push(unit, video.started());
+        if (video_id && unit.track_id == *video_id) { if (unit.discontinuity && active_audio) active_audio->discontinuity(); video.push(unit, enabled); }
+        else if (audio_id && unit.track_id == *audio_id && active_audio) active_audio->push(unit, enabled && video.started());
     }
     void flush() { video.flush(); if (active_audio) active_audio->flush(); }
     void reset() { video.reset(); audio.clear(); active_audio = nullptr; }
+    void reposition() {
+        video.reset();
+        for (auto& entry : audio) entry.second.discontinuity();
+    }
     Output output; HevcMuxer video; std::map<std::uint64_t, AacMuxer> audio; AacMuxer* active_audio = nullptr;
     std::optional<std::uint64_t> video_id, audio_id; bool enabled = true;
 };
@@ -437,7 +444,11 @@ public:
 WasmMseRemuxer::WasmMseRemuxer(val callbacks) : impl_(std::make_unique<Impl>(std::move(callbacks))) {}
 WasmMseRemuxer::~WasmMseRemuxer() = default;
 void WasmMseRemuxer::selectTrack(tlvdemux::TrackKind kind, std::optional<std::uint64_t> id) { impl_->select(kind, id); }
-void WasmMseRemuxer::setOutputEnabled(bool enabled) noexcept { impl_->enabled = enabled; }
+void WasmMseRemuxer::setOutputEnabled(bool enabled) noexcept {
+    impl_->enabled = enabled;
+    impl_->output.set_enabled(enabled);
+}
 void WasmMseRemuxer::push(const tlvdemux::AccessUnit& unit) { impl_->push(unit); }
 void WasmMseRemuxer::flush() { impl_->flush(); }
 void WasmMseRemuxer::reset() { impl_->reset(); }
+void WasmMseRemuxer::reposition() { impl_->reposition(); }

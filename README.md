@@ -156,8 +156,13 @@ After building `build-wasm/tlvdemux.js`, serve the repository root and open
 `/demo/`:
 
 ```sh
-python3 -m http.server 8000
+node demo/server.mjs
 ```
+
+The bundled development server supports the `206` and `Content-Range`
+responses required by duration probing and recorded seek. Python's basic
+`python3 -m http.server` is not suitable for this demo because it does not
+provide the required Range behavior.
 
 The demo accepts either a local MMTS file or an HTTP URL, probes its duration,
 then plays the selected HEVC and AAC tracks through Media Source Extensions.

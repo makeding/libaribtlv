@@ -20,6 +20,7 @@ public:
     void push(const tlvdemux::AccessUnit& unit);
     void flush();
     void reset();
+    void reposition();
 
 private:
     class Impl;

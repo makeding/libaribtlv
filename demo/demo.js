@@ -4,7 +4,12 @@ const FORWARD_BUFFER_HIGH_SECONDS = 15;
 const FORWARD_BUFFER_LOW_SECONDS = 8;
 const BACK_BUFFER_SECONDS = 8;
 const SOURCE_QUEUE_HIGH_BYTES = 4 * 1024 * 1024;
-const SEEK_PREROLL_BYTES = 16n * MiB;
+const MIN_SEEK_PREROLL_BYTES = 16n * MiB;
+const MAX_SEEK_PREROLL_BYTES = 128n * MiB;
+const SEEK_PREROLL_US = 8000000n;
+const SEEK_PROBE_BYTES = 64n * MiB;
+const MAX_SEEK_PROBE_ATTEMPTS = 5;
+const DEFAULT_PLAYBACK_RATE = 2;
 const URL_STORAGE_KEY = 'tlvdemux.demo.httpUrl';
 const AUDIO_STORAGE_KEY = 'tlvdemux.demo.audioPacketId';
 const elements = Object.fromEntries([
@@ -30,6 +35,9 @@ let activeAudioSwitch = null;
 let selectedAudioPacketId = null;
 let preferredAudioPacketId = null;
 let knownAudioTracks = new Map();
+
+elements.video.defaultPlaybackRate = DEFAULT_PLAYBACK_RATE;
+elements.video.playbackRate = DEFAULT_PLAYBACK_RATE;
 
 try {
   const savedUrl = localStorage.getItem(URL_STORAGE_KEY);
@@ -104,6 +112,13 @@ function formatBytes(value) {
 }
 
 function durationSeconds(duration) { return Number(duration.value) / duration.timescale; }
+
+function seekPrerollBytes(sourceSize, durationUs) {
+  if (durationUs <= 0n) return MIN_SEEK_PREROLL_BYTES;
+  const estimated = sourceSize * SEEK_PREROLL_US / durationUs;
+  return estimated < MIN_SEEK_PREROLL_BYTES ? MIN_SEEK_PREROLL_BYTES
+    : estimated > MAX_SEEK_PREROLL_BYTES ? MAX_SEEK_PREROLL_BYTES : estimated;
+}
 
 function formatDuration(duration) {
   const seconds = durationSeconds(duration);
@@ -497,6 +512,8 @@ async function playbackBackpressure(generation) {
 
 async function playSource(source, probeResult, generation, startTimeSeconds = 0,
                           liveMode = false, reuseMedia = false) {
+  elements.video.defaultPlaybackRate = DEFAULT_PLAYBACK_RATE;
+  elements.video.playbackRate = DEFAULT_PLAYBACK_RATE;
   let mediaSource;
   if (reuseMedia && (!activeMediaSource || !activeObjectUrl)) reuseMedia = false;
   if (reuseMedia) {
@@ -525,7 +542,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const mediaDuration = liveMode ? Infinity : durationSeconds(probeResult.duration);
   mediaSource.duration = mediaDuration;
 
-  const queues = new Map();
+  const queues = reuseMedia ? new Map(activeQueueByType) : new Map();
   const tracks = new Map();
   let selectedVideo = null;
   let selectedAudio = null;
@@ -534,8 +551,11 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   let played = reuseMedia && !elements.video.paused;
   let suppressOutput = startTimeSeconds > 0;
   let headVideoSeen = false;
+  let seekProbeActive = false;
+  let seekProbeRap = null;
   const pendingInits = new Map();
   const pendingSegments = new Map([['video', []], ['audio', []]]);
+  const mseSegmentTypes = new Set();
   const externalDurationUs = liveMode ? null : BigInt(Math.round(
     durationSeconds(probeResult.duration) * 1000000));
 
@@ -609,7 +629,13 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   };
   const onMseSegment = segment => {
       if (segment.type === 'audio' && audioSwitching) return;
-      try { appendSegment(segment.type, segment.data); }
+      try {
+        if (!mseSegmentTypes.has(segment.type)) {
+          mseSegmentTypes.add(segment.type);
+          appendLog(`${segment.type} media segment 開始`);
+        }
+        appendSegment(segment.type, segment.data);
+      }
       catch (error) { callbackError = error; }
   };
   let audioSwitching = false;
@@ -651,6 +677,12 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       try {
         if (unit.trackId === selectedVideo) {
           if (unit.randomAccess) headVideoSeen = true;
+          if (seekProbeActive && unit.randomAccess && seekProbeRap === null) {
+            seekProbeRap = {
+              seconds: Number(unit.ptsValue) / unit.ptsTimescale,
+              restartOffset: BigInt(unit.restartOffset),
+            };
+          }
         }
       } catch (error) { callbackError = error; }
     },
@@ -705,12 +737,44 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     demuxer.setIndexDuration(externalDurationUs);
     const estimate = demuxer.estimateOffset(targetUs, source.size);
     if (estimate === null) throw new Error('シーク先のバイト位置を推定できませんでした');
-    offset = estimate > SEEK_PREROLL_BYTES ? estimate - SEEK_PREROLL_BYTES : 0n;
+    let preroll = seekPrerollBytes(source.size, externalDurationUs);
+    let candidate = 0n;
+    let attempt = 0;
+    for (;;) {
+      candidate = estimate > preroll ? estimate - preroll : 0n;
+      demuxer.reposition(candidate, true);
+      seekProbeRap = null;
+      seekProbeActive = true;
+      let probeOffset = candidate;
+      const probeLimit = candidate + SEEK_PROBE_BYTES < source.size
+        ? candidate + SEEK_PROBE_BYTES : source.size;
+      while (seekProbeRap === null && probeOffset < probeLimit) {
+        const length = probeLimit - probeOffset < PLAYBACK_CHUNK
+          ? probeLimit - probeOffset : PLAYBACK_CHUNK;
+        const data = await source.read(probeOffset, length);
+        if (generation !== runGeneration) return;
+        if (!demuxer.push(data)) throw new Error(`シーク位置の検証に失敗しました: ${probeOffset}`);
+        if (callbackError) throw callbackError;
+        probeOffset += length;
+        playbackBytes += length;
+      }
+      seekProbeActive = false;
+      if (seekProbeRap !== null && seekProbeRap.seconds <= startTimeSeconds + 0.05) break;
+      if (candidate === 0n || ++attempt >= MAX_SEEK_PROBE_ATTEMPTS) {
+        const found = seekProbeRap === null ? 'RAP なし' : `RAP ${seekProbeRap.seconds.toFixed(3)}s`;
+        throw new Error(`シーク先より前の映像開始点を検出できませんでした (${found})`);
+      }
+      const found = seekProbeRap === null ? 'RAP なし' : `RAP ${seekProbeRap.seconds.toFixed(3)}s`;
+      appendLog(`シーク再探索 ${found} > ${startTimeSeconds.toFixed(3)}s、preroll を拡大します`);
+      preroll *= 2n;
+      if (preroll > estimate) preroll = estimate;
+    }
+    offset = seekProbeRap.restartOffset;
     demuxer.reposition(offset, true);
     suppressOutput = false;
     demuxer.setMseOutputEnabled(true);
     if (!reuseMedia) elements.video.currentTime = startTimeSeconds;
-    appendLog(`シーク ${startTimeSeconds.toFixed(3)}s -> 推定 ${formatBytes(estimate)}、開始 ${formatBytes(offset)}`);
+    appendLog(`シーク ${startTimeSeconds.toFixed(3)}s -> 推定 ${formatBytes(estimate)}、RAP ${seekProbeRap.seconds.toFixed(3)}s @ ${formatBytes(offset)}、preroll ${formatBytes(preroll)}`);
   }
   if (liveMode && source.stream) {
     for await (const data of source.stream()) {
