@@ -10,7 +10,10 @@ option(BUILD_SHARED_LIBS "Build libtlvdemux as a shared library" ON)
 option(TLVDEMUX_BUILD_TOOLS "Build tlvdemux command-line tools" ON)
 option(TLVDEMUX_BUILD_WASM_BINDINGS "Build the Emscripten JavaScript/WASM wrapper" ${EMSCRIPTEN})
 
+find_package(ZLIB REQUIRED)
+
 add_library(tlvdemux
+    src/application_resources.cpp
     src/compressed_ip_parser.cpp
     src/demuxer.cpp
     src/duration_probe.cpp
@@ -28,6 +31,7 @@ set_target_properties(tlvdemux PROPERTIES
 )
 
 target_compile_features(tlvdemux PUBLIC cxx_std_17)
+target_link_libraries(tlvdemux PUBLIC ZLIB::ZLIB)
 target_include_directories(tlvdemux
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -73,13 +77,12 @@ install(FILES
 )
 
 if(TLVDEMUX_BUILD_TOOLS)
-    find_package(ZLIB REQUIRED)
     add_executable(tlvdemux-inspect tools/tlvdemux-inspect.cpp)
     target_link_libraries(tlvdemux-inspect PRIVATE tlvdemux::tlvdemux)
     add_executable(tlvdemux-cocktail tools/tlvdemux-cocktail.cpp)
     target_link_libraries(tlvdemux-cocktail PRIVATE tlvdemux::tlvdemux)
     add_executable(tlvdemux-extract tools/tlvdemux-extract.cpp)
-    target_link_libraries(tlvdemux-extract PRIVATE tlvdemux::tlvdemux ZLIB::ZLIB)
+    target_link_libraries(tlvdemux-extract PRIVATE tlvdemux::tlvdemux)
     add_executable(tlvdemux-probe tools/tlvdemux-probe.cpp)
     target_link_libraries(tlvdemux-probe PRIVATE tlvdemux::tlvdemux)
     if(MSVC)

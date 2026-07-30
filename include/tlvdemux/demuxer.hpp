@@ -6,6 +6,7 @@
 #include <optional>
 
 #include <tlvdemux/types.hpp>
+#include <tlvdemux/application_resources.hpp>
 
 namespace tlvdemux {
 
@@ -29,6 +30,9 @@ public:
     virtual void onDataTransmissionTable(DataTransmissionTable&&) {}
     virtual void onDataDirectoryTable(const DataDirectoryTable&) {}
     virtual void onDataAssetManagementTable(const DataAssetManagementTable&) {}
+    virtual void onApplicationState(const ApplicationState&) {}
+    virtual void onApplicationResource(ApplicationResource&&) {}
+    virtual void onApplicationResourcesReset() {}
 };
 
 class Demuxer {

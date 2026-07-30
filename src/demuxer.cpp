@@ -10,10 +10,36 @@
 
 namespace tlvdemux {
 
+namespace {
+
+class ForwardApplicationResourceSink final : public ApplicationResourceSink {
+public:
+    explicit ForwardApplicationResourceSink(Sink& sink) : sink_(sink) {}
+
+    void onApplicationState(const ApplicationState& state) override {
+        sink_.onApplicationState(state);
+    }
+    void onApplicationResource(ApplicationResource&& resource) override {
+        sink_.onApplicationResource(std::move(resource));
+    }
+    void onApplicationResourcesReset() override {
+        sink_.onApplicationResourcesReset();
+    }
+    void onApplicationResourceError(const Error& error) override {
+        sink_.onError(error);
+    }
+
+private:
+    Sink& sink_;
+};
+
+} // namespace
+
 class Demuxer::Impl {
 public:
     Impl(Sink& sink, Limits limits)
         : sink_(sink), limits_(std::move(limits)),
+          application_sink_(sink_), application_resources_(application_sink_, limits_),
           ip_(limits_,
               [this](ServiceInfo info) { service(std::move(info)); },
               [this](TrackInfo info) { return track(std::move(info)); },
@@ -59,6 +85,7 @@ public:
     void reset() {
         tlv_.reset();
         ip_.reset();
+        application_resources_.reset();
         services_.clear();
         current_tracks_.clear();
         application_services_.clear();
@@ -100,6 +127,7 @@ public:
     void select_service(std::optional<std::uint32_t> context_id) {
         selected_service_ = context_id;
         ip_.select_service(context_id);
+        application_resources_.reset();
         services_.clear();
         current_tracks_.clear();
         application_services_.clear();
@@ -237,6 +265,7 @@ private:
 
     void data_unit(DataUnit unit) {
         if (selected_service_.has_value() && *selected_service_ != unit.context_id) return;
+        application_resources_.onDataUnit(unit);
         sink_.onDataUnit(std::move(unit));
     }
 
@@ -259,6 +288,7 @@ private:
         }
         applications_[key] = info;
         sink_.onApplication(info);
+        application_resources_.onApplication(info);
     }
 
     void data_transmission(DataTransmissionTable table) {
@@ -283,6 +313,7 @@ private:
         if (found != data_directory_versions_.end() && found->second == table.version) return;
         data_directory_versions_[key] = table.version;
         sink_.onDataDirectoryTable(table);
+        application_resources_.onDataDirectoryTable(table);
     }
 
     void data_asset_management(DataAssetManagementTable table) {
@@ -293,6 +324,7 @@ private:
         if (found != data_asset_management_versions_.end() && found->second == table.version) return;
         data_asset_management_versions_[key] = table.version;
         sink_.onDataAssetManagementTable(table);
+        application_resources_.onDataAssetManagementTable(table);
     }
 
     static bool ntp_delta_ticks(const std::uint64_t current, const std::uint64_t origin,
@@ -440,6 +472,8 @@ private:
 
     Sink& sink_;
     Limits limits_;
+    ForwardApplicationResourceSink application_sink_;
+    ApplicationResourceAssembler application_resources_;
     detail::CompressedIpParser ip_;
     detail::TlvParser tlv_;
     std::optional<std::uint32_t> selected_service_;

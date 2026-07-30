@@ -248,6 +248,11 @@ struct Limits {
     std::size_t max_ttml_sample = 4 * 1024 * 1024;
     std::size_t max_contexts = 64;
     std::size_t max_packet_states = 256;
+    bool collect_application_resources = true;
+    std::size_t max_application_pending_units = 4096;
+    std::size_t max_application_pending_bytes = 64 * 1024 * 1024;
+    std::size_t max_application_resource = 16 * 1024 * 1024;
+    std::size_t max_application_resources = 4096;
 };
 
 } // namespace tlvdemux
