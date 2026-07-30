@@ -48,6 +48,7 @@ public:
               [this](DataAssetInfo info) { data_asset(std::move(info)); },
               [this](DataUnit unit) { data_unit(std::move(unit)); },
               [this](SignallingMessage message) { signalling(std::move(message)); },
+              [this](EventInfo info) { event_info(std::move(info)); },
               [this](ApplicationInfo info) { application(std::move(info)); },
               [this](DataTransmissionTable table) { data_transmission(std::move(table)); },
               [this](DataDirectoryTable table) { data_directory(std::move(table)); },
@@ -90,6 +91,7 @@ public:
         current_tracks_.clear();
         application_services_.clear();
         data_assets_.clear();
+        events_.clear();
         applications_.clear();
         data_transmission_tables_.clear();
         data_directory_versions_.clear();
@@ -136,6 +138,7 @@ public:
         current_tracks_.clear();
         application_services_.clear();
         data_assets_.clear();
+        events_.clear();
         applications_.clear();
         data_transmission_tables_.clear();
         data_directory_versions_.clear();
@@ -281,6 +284,22 @@ private:
     void signalling(SignallingMessage message) {
         if (selected_service_.has_value() && *selected_service_ != message.context_id) return;
         sink_.onSignallingMessage(std::move(message));
+    }
+
+    void event_info(EventInfo info) {
+        if (selected_service_.has_value() && *selected_service_ != info.context_id) return;
+        const auto key = std::to_string(info.context_id) + ':' +
+            std::to_string(info.table_id) + ':' + std::to_string(info.service_id) + ':' +
+            std::to_string(info.section_number) + ':' + std::to_string(info.event_id);
+        const auto found = events_.find(key);
+        if (found != events_.end() && found->second.version == info.version &&
+            found->second.start_time_unix_milliseconds == info.start_time_unix_milliseconds &&
+            found->second.duration_seconds == info.duration_seconds &&
+            found->second.title == info.title && found->second.description == info.description) {
+            return;
+        }
+        events_[key] = info;
+        sink_.onEventInfo(info);
     }
 
     void application(ApplicationInfo info) {
@@ -521,6 +540,7 @@ private:
     std::unordered_map<std::uint64_t, TrackInfo> current_tracks_;
     std::unordered_map<std::string, ApplicationServiceInfo> application_services_;
     std::unordered_map<std::string, DataAssetInfo> data_assets_;
+    std::unordered_map<std::string, EventInfo> events_;
     std::unordered_map<std::string, ApplicationInfo> applications_;
     std::unordered_map<std::string, DataTransmissionTable> data_transmission_tables_;
     std::unordered_map<std::string, std::uint8_t> data_directory_versions_;

@@ -51,6 +51,7 @@ public:
     using DataAssetCallback = std::function<void(DataAssetInfo)>;
     using DataUnitCallback = std::function<void(DataUnit)>;
     using SignallingCallback = std::function<void(SignallingMessage)>;
+    using EventCallback = std::function<void(EventInfo)>;
     using ApplicationCallback = std::function<void(ApplicationInfo)>;
     using DataTransmissionCallback = std::function<void(DataTransmissionTable)>;
     using DataDirectoryCallback = std::function<void(DataDirectoryTable)>;
@@ -60,7 +61,8 @@ public:
 
     MmtpParser(std::uint32_t context_id, const Limits&, PackageCallback,
                TrackCallback, AccessUnitCallback, ApplicationServiceCallback,
-               DataAssetCallback, DataUnitCallback, SignallingCallback, ApplicationCallback,
+               DataAssetCallback, DataUnitCallback, SignallingCallback, EventCallback,
+               ApplicationCallback,
                DataTransmissionCallback, DataDirectoryCallback,
                DataAssetManagementCallback, StateAcquireCallback,
                StateReleaseCallback, ErrorCallback);
@@ -205,6 +207,8 @@ private:
                             std::uint64_t input_offset);
     bool parse_mh_ait(const std::uint8_t* data, std::size_t size,
                       std::uint16_t packet_id, std::uint64_t input_offset);
+    bool parse_mh_eit(const std::uint8_t* data, std::size_t size,
+                      std::uint16_t packet_id, std::uint64_t input_offset);
     bool parse_data_directory_table(const DataTransmissionTable&);
     bool parse_data_asset_management_table(const DataTransmissionTable&);
     bool append(SignallingAssembler&, const std::uint8_t*, std::size_t,
@@ -219,6 +223,7 @@ private:
     DataAssetCallback on_data_asset_;
     DataUnitCallback on_data_unit_;
     SignallingCallback on_signalling_;
+    EventCallback on_event_;
     ApplicationCallback on_application_;
     DataTransmissionCallback on_data_transmission_;
     DataDirectoryCallback on_data_directory_;

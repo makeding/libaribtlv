@@ -17,6 +17,7 @@ struct TestSink final : tlvdemux::Sink {
     std::vector<tlvdemux::ApplicationServiceInfo> application_services;
     std::vector<tlvdemux::DataAssetInfo> data_assets;
     std::vector<tlvdemux::SignallingMessage> signalling_messages;
+    std::vector<tlvdemux::EventInfo> events;
     std::vector<tlvdemux::ApplicationInfo> applications;
     std::vector<tlvdemux::DataTransmissionTable> data_transmission_tables;
     std::vector<tlvdemux::Error> errors;
@@ -34,6 +35,7 @@ struct TestSink final : tlvdemux::Sink {
     void onSignallingMessage(tlvdemux::SignallingMessage&& value) override {
         signalling_messages.push_back(std::move(value));
     }
+    void onEventInfo(const tlvdemux::EventInfo& value) override { events.push_back(value); }
     void onApplication(const tlvdemux::ApplicationInfo& value) override {
         applications.push_back(value);
     }

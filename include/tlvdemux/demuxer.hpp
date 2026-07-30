@@ -23,6 +23,7 @@ public:
     virtual void onAccessUnit(AccessUnit&&) = 0;
     virtual void onError(const Error&) = 0;
     virtual void onBroadcastClock(const BroadcastClock&) {}
+    virtual void onEventInfo(const EventInfo&) {}
     virtual void onApplicationService(const ApplicationServiceInfo&) {}
     virtual void onDataAsset(const DataAssetInfo&) {}
     virtual void onDataUnit(DataUnit&&) {}

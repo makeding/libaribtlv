@@ -63,6 +63,7 @@ MmtpParser::MmtpParser(const std::uint32_t context_id, const Limits& limits,
                        DataAssetCallback on_data_asset,
                        DataUnitCallback on_data_unit,
                        SignallingCallback on_signalling,
+                       EventCallback on_event,
                        ApplicationCallback on_application,
                        DataTransmissionCallback on_data_transmission,
                        DataDirectoryCallback on_data_directory,
@@ -74,6 +75,7 @@ MmtpParser::MmtpParser(const std::uint32_t context_id, const Limits& limits,
       on_application_service_(std::move(on_application_service)),
       on_data_asset_(std::move(on_data_asset)), on_data_unit_(std::move(on_data_unit)),
       on_signalling_(std::move(on_signalling)),
+      on_event_(std::move(on_event)),
       on_application_(std::move(on_application)),
       on_data_transmission_(std::move(on_data_transmission)),
       on_data_directory_(std::move(on_data_directory)),
@@ -552,6 +554,62 @@ bool parse_application_descriptors(ByteReader& reader, ApplicationInfo& applicat
     return true;
 }
 
+std::optional<std::uint8_t> decode_bcd(const std::uint8_t value) {
+    const auto high = static_cast<std::uint8_t>(value >> 4U);
+    const auto low = static_cast<std::uint8_t>(value & 0x0fU);
+    if (high > 9 || low > 9) return std::nullopt;
+    return static_cast<std::uint8_t>(high * 10 + low);
+}
+
+std::optional<std::int64_t> parse_mjd_time(const std::uint8_t* data) {
+    if (std::all_of(data, data + 5, [](const std::uint8_t value) { return value == 0xff; })) {
+        return std::nullopt;
+    }
+    const auto hour = decode_bcd(data[2]);
+    const auto minute = decode_bcd(data[3]);
+    const auto second = decode_bcd(data[4]);
+    if (!hour.has_value() || !minute.has_value() || !second.has_value() ||
+        *hour > 23 || *minute > 59 || *second > 59) {
+        return std::nullopt;
+    }
+    // MH-EIT expresses the MJD calendar fields in JST. MJD 40587 is
+    // 1970-01-01, so subtract nine hours to obtain a Unix UTC timestamp.
+    const auto days = static_cast<std::int64_t>(read_be16(data)) - 40587;
+    const auto local_seconds = days * 86400 + static_cast<std::int64_t>(*hour) * 3600 +
+        static_cast<std::int64_t>(*minute) * 60 + *second;
+    return (local_seconds - 9 * 3600) * 1000;
+}
+
+std::optional<std::uint32_t> parse_bcd_duration(const std::uint8_t* data) {
+    if (data[0] == 0xff && data[1] == 0xff && data[2] == 0xff) return std::nullopt;
+    const auto hour = decode_bcd(data[0]);
+    const auto minute = decode_bcd(data[1]);
+    const auto second = decode_bcd(data[2]);
+    if (!hour.has_value() || !minute.has_value() || !second.has_value() ||
+        *minute > 59 || *second > 59) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint32_t>(*hour) * 3600U +
+        static_cast<std::uint32_t>(*minute) * 60U + *second;
+}
+
+bool parse_short_event_descriptor(const std::uint8_t* payload, const std::size_t length,
+                                  EventInfo& event) {
+    if (length < 6) return false;
+    event.language.assign(reinterpret_cast<const char*>(payload), 3);
+    std::size_t offset = 3;
+    const auto title_length = static_cast<std::size_t>(payload[offset++]);
+    if (title_length > length - offset) return false;
+    event.title.assign(reinterpret_cast<const char*>(payload + offset), title_length);
+    offset += title_length;
+    if (length - offset < 2) return false;
+    const auto text_length = static_cast<std::size_t>(read_be16(payload + offset));
+    offset += 2;
+    if (text_length > length - offset) return false;
+    event.description.assign(reinterpret_cast<const char*>(payload + offset), text_length);
+    return true;
+}
+
 std::uint64_t expand_short_ntp(const std::uint32_t short_ntp,
                                const std::uint64_t reference) {
     const auto reference_seconds = static_cast<std::int64_t>(reference >> 32U);
@@ -816,6 +874,10 @@ bool MmtpParser::parse_tables(const std::uint8_t* data, const std::size_t size,
             const auto section_size = 3 + static_cast<std::size_t>(read_be16(tables.current() + 1) & 0x0fffU);
             const std::uint8_t* section = nullptr;
             if (!tables.read_view(section_size, section)) return false;
+            if (table_id >= 0x8b && table_id <= 0x9b &&
+                !parse_mh_eit(section, section_size, packet_id, input_offset)) {
+                return false;
+            }
             if (table_id == 0x9c &&
                 !parse_mh_ait(section, section_size, packet_id, input_offset)) {
                 return false;
@@ -830,6 +892,59 @@ bool MmtpParser::parse_tables(const std::uint8_t* data, const std::size_t size,
         }
     }
     return true;
+}
+
+bool MmtpParser::parse_mh_eit(const std::uint8_t* data, const std::size_t size,
+                              const std::uint16_t packet_id,
+                              const std::uint64_t input_offset) {
+    if (size < 18 || data[0] < 0x8b || data[0] > 0x9b) return false;
+    const auto section_length = static_cast<std::size_t>(read_be16(data + 1) & 0x0fffU);
+    if (section_length + 3 != size || section_length < 15) return false;
+
+    const auto section_end = size - 4;
+    std::size_t offset = 14;
+    while (offset < section_end) {
+        if (section_end - offset < 12) return false;
+        EventInfo event;
+        event.context_id = context_id_;
+        event.source_packet_id = packet_id;
+        event.table_id = data[0];
+        event.version = static_cast<std::uint8_t>((data[5] >> 1U) & 0x1fU);
+        event.current_next = (data[5] & 0x01U) != 0;
+        event.section_number = data[6];
+        event.last_section_number = data[7];
+        event.service_id = read_be16(data + 3);
+        event.tlv_stream_id = read_be16(data + 8);
+        event.original_network_id = read_be16(data + 10);
+        event.event_id = read_be16(data + offset);
+        event.start_time_unix_milliseconds = parse_mjd_time(data + offset + 2);
+        event.duration_seconds = parse_bcd_duration(data + offset + 7);
+        event.running_status = static_cast<std::uint8_t>(data[offset + 10] >> 5U);
+        event.free_ca_mode = (data[offset + 10] & 0x10U) != 0;
+        event.input_offset = input_offset;
+        const auto descriptors_length =
+            static_cast<std::size_t>(read_be16(data + offset + 10) & 0x0fffU);
+        offset += 12;
+        if (descriptors_length > section_end - offset) return false;
+
+        ByteReader descriptors(data + offset, descriptors_length);
+        while (descriptors.remaining() != 0) {
+            std::uint16_t tag = 0;
+            std::uint32_t length = 0;
+            if (!descriptors.read_u16(tag) || !descriptor_length(descriptors, tag, length) ||
+                length > descriptors.remaining()) {
+                return false;
+            }
+            const std::uint8_t* payload = nullptr;
+            if (!descriptors.read_view(length, payload)) return false;
+            if (tag == 0xf001 && !parse_short_event_descriptor(payload, length, event)) {
+                return false;
+            }
+        }
+        offset += descriptors_length;
+        on_event_(std::move(event));
+    }
+    return offset == section_end;
 }
 
 bool MmtpParser::parse_mpt(const std::uint8_t* data, const std::size_t size,

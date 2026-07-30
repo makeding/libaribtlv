@@ -121,6 +121,28 @@ struct SignallingMessage {
     std::uint64_t input_offset = 0;
 };
 
+struct EventInfo {
+    std::uint32_t context_id = 0;
+    std::uint16_t source_packet_id = 0;
+    std::uint8_t table_id = 0;
+    std::uint8_t version = 0;
+    bool current_next = false;
+    std::uint8_t section_number = 0;
+    std::uint8_t last_section_number = 0;
+    std::uint16_t service_id = 0;
+    std::uint16_t tlv_stream_id = 0;
+    std::uint16_t original_network_id = 0;
+    std::uint16_t event_id = 0;
+    std::optional<std::int64_t> start_time_unix_milliseconds;
+    std::optional<std::uint32_t> duration_seconds;
+    std::uint8_t running_status = 0;
+    bool free_ca_mode = false;
+    std::string language;
+    std::string title;
+    std::string description;
+    std::uint64_t input_offset = 0;
+};
+
 struct ApplicationInfo {
     std::uint32_t context_id = 0;
     std::uint16_t source_packet_id = 0;

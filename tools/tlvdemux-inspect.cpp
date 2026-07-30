@@ -163,6 +163,23 @@ struct Inspector final : tlvdemux::Sink {
                   << " size=" << message.data.size() << '\n';
     }
 
+    void onEventInfo(const tlvdemux::EventInfo& info) override {
+        if (!list) return;
+        std::cerr << "event context=" << info.context_id
+                  << " service-id=" << info.service_id
+                  << " event-id=" << info.event_id
+                  << " table-id=0x" << std::hex << static_cast<unsigned>(info.table_id)
+                  << std::dec << " section=" << static_cast<unsigned>(info.section_number)
+                  << " title=" << info.title;
+        if (info.start_time_unix_milliseconds.has_value()) {
+            std::cerr << " start-ms=" << *info.start_time_unix_milliseconds;
+        }
+        if (info.duration_seconds.has_value()) {
+            std::cerr << " duration=" << *info.duration_seconds;
+        }
+        std::cerr << '\n';
+    }
+
     void onApplication(const tlvdemux::ApplicationInfo& info) override {
         if (!list) return;
         std::cerr << "application context=" << info.context_id

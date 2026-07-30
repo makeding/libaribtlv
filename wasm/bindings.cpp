@@ -144,6 +144,39 @@ val broadcast_clock_value(const tlvdemux::BroadcastClock& clock) {
     return result;
 }
 
+val event_info_value(const tlvdemux::EventInfo& info) {
+    auto result = val::object();
+    result.set("contextId", info.context_id);
+    result.set("sourcePacketId", info.source_packet_id);
+    result.set("tableId", info.table_id);
+    result.set("version", info.version);
+    result.set("currentNext", info.current_next);
+    result.set("sectionNumber", info.section_number);
+    result.set("lastSectionNumber", info.last_section_number);
+    result.set("serviceId", info.service_id);
+    result.set("tlvStreamId", info.tlv_stream_id);
+    result.set("originalNetworkId", info.original_network_id);
+    result.set("eventId", info.event_id);
+    if (info.start_time_unix_milliseconds.has_value()) {
+        result.set("startTimeUnixMilliseconds",
+                   static_cast<double>(*info.start_time_unix_milliseconds));
+    } else {
+        result.set("startTimeUnixMilliseconds", val::null());
+    }
+    if (info.duration_seconds.has_value()) {
+        result.set("durationSeconds", *info.duration_seconds);
+    } else {
+        result.set("durationSeconds", val::null());
+    }
+    result.set("runningStatus", info.running_status);
+    result.set("freeCaMode", info.free_ca_mode);
+    result.set("language", info.language);
+    result.set("title", info.title);
+    result.set("description", info.description);
+    result.set("inputOffset", info.input_offset);
+    return result;
+}
+
 class WasmDurationProbe final {
 public:
     bool begin(const std::uint64_t source_size, const val& js_options) {
@@ -475,6 +508,10 @@ public:
 
     void onBroadcastClock(const tlvdemux::BroadcastClock& clock) override {
         emit("onBroadcastClock", broadcast_clock_value(clock));
+    }
+
+    void onEventInfo(const tlvdemux::EventInfo& info) override {
+        emit("onEventInfo", event_info_value(info));
     }
 
     void onApplicationState(const tlvdemux::ApplicationState& state) override {
