@@ -6,5 +6,7 @@ pkgs.mkShell {
     emscripten
     ninja
     nodejs
+    pkg-config
+    zlib
   ];
 }

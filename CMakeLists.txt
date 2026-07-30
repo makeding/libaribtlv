@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 
 project(tlvdemux VERSION 0.1.0 LANGUAGES CXX)
 
+find_package(ZLIB REQUIRED)
+
 include(CTest)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -77,7 +79,7 @@ if(TLVDEMUX_BUILD_TOOLS)
     add_executable(tlvdemux-cocktail tools/tlvdemux-cocktail.cpp)
     target_link_libraries(tlvdemux-cocktail PRIVATE tlvdemux::tlvdemux)
     add_executable(tlvdemux-extract tools/tlvdemux-extract.cpp)
-    target_link_libraries(tlvdemux-extract PRIVATE tlvdemux::tlvdemux)
+    target_link_libraries(tlvdemux-extract PRIVATE tlvdemux::tlvdemux ZLIB::ZLIB)
     if(MSVC)
         target_compile_options(tlvdemux-inspect PRIVATE /W4 /permissive-)
         target_compile_options(tlvdemux-cocktail PRIVATE /W4 /permissive-)
