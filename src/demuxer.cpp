@@ -64,6 +64,8 @@ public:
         data_assets_.clear();
         applications_.clear();
         data_transmission_tables_.clear();
+        data_directory_versions_.clear();
+        data_asset_management_versions_.clear();
         error_counts_.clear();
         origin_.reset();
         reposition_epoch_ = 0;
@@ -103,6 +105,8 @@ public:
         data_assets_.clear();
         applications_.clear();
         data_transmission_tables_.clear();
+        data_directory_versions_.clear();
+        data_asset_management_versions_.clear();
         origin_.reset();
     }
 
@@ -267,11 +271,21 @@ private:
 
     void data_directory(DataDirectoryTable table) {
         if (selected_service_.has_value() && *selected_service_ != table.context_id) return;
+        const auto key = std::to_string(table.context_id) + ':' +
+            std::to_string(table.session_id) + ':' + std::to_string(table.section_number);
+        const auto found = data_directory_versions_.find(key);
+        if (found != data_directory_versions_.end() && found->second == table.version) return;
+        data_directory_versions_[key] = table.version;
         sink_.onDataDirectoryTable(table);
     }
 
     void data_asset_management(DataAssetManagementTable table) {
         if (selected_service_.has_value() && *selected_service_ != table.context_id) return;
+        const auto key = std::to_string(table.context_id) + ':' +
+            std::to_string(table.session_id) + ':' + std::to_string(table.section_number);
+        const auto found = data_asset_management_versions_.find(key);
+        if (found != data_asset_management_versions_.end() && found->second == table.version) return;
+        data_asset_management_versions_[key] = table.version;
         sink_.onDataAssetManagementTable(table);
     }
 
@@ -435,6 +449,8 @@ private:
     std::unordered_map<std::string, DataAssetInfo> data_assets_;
     std::unordered_map<std::string, ApplicationInfo> applications_;
     std::unordered_map<std::string, DataTransmissionTable> data_transmission_tables_;
+    std::unordered_map<std::string, std::uint8_t> data_directory_versions_;
+    std::unordered_map<std::string, std::uint8_t> data_asset_management_versions_;
     std::uint64_t next_track_id_ = 1;
     std::unordered_map<std::string, std::uint64_t> error_counts_;
     std::uint64_t reposition_epoch_ = 0;

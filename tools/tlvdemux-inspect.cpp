@@ -170,6 +170,35 @@ struct Inspector final : tlvdemux::Sink {
                   << " size=" << table.data.size() << '\n';
     }
 
+    void onDataDirectoryTable(const tlvdemux::DataDirectoryTable& table) override {
+        if (!list) return;
+        std::size_t file_count = 0;
+        for (const auto& directory : table.directories) file_count += directory.files.size();
+        std::cerr << "data-directory context=" << table.context_id
+                  << " session=" << static_cast<unsigned>(table.session_id)
+                  << " version=" << static_cast<unsigned>(table.version)
+                  << " section=" << static_cast<unsigned>(table.section_number)
+                  << '/' << static_cast<unsigned>(table.last_section_number)
+                  << " base=" << table.base_path
+                  << " directories=" << table.directories.size()
+                  << " files=" << file_count << '\n';
+    }
+
+    void onDataAssetManagementTable(const tlvdemux::DataAssetManagementTable& table) override {
+        if (!list) return;
+        std::size_t item_count = 0;
+        for (const auto& mpu : table.mpus) item_count += mpu.items.size();
+        std::cerr << "data-asset-map context=" << table.context_id
+                  << " session=" << static_cast<unsigned>(table.session_id)
+                  << " version=" << static_cast<unsigned>(table.version)
+                  << " section=" << static_cast<unsigned>(table.section_number)
+                  << '/' << static_cast<unsigned>(table.last_section_number)
+                  << " component-tag=0x" << std::hex << table.component_tag
+                  << " download-id=0x" << table.download_id << std::dec
+                  << " mpus=" << table.mpus.size()
+                  << " items=" << item_count << '\n';
+    }
+
     void onAccessUnit(tlvdemux::AccessUnit&& unit) override {
         const auto track = tracks.find(unit.track_id);
         if (trace) {
