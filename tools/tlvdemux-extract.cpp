@@ -7,6 +7,7 @@
 #include <iostream>
 #include <map>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -81,6 +82,7 @@ struct ItemKey {
 struct MpuMap {
     std::uint32_t index_item_id = 0;
     std::vector<std::uint16_t> node_tags;
+    std::optional<std::uint16_t> mpu_node_tag;
 };
 
 struct FileRecord {
@@ -100,6 +102,7 @@ struct Extractor final : tlvdemux::Sink {
     std::map<MpuKey, MpuMap> mpu_maps;
     std::map<ItemKey, std::filesystem::path> item_paths;
     std::map<ItemKey, tlvdemux::DataUnit> pending;
+    std::set<ItemKey> diagnosed;
     std::size_t written = 0;
 
     void onService(const tlvdemux::ServiceInfo&) override {}
@@ -119,6 +122,12 @@ struct Extractor final : tlvdemux::Sink {
             MpuMap map;
             map.index_item_id = mpu.index_item_id.value_or(0);
             for (const auto& item : mpu.items) map.node_tags.push_back(item.node_tag);
+            for (std::size_t at = 0; at + 5 <= mpu.info.size();) {
+                const auto length = static_cast<std::size_t>(mpu.info[at + 2]);
+                if (length > mpu.info.size() - at - 3) break;
+                if (length == 2) map.mpu_node_tag = be16(mpu.info.data() + at + 3);
+                at += 3 + length;
+            }
             mpu_maps[{table.context_id, table.component_tag, mpu.sequence_number}] =
                 std::move(map);
         }
@@ -165,7 +174,7 @@ private:
                 !cursor.text(filename_size, record.filename) || !cursor.u8(checksum)) {
                 return false;
             }
-            if (checksum != 0 && !cursor.skip(4)) return false;
+            if ((checksum & 0x80U) != 0 && !cursor.skip(4)) return false;
             if (!cursor.u8(type_size) || !cursor.text(type_size, record.content_type) ||
                 !cursor.u8(record.compression_type)) {
                 return false;
@@ -189,15 +198,26 @@ private:
                 if (it->first.item == map_it->second.index_item_id) {
                     std::vector<FileRecord> records;
                     if (!parse_index(it->second.data, records)) {
-                        std::cerr << "cannot parse index component=0x" << std::hex
-                                  << it->first.mpu.component << std::dec
-                                  << " mpu=" << it->first.mpu.sequence
-                                  << " bytes=" << it->second.data.size() << '\n';
+                        if (diagnosed.insert(it->first).second) {
+                            std::cerr << "cannot parse index component=0x" << std::hex
+                                      << it->first.mpu.component << std::dec
+                                      << " mpu=" << it->first.mpu.sequence
+                                      << " bytes=" << it->second.data.size() << " data=";
+                            for (const auto byte : it->second.data) {
+                                std::cerr << std::hex << static_cast<unsigned>(byte) << ',';
+                            }
+                            std::cerr << std::dec << '\n';
+                        }
                         ++it;
                         continue;
                     }
-                    if (records.size() != map_it->second.node_tags.size()) {
-                        std::cerr << "index mapping count mismatch component=0x" << std::hex
+                    auto node_tags = map_it->second.node_tags;
+                    if (node_tags.empty() && map_it->second.mpu_node_tag.has_value()) {
+                        node_tags.assign(records.size(), *map_it->second.mpu_node_tag);
+                    }
+                    if (records.size() != node_tags.size()) {
+                        if (diagnosed.insert(it->first).second) {
+                            std::cerr << "index mapping count mismatch component=0x" << std::hex
                                   << it->first.mpu.component << std::dec
                                   << " mpu=" << it->first.mpu.sequence
                                   << " records=" << records.size()
@@ -205,12 +225,13 @@ private:
                         for (const auto& record : records) {
                             std::cerr << " file=" << record.filename;
                         }
-                        std::cerr << '\n';
+                            std::cerr << '\n';
+                        }
                         ++it;
                         continue;
                     }
                     bool have_paths = true;
-                    for (const auto node : map_it->second.node_tags) {
+                    for (const auto node : node_tags) {
                         if (node_paths.find({it->first.mpu.context, node}) == node_paths.end()) {
                             have_paths = false;
                             break;
@@ -222,7 +243,7 @@ private:
                     }
                     for (std::size_t index = 0; index < records.size(); ++index) {
                         const auto directory = node_paths.at(
-                            {it->first.mpu.context, map_it->second.node_tags[index]});
+                            {it->first.mpu.context, node_tags[index]});
                         item_paths[{it->first.mpu, records[index].item_id}] =
                             directory / safe_relative(records[index].filename);
                     }
