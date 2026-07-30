@@ -121,7 +121,8 @@ tlvdemux::ApplicationInfo application(const std::uint32_t context) {
     value.organization_id = 2;
     value.application_id = 3;
     value.version = 1;
-    value.entry_path = "/sh4/60/001/top/source/index.html";
+    value.entry_path = "top/source/index.html";
+    value.transport_urls.push_back("sh4/60/001/");
     return value;
 }
 

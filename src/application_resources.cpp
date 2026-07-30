@@ -410,8 +410,19 @@ private:
 
     bool entry_ready(const ApplicationInfo& info) const {
         const auto entry = safe_path(info.entry_path);
-        return entry.has_value() &&
-            published_paths_.find({info.context_id, *entry}) != published_paths_.end();
+        if (!entry.has_value()) return false;
+        if (published_paths_.find({info.context_id, *entry}) != published_paths_.end()) {
+            return true;
+        }
+        for (const auto& transport : info.transport_urls) {
+            if (transport.find("://") != std::string::npos) continue;
+            const auto candidate = join_path(transport, *entry);
+            if (candidate.has_value() &&
+                published_paths_.find({info.context_id, *candidate}) != published_paths_.end()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     std::size_t resource_count(const std::uint32_t context) const {
@@ -518,9 +529,10 @@ void ApplicationResourceStore::onApplicationState(const ApplicationState& state)
 
 void ApplicationResourceStore::onApplicationResource(ApplicationResource&& resource) {
     auto shared = std::make_shared<const ApplicationResource>(std::move(resource));
+    const auto key = std::make_pair(shared->context_id, shared->path);
     std::lock_guard<std::mutex> lock(impl_->mutex);
     ++impl_->generation;
-    impl_->resources[{shared->context_id, shared->path}] =
+    impl_->resources[key] =
         Impl::StoredResource{std::move(shared), impl_->generation};
     impl_->changed.notify_all();
 }
