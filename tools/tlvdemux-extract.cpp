@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <zlib.h>
 
 namespace {
 
@@ -92,6 +93,13 @@ struct FileRecord {
     std::string filename;
     std::string content_type;
     std::uint8_t compression_type = 0xff;
+    std::optional<std::uint32_t> original_size;
+};
+
+struct FileTarget {
+    std::filesystem::path path;
+    std::uint8_t compression_type = 0xff;
+    std::optional<std::uint32_t> original_size;
 };
 
 struct Extractor final : tlvdemux::Sink {
@@ -100,9 +108,10 @@ struct Extractor final : tlvdemux::Sink {
     std::filesystem::path root;
     std::map<std::pair<std::uint32_t, std::uint16_t>, std::filesystem::path> node_paths;
     std::map<MpuKey, MpuMap> mpu_maps;
-    std::map<ItemKey, std::filesystem::path> item_paths;
+    std::map<ItemKey, FileTarget> item_paths;
     std::map<ItemKey, tlvdemux::DataUnit> pending;
     std::set<ItemKey> diagnosed;
+    std::set<ItemKey> completed;
     std::size_t written = 0;
 
     void onService(const tlvdemux::ServiceInfo&) override {}
@@ -136,6 +145,7 @@ struct Extractor final : tlvdemux::Sink {
 
     void onDataUnit(tlvdemux::DataUnit&& unit) override {
         ItemKey key{{unit.context_id, unit.component_tag, unit.mpu_sequence_number}, unit.item_id};
+        if (completed.find(key) != completed.end()) return;
         pending[key] = std::move(unit);
         retry();
     }
@@ -179,7 +189,11 @@ private:
                 !cursor.u8(record.compression_type)) {
                 return false;
             }
-            if (record.compression_type != 0xff && !cursor.skip(4)) return false;
+            if (record.compression_type != 0xff) {
+                std::uint32_t original_size = 0;
+                if (!cursor.u32(original_size)) return false;
+                record.original_size = original_size;
+            }
             records.push_back(std::move(record));
         }
         return cursor.at == data.size();
@@ -244,8 +258,9 @@ private:
                     for (std::size_t index = 0; index < records.size(); ++index) {
                         const auto directory = node_paths.at(
                             {it->first.mpu.context, node_tags[index]});
-                        item_paths[{it->first.mpu, records[index].item_id}] =
-                            directory / safe_relative(records[index].filename);
+                        item_paths[{it->first.mpu, records[index].item_id}] = FileTarget{
+                            directory / safe_relative(records[index].filename),
+                            records[index].compression_type, records[index].original_size};
                     }
                     it = pending.erase(it);
                     progressed = true;
@@ -256,14 +271,33 @@ private:
                     ++it;
                     continue;
                 }
-                const auto output = root / path_it->second;
+                const auto output = root / path_it->second.path;
                 std::filesystem::create_directories(output.parent_path());
+                const std::vector<std::uint8_t>* bytes = &it->second.data;
+                std::vector<std::uint8_t> decompressed;
+                if (path_it->second.compression_type != 0xff) {
+                    if (path_it->second.compression_type != 0 ||
+                        !path_it->second.original_size.has_value()) {
+                        throw std::runtime_error("unsupported broadcast compression type");
+                    }
+                    decompressed.resize(*path_it->second.original_size);
+                    auto output_size = static_cast<uLongf>(decompressed.size());
+                    const auto status = uncompress(
+                        decompressed.data(), &output_size, it->second.data.data(),
+                        static_cast<uLong>(it->second.data.size()));
+                    if (status != Z_OK || output_size != decompressed.size()) {
+                        throw std::runtime_error("cannot decompress broadcast item: " +
+                                                 output.string());
+                    }
+                    bytes = &decompressed;
+                }
                 std::ofstream file(output, std::ios::binary);
                 if (!file) throw std::runtime_error("cannot create output: " + output.string());
-                file.write(reinterpret_cast<const char*>(it->second.data.data()),
-                           static_cast<std::streamsize>(it->second.data.size()));
+                file.write(reinterpret_cast<const char*>(bytes->data()),
+                           static_cast<std::streamsize>(bytes->size()));
                 if (!file) throw std::runtime_error("cannot write output: " + output.string());
                 ++written;
+                completed.insert(it->first);
                 it = pending.erase(it);
                 progressed = true;
             }
