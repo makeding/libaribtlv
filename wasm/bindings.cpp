@@ -1,6 +1,8 @@
 #include <tlvdemux/demuxer.hpp>
 #include <tlvdemux/duration_probe.hpp>
 
+#include "mse_remuxer.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -196,7 +198,9 @@ private:
 class WasmDemuxer final : public tlvdemux::Sink {
 public:
     explicit WasmDemuxer(val callbacks)
-        : callbacks_(std::move(callbacks)), demuxer_(*this) {}
+        : callbacks_(std::move(callbacks)), demuxer_(*this), mse_remuxer_(callbacks_) {
+        mse_enabled_ = has_callback("onMseInit") || has_callback("onMseSegment");
+    }
 
     bool push(const val& bytes) {
         if (bytes.isNull() || bytes.isUndefined()) return false;
@@ -216,14 +220,19 @@ public:
         return true;
     }
 
-    void flush() { demuxer_.flush(); }
+    void flush() {
+        demuxer_.flush();
+        if (mse_enabled_) mse_remuxer_.flush();
+    }
     void reset() {
         demuxer_.reset();
+        if (mse_enabled_) mse_remuxer_.reset();
         if (index_active_) recording_index_.begin(index_growing_);
     }
 
     void reposition(const std::uint64_t input_offset, const bool preserve_timeline) {
         demuxer_.reposition(tlvdemux::RepositionOptions{input_offset, preserve_timeline});
+        if (mse_enabled_) mse_remuxer_.reset();
     }
 
     void selectService(const val& context_id) {
@@ -239,10 +248,15 @@ public:
         if (!parsed_kind.has_value()) return;
         const auto selected = optional_number<std::uint64_t>(track_id);
         demuxer_.selectTrack(*parsed_kind, selected);
+        if (mse_enabled_) mse_remuxer_.selectTrack(*parsed_kind, selected);
         if (*parsed_kind == tlvdemux::TrackKind::Video && index_active_ &&
             recording_index_.state() == tlvdemux::IndexState::Building) {
             recording_index_.selectVideoTrack(selected);
         }
+    }
+
+    void setMseOutputEnabled(const bool enabled) {
+        mse_remuxer_.setOutputEnabled(enabled);
     }
 
     void startIndex(const bool growing) {
@@ -260,6 +274,13 @@ public:
     }
 
     val indexDuration() const { return duration_value(recording_index_.duration()); }
+    bool setIndexDuration(const std::int64_t duration_us) {
+        if (!index_active_ || duration_us < 0) return false;
+        return recording_index_.updateDuration(tlvdemux::DurationInfo{
+            tlvdemux::Timestamp{duration_us, 1000000},
+            tlvdemux::DurationStatus::Provisional,
+        });
+    }
     std::size_t seekPointCount() const { return recording_index_.seekPoints().size(); }
     val indexedVideoTrack() const {
         const auto track = recording_index_.selectedVideoTrack();
@@ -310,9 +331,15 @@ public:
         event.set("timescale", info.timescale);
         if (info.audio.has_value()) {
             auto audio = val::object();
+            audio.set("componentType", info.audio->component_type);
+            audio.set("componentTag", info.audio->component_tag);
             audio.set("channelLayout", static_cast<unsigned>(info.audio->channel_layout));
+            audio.set("streamType", info.audio->stream_type);
+            audio.set("simulcastGroupTag", info.audio->simulcast_group_tag);
+            audio.set("multilingual", info.audio->es_multi_lingual);
             audio.set("sampleRate", info.audio->sample_rate);
             audio.set("mainComponent", info.audio->main_component);
+            audio.set("secondaryLanguage", info.audio->secondary_language);
             event.set("audio", audio);
         }
         if (info.subtitle.has_value()) {
@@ -326,6 +353,7 @@ public:
 
     void onAccessUnit(tlvdemux::AccessUnit&& unit) override {
         if (index_active_) recording_index_.observe(unit);
+        if (mse_enabled_) mse_remuxer_.push(unit);
         if (has_callback("onAccessUnitView")) {
             auto event = access_unit_event(unit, view_bytes(unit.data));
             event.set("dataLifetime", std::string("callback"));
@@ -380,9 +408,11 @@ private:
 
     val callbacks_;
     tlvdemux::Demuxer demuxer_;
+    WasmMseRemuxer mse_remuxer_;
     tlvdemux::RecordingIndex recording_index_;
     bool index_active_ = false;
     bool index_growing_ = false;
+    bool mse_enabled_ = false;
 };
 
 } // namespace
@@ -397,10 +427,12 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("reposition", &WasmDemuxer::reposition)
         .function("selectService", &WasmDemuxer::selectService)
         .function("selectTrack", &WasmDemuxer::selectTrack)
+        .function("setMseOutputEnabled", &WasmDemuxer::setMseOutputEnabled)
         .function("startIndex", &WasmDemuxer::startIndex)
         .function("finalizeIndex", &WasmDemuxer::finalizeIndex)
         .function("indexState", &WasmDemuxer::indexState)
         .function("indexDuration", &WasmDemuxer::indexDuration)
+        .function("setIndexDuration", &WasmDemuxer::setIndexDuration)
         .function("seekPointCount", &WasmDemuxer::seekPointCount)
         .function("indexedVideoTrack", &WasmDemuxer::indexedVideoTrack)
         .function("previousSync", &WasmDemuxer::previousSync)

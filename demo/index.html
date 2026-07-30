@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>tlvdemux MMTS プレーヤー</title>
+  <link rel="stylesheet" href="demo.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">tlvdemux · WebAssembly</p>
+        <h1>MMTS プレーヤー</h1>
+        <p class="subtitle">tlvdemux WASM で分離し、MSE で HEVC + AAC を再生します。</p>
+      </div>
+      <span id="wasmStatus" class="badge pending">WASM 読み込み中</span>
+    </header>
+
+    <section class="video-panel">
+      <video id="video" controls playsinline muted></video>
+      <div id="mediaInfo" class="video-status">未読み込み</div>
+    </section>
+
+    <section class="panel source-panel">
+      <label for="fileInput">ローカル</label>
+      <input id="fileInput" type="file" accept=".mmts,.tlv,application/octet-stream">
+      <div class="or"><span>または</span></div>
+      <label for="urlInput">HTTP URL</label>
+      <input id="urlInput" type="text" value="bsp4k.mmts" placeholder="https://example.test/recording.mmts">
+      <p class="hint">ローカルファイルを優先します。Range 非対応 URL は自動的に Live mode へ切り替わります。</p>
+    </section>
+
+    <section class="panel options">
+      <label>
+        初期 Range
+        <select id="initialRange">
+          <option value="1">1 MiB</option>
+          <option value="4" selected>4 MiB</option>
+          <option value="8">8 MiB</option>
+        </select>
+      </label>
+      <label>
+        最大 Range
+        <select id="maxRange">
+          <option value="16">16 MiB</option>
+          <option value="32">32 MiB</option>
+          <option value="64" selected>64 MiB</option>
+          <option value="128">128 MiB</option>
+        </select>
+      </label>
+      <label>
+        映像 packet_id
+        <input id="videoPacketId" type="text" placeholder="自動 / 0xf300">
+      </label>
+      <label>
+        音声トラック
+        <select id="audioTrack" disabled>
+          <option value="">自動</option>
+        </select>
+      </label>
+      <label class="checkbox-option">
+        <input id="liveMode" type="checkbox">
+        Live mode（シークなし）
+      </label>
+    </section>
+
+    <div class="actions">
+      <button id="probeButton" class="primary" disabled>読み込んで再生</button>
+      <button id="cancelButton" disabled>停止</button>
+    </div>
+
+    <section class="results" aria-live="polite">
+      <article class="metric">
+        <span>状態</span>
+        <strong id="probeState">入力待ち</strong>
+      </article>
+      <article class="metric highlight">
+        <span>再生時間</span>
+        <strong id="duration">—</strong>
+      </article>
+      <article class="metric">
+        <span>ファイルサイズ</span>
+        <strong id="sourceSize">—</strong>
+      </article>
+      <article class="metric">
+        <span>読み込み / バッファ</span>
+        <strong id="transferred">—</strong>
+      </article>
+    </section>
+
+    <section class="panel log-panel">
+      <div class="log-title">
+        <h2>再生ログ</h2>
+        <button id="clearButton" class="quiet">クリア</button>
+      </div>
+      <pre id="log">読み込み待ち…</pre>
+    </section>
+  </main>
+
+  <script src="../build-wasm/tlvdemux.js"></script>
+  <script type="module" src="demo.js"></script>
+</body>
+</html>

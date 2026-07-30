@@ -14,17 +14,31 @@ const demuxer = new module.TlvDemuxer({
 
 demuxer.startIndex(false);
 assert.equal(demuxer.indexState(), 'building');
+assert.equal(demuxer.setIndexDuration(1000000n), true);
+assert.deepEqual(demuxer.indexDuration(), {
+    value: 1000000n,
+    timescale: 1000000,
+    status: 'provisional',
+});
 assert.equal(demuxer.push(new Uint8Array()), true);
 assert.equal(demuxer.pushFromHeap(0, 0), true);
 assert.equal(demuxer.pushFromHeap(module.HEAPU8.byteLength, 1), false);
 demuxer.selectService(undefined);
 demuxer.selectTrack('video', undefined);
+assert.equal(demuxer.indexDuration(), null);
+assert.equal(demuxer.setIndexDuration(1000000n), true);
 demuxer.reposition(0n, true);
 demuxer.reset();
+assert.equal(demuxer.indexDuration(), null);
+assert.equal(demuxer.setIndexDuration(1000000n), true);
 demuxer.flush();
 assert.equal(demuxer.finalizeIndex(), true);
 assert.equal(demuxer.indexState(), 'complete');
-assert.equal(demuxer.indexDuration(), null);
+assert.deepEqual(demuxer.indexDuration(), {
+    value: 1000000n,
+    timescale: 1000000,
+    status: 'complete',
+});
 assert.equal(demuxer.seekPointCount(), 0);
 assert.equal(demuxer.previousSync(0n), null);
 assert.equal(demuxer.seekPointsFor(0n), null);

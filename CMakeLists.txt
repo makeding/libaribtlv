@@ -102,11 +102,12 @@ if(TLVDEMUX_BUILD_WASM_BINDINGS)
         message(FATAL_ERROR "TLVDEMUX_BUILD_WASM_BINDINGS requires the Emscripten toolchain")
     endif()
 
-    add_executable(tlvdemux-wasm wasm/bindings.cpp)
+    add_executable(tlvdemux-wasm wasm/bindings.cpp wasm/mse_remuxer.cpp)
     target_link_libraries(tlvdemux-wasm PRIVATE tlvdemux::tlvdemux)
     target_link_options(tlvdemux-wasm PRIVATE
         --bind
         "-sALLOW_MEMORY_GROWTH=1"
+        "-sGROWABLE_ARRAYBUFFERS=0"
         "-sENVIRONMENT=web,worker,node"
         "-sEXPORTED_FUNCTIONS=['_malloc','_free']"
         "-sEXPORTED_RUNTIME_METHODS=['HEAPU8']"

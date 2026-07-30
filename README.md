@@ -150,6 +150,25 @@ the surrounding RAP checkpoints. Reposition to `first.signallingOffset`, feed
 from there, decode from the emitted RAP, and present the first frame at or after
 the requested time.
 
+### Browser demo
+
+After building `build-wasm/tlvdemux.js`, serve the repository root and open
+`/demo/`:
+
+```sh
+python3 -m http.server 8000
+```
+
+The demo accepts either a local MMTS file or an HTTP URL, probes its duration,
+then plays the selected HEVC and AAC tracks through Media Source Extensions.
+Local files use `Blob.slice()`; remote files require validated `206` and
+`Content-Range` responses. Live mode skips duration probing and seeking, uses a
+normal streaming `GET`, and exposes the Media Source as an unbounded timeline.
+HTTP URLs that do not return a valid Range response automatically fall back to
+Live mode.
+The demo contains a deliberately small fMP4/MSE layer and does not depend on
+mmts.js at runtime. Browser HEVC MSE support is still required.
+
 ## Current scope
 
 Version 0.1 supports the ARIB broadcast subset exercised by the validation
