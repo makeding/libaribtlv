@@ -188,8 +188,24 @@ private:
                 }
                 if (it->first.item == map_it->second.index_item_id) {
                     std::vector<FileRecord> records;
-                    if (!parse_index(it->second.data, records) ||
-                        records.size() != map_it->second.node_tags.size()) {
+                    if (!parse_index(it->second.data, records)) {
+                        std::cerr << "cannot parse index component=0x" << std::hex
+                                  << it->first.mpu.component << std::dec
+                                  << " mpu=" << it->first.mpu.sequence
+                                  << " bytes=" << it->second.data.size() << '\n';
+                        ++it;
+                        continue;
+                    }
+                    if (records.size() != map_it->second.node_tags.size()) {
+                        std::cerr << "index mapping count mismatch component=0x" << std::hex
+                                  << it->first.mpu.component << std::dec
+                                  << " mpu=" << it->first.mpu.sequence
+                                  << " records=" << records.size()
+                                  << " nodes=" << map_it->second.node_tags.size();
+                        for (const auto& record : records) {
+                            std::cerr << " file=" << record.filename;
+                        }
+                        std::cerr << '\n';
                         ++it;
                         continue;
                     }
