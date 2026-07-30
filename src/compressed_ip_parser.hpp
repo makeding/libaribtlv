@@ -19,6 +19,7 @@ public:
     using AccessUnitCallback = std::function<void(TimedAccessUnit)>;
     using ApplicationServiceCallback = std::function<void(ApplicationServiceInfo)>;
     using DataAssetCallback = std::function<void(DataAssetInfo)>;
+    using DataUnitCallback = std::function<void(DataUnit)>;
     using SignallingCallback = std::function<void(SignallingMessage)>;
     using ApplicationCallback = std::function<void(ApplicationInfo)>;
     using DataTransmissionCallback = std::function<void(DataTransmissionTable)>;
@@ -27,7 +28,7 @@ public:
 
     CompressedIpParser(const Limits&, ServiceCallback, TrackCallback,
                        AccessUnitCallback, ApplicationServiceCallback,
-                       DataAssetCallback, SignallingCallback, ApplicationCallback,
+                       DataAssetCallback, DataUnitCallback, SignallingCallback, ApplicationCallback,
                        DataTransmissionCallback, DataDirectoryCallback,
                        DataAssetManagementCallback, ErrorCallback);
 
@@ -47,6 +48,7 @@ private:
     AccessUnitCallback on_access_unit_;
     ApplicationServiceCallback on_application_service_;
     DataAssetCallback on_data_asset_;
+    DataUnitCallback on_data_unit_;
     SignallingCallback on_signalling_;
     ApplicationCallback on_application_;
     DataTransmissionCallback on_data_transmission_;

@@ -49,6 +49,7 @@ public:
     using AccessUnitCallback = std::function<void(TimedAccessUnit)>;
     using ApplicationServiceCallback = std::function<void(ApplicationServiceInfo)>;
     using DataAssetCallback = std::function<void(DataAssetInfo)>;
+    using DataUnitCallback = std::function<void(DataUnit)>;
     using SignallingCallback = std::function<void(SignallingMessage)>;
     using ApplicationCallback = std::function<void(ApplicationInfo)>;
     using DataTransmissionCallback = std::function<void(DataTransmissionTable)>;
@@ -59,7 +60,7 @@ public:
 
     MmtpParser(std::uint32_t context_id, const Limits&, PackageCallback,
                TrackCallback, AccessUnitCallback, ApplicationServiceCallback,
-               DataAssetCallback, SignallingCallback, ApplicationCallback,
+               DataAssetCallback, DataUnitCallback, SignallingCallback, ApplicationCallback,
                DataTransmissionCallback, DataDirectoryCallback,
                DataAssetManagementCallback, StateAcquireCallback,
                StateReleaseCallback, ErrorCallback);
@@ -68,6 +69,13 @@ public:
     void push(const std::uint8_t* data, std::size_t size, std::uint64_t input_offset);
     void flush();
     void reset();
+
+    struct PacketExtensions {
+        std::optional<std::size_t> authenticated_payload_size;
+        std::optional<std::uint32_t> download_id;
+        std::optional<std::uint32_t> item_fragment_number;
+        std::optional<std::uint32_t> last_item_fragment_number;
+    };
 
 private:
     enum class FragmentState { Initial, Idle, Collecting, Skipping };
@@ -87,7 +95,16 @@ private:
         std::uint64_t input_offset = 0;
         std::uint64_t restart_offset = 0;
         bool random_access = false;
+        std::optional<std::uint32_t> download_id;
+        std::optional<std::uint32_t> item_fragment_number;
+        std::optional<std::uint32_t> last_item_fragment_number;
         std::vector<std::uint8_t> data;
+    };
+
+    struct DataAssetState {
+        DataAssetInfo info;
+        MediaAssembler media;
+        bool discontinuity = false;
     };
 
     struct PendingHevc {
@@ -139,7 +156,15 @@ private:
     void parse_mpu(std::uint16_t packet_id, std::uint32_t packet_sequence,
                    std::uint32_t delivery_timestamp, bool random_access,
                    const std::uint8_t* data,
-                   std::size_t size, std::uint64_t input_offset);
+                   std::size_t size, std::uint64_t input_offset,
+                   const PacketExtensions&);
+    void consume_data_piece(DataAssetState&, std::uint32_t packet_sequence,
+                            std::uint32_t mpu_sequence, std::uint8_t fragmentation,
+                            bool aggregation, const std::uint8_t*, std::size_t,
+                            std::uint64_t input_offset, const PacketExtensions&);
+    void emit_data_unit(DataAssetState&, std::uint32_t mpu_sequence,
+                        std::uint32_t item_id, const std::uint8_t*, std::size_t,
+                        std::uint64_t input_offset, const PacketExtensions&);
     void consume_mfu_piece(TrackState&, std::uint32_t packet_sequence,
                            std::uint32_t mpu_sequence, bool timed,
                            std::uint8_t fragmentation, bool aggregation,
@@ -192,6 +217,7 @@ private:
     AccessUnitCallback on_access_unit_;
     ApplicationServiceCallback on_application_service_;
     DataAssetCallback on_data_asset_;
+    DataUnitCallback on_data_unit_;
     SignallingCallback on_signalling_;
     ApplicationCallback on_application_;
     DataTransmissionCallback on_data_transmission_;
@@ -202,6 +228,7 @@ private:
     ErrorCallback on_error_;
     std::unordered_map<std::uint16_t, SignallingAssembler> signalling_;
     std::unordered_map<std::uint16_t, TrackState> tracks_;
+    std::unordered_map<std::uint16_t, DataAssetState> data_assets_;
     std::optional<std::uint64_t> latest_full_ntp_;
 };
 

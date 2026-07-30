@@ -87,6 +87,22 @@ struct DataAssetInfo {
     std::uint16_t component_tag = 0;
 };
 
+struct DataUnit {
+    std::uint32_t context_id = 0;
+    std::uint16_t packet_id = 0;
+    std::vector<std::uint8_t> asset_id;
+    std::string asset_type;
+    std::uint16_t component_tag = 0;
+    std::uint32_t mpu_sequence_number = 0;
+    std::uint32_t item_id = 0;
+    std::optional<std::uint32_t> download_id;
+    std::optional<std::uint32_t> item_fragment_number;
+    std::optional<std::uint32_t> last_item_fragment_number;
+    std::vector<std::uint8_t> data;
+    std::uint64_t input_offset = 0;
+    bool discontinuity = false;
+};
+
 struct SignallingMessage {
     std::uint32_t context_id = 0;
     std::uint16_t packet_id = 0;

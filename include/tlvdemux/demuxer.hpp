@@ -23,6 +23,7 @@ public:
     virtual void onError(const Error&) = 0;
     virtual void onApplicationService(const ApplicationServiceInfo&) {}
     virtual void onDataAsset(const DataAssetInfo&) {}
+    virtual void onDataUnit(DataUnit&&) {}
     virtual void onSignallingMessage(SignallingMessage&&) {}
     virtual void onApplication(const ApplicationInfo&) {}
     virtual void onDataTransmissionTable(DataTransmissionTable&&) {}

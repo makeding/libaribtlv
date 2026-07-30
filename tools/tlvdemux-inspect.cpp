@@ -133,6 +133,25 @@ struct Inspector final : tlvdemux::Sink {
                   << " asset-id-bytes=" << info.asset_id.size() << '\n';
     }
 
+    void onDataUnit(tlvdemux::DataUnit&& unit) override {
+        if (!list) return;
+        std::cerr << "data-unit context=" << unit.context_id
+                  << " packet-id=0x" << std::hex << unit.packet_id << std::dec
+                  << " component-tag=0x" << std::hex << unit.component_tag << std::dec
+                  << " mpu=" << unit.mpu_sequence_number
+                  << " item=" << unit.item_id << " size=" << unit.data.size();
+        if (unit.download_id.has_value()) {
+            std::cerr << " download-id=0x" << std::hex << *unit.download_id << std::dec;
+        }
+        if (unit.item_fragment_number.has_value()) {
+            std::cerr << " fragment=" << *unit.item_fragment_number;
+            if (unit.last_item_fragment_number.has_value()) {
+                std::cerr << '/' << *unit.last_item_fragment_number;
+            }
+        }
+        std::cerr << " discontinuity=" << unit.discontinuity << '\n';
+    }
+
     void onSignallingMessage(tlvdemux::SignallingMessage&& message) override {
         if (!list) return;
         const auto key = std::to_string(message.context_id) + ':' +
@@ -182,6 +201,16 @@ struct Inspector final : tlvdemux::Sink {
                   << " base=" << table.base_path
                   << " directories=" << table.directories.size()
                   << " files=" << file_count << '\n';
+        for (const auto& directory : table.directories) {
+            std::cerr << "  directory node=0x" << std::hex << directory.node_tag << std::dec
+                      << " version=" << static_cast<unsigned>(directory.version)
+                      << " path=" << directory.path
+                      << " files=" << directory.files.size() << '\n';
+            for (const auto& file : directory.files) {
+                std::cerr << "    file node=0x" << std::hex << file.node_tag << std::dec
+                          << " name=" << file.name << '\n';
+            }
+        }
     }
 
     void onDataAssetManagementTable(const tlvdemux::DataAssetManagementTable& table) override {
@@ -197,6 +226,20 @@ struct Inspector final : tlvdemux::Sink {
                   << " download-id=0x" << table.download_id << std::dec
                   << " mpus=" << table.mpus.size()
                   << " items=" << item_count << '\n';
+        for (const auto& mpu : table.mpus) {
+            std::cerr << "  mpu sequence=" << mpu.sequence_number
+                      << " size=" << mpu.size << " index=" << mpu.index_item;
+            if (mpu.index_item_id.has_value()) {
+                std::cerr << " index-item-id=0x" << std::hex << *mpu.index_item_id << std::dec;
+            }
+            std::cerr << " items=" << mpu.items.size() << '\n';
+            for (const auto& item : mpu.items) {
+                std::cerr << "    item node=0x" << std::hex << item.node_tag << std::dec;
+                if (item.item_id.has_value()) std::cerr << " id=" << *item.item_id;
+                if (item.size.has_value()) std::cerr << " size=" << *item.size;
+                std::cerr << '\n';
+            }
+        }
     }
 
     void onAccessUnit(tlvdemux::AccessUnit&& unit) override {

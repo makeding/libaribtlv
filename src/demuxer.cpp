@@ -20,6 +20,7 @@ public:
               [this](detail::TimedAccessUnit unit) { access_unit(std::move(unit)); },
               [this](ApplicationServiceInfo info) { application_service(std::move(info)); },
               [this](DataAssetInfo info) { data_asset(std::move(info)); },
+              [this](DataUnit unit) { data_unit(std::move(unit)); },
               [this](SignallingMessage message) { signalling(std::move(message)); },
               [this](ApplicationInfo info) { application(std::move(info)); },
               [this](DataTransmissionTable table) { data_transmission(std::move(table)); },
@@ -232,6 +233,11 @@ private:
         }
         data_assets_[key] = info;
         sink_.onDataAsset(info);
+    }
+
+    void data_unit(DataUnit unit) {
+        if (selected_service_.has_value() && *selected_service_ != unit.context_id) return;
+        sink_.onDataUnit(std::move(unit));
     }
 
     void signalling(SignallingMessage message) {

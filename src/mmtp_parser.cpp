@@ -11,10 +11,10 @@ namespace tlvdemux::detail {
 
 namespace {
 
-bool parse_authenticated_payload_size(const std::uint16_t extension_type,
-                                      const std::uint8_t* extension,
-                                      const std::size_t extension_size,
-                                      std::optional<std::size_t>& payload_size) {
+bool parse_packet_extensions(const std::uint16_t extension_type,
+                             const std::uint8_t* extension,
+                             const std::size_t extension_size,
+                             MmtpParser::PacketExtensions& result) {
     if (extension_type != 0x0000) return true;
 
     std::size_t cursor = 0;
@@ -39,8 +39,13 @@ bool parse_authenticated_payload_size(const std::uint16_t extension_type,
             }
             if (authentication_present) {
                 if (size - field_cursor < 2) return false;
-                payload_size = read_be16(extension + cursor + field_cursor);
+                result.authenticated_payload_size = read_be16(extension + cursor + field_cursor);
             }
+        } else if (type == 0x0002 && size == 4) {
+            result.download_id = read_be32(extension + cursor);
+        } else if (type == 0x0003 && size == 8) {
+            result.item_fragment_number = read_be32(extension + cursor);
+            result.last_item_fragment_number = read_be32(extension + cursor + 4);
         }
 
         cursor += size;
@@ -56,6 +61,7 @@ MmtpParser::MmtpParser(const std::uint32_t context_id, const Limits& limits,
                        AccessUnitCallback on_access_unit,
                        ApplicationServiceCallback on_application_service,
                        DataAssetCallback on_data_asset,
+                       DataUnitCallback on_data_unit,
                        SignallingCallback on_signalling,
                        ApplicationCallback on_application,
                        DataTransmissionCallback on_data_transmission,
@@ -66,7 +72,8 @@ MmtpParser::MmtpParser(const std::uint32_t context_id, const Limits& limits,
     : context_id_(context_id), limits_(limits), on_package_(std::move(on_package)),
       on_track_(std::move(on_track)), on_access_unit_(std::move(on_access_unit)),
       on_application_service_(std::move(on_application_service)),
-      on_data_asset_(std::move(on_data_asset)), on_signalling_(std::move(on_signalling)),
+      on_data_asset_(std::move(on_data_asset)), on_data_unit_(std::move(on_data_unit)),
+      on_signalling_(std::move(on_signalling)),
       on_application_(std::move(on_application)),
       on_data_transmission_(std::move(on_data_transmission)),
       on_data_directory_(std::move(on_data_directory)),
@@ -79,7 +86,7 @@ MmtpParser::~MmtpParser() {
 }
 
 void MmtpParser::release_all_states() {
-    const auto count = signalling_.size() + tracks_.size();
+    const auto count = signalling_.size() + tracks_.size() + data_assets_.size();
     for (std::size_t index = 0; index < count; ++index) release_state_();
 }
 
@@ -87,6 +94,7 @@ void MmtpParser::reset() {
     release_all_states();
     signalling_.clear();
     tracks_.clear();
+    data_assets_.clear();
     latest_full_ntp_.reset();
 }
 
@@ -116,6 +124,15 @@ void MmtpParser::flush() {
         track.au_index = 0;
         track.discontinuity = true;
         if (track.info.kind == TrackKind::Video) track.wait_for_rap = true;
+    }
+    for (auto& entry : data_assets_) {
+        auto& asset = entry.second;
+        if (asset.media.state == FragmentState::Collecting && !asset.media.data.empty()) {
+            on_error_(ErrorCode::MalformedInput, asset.media.input_offset, true,
+                      "dropped incomplete non-timed MFU fragment at end of input");
+        }
+        asset.media = {};
+        asset.discontinuity = true;
     }
     for (std::size_t index = 0; index < signalling_.size(); ++index) release_state_();
     signalling_.clear();
@@ -153,7 +170,7 @@ void MmtpParser::push(const std::uint8_t* data, const std::size_t size,
         }
         cursor += 4;
     }
-    std::optional<std::size_t> authenticated_payload_size;
+    PacketExtensions extensions;
     if (extension_header_flag) {
         if (size - cursor < 4) {
             on_error_(ErrorCode::MalformedInput, input_offset, true,
@@ -168,8 +185,8 @@ void MmtpParser::push(const std::uint8_t* data, const std::size_t size,
                       "MMTP extension length exceeds packet bounds");
             return;
         }
-        if (!parse_authenticated_payload_size(extension_type, data + cursor, extension_size,
-                                              authenticated_payload_size)) {
+        if (!parse_packet_extensions(extension_type, data + cursor, extension_size,
+                                     extensions)) {
             on_error_(ErrorCode::MalformedInput, input_offset, true,
                       "malformed MMTP multi-type extension header");
             return;
@@ -179,19 +196,19 @@ void MmtpParser::push(const std::uint8_t* data, const std::size_t size,
 
     const auto* payload = data + cursor;
     auto payload_size = size - cursor;
-    if (authenticated_payload_size.has_value()) {
-        if (*authenticated_payload_size > payload_size) {
+    if (extensions.authenticated_payload_size.has_value()) {
+        if (*extensions.authenticated_payload_size > payload_size) {
             on_error_(ErrorCode::MalformedInput, input_offset, true,
                       "authenticated MMTP payload length exceeds packet bounds");
             return;
         }
-        payload_size = *authenticated_payload_size;
+        payload_size = *extensions.authenticated_payload_size;
     }
     if (payload_type == 0x02) {
         parse_signalling(packet_id, sequence, payload, payload_size, input_offset);
     } else if (payload_type == 0x00) {
         parse_mpu(packet_id, sequence, delivery_timestamp, random_access,
-                  payload, payload_size, input_offset);
+                  payload, payload_size, input_offset, extensions);
     } else {
         on_error_(ErrorCode::UnsupportedFeature, input_offset, true,
                   "unsupported MMTP payload type in context " + std::to_string(context_id_));
@@ -910,6 +927,16 @@ bool MmtpParser::parse_mpt(const std::uint8_t* data, const std::size_t size,
             info.asset_id = std::move(track.asset_id);
             info.asset_type = asset_type;
             info.component_tag = metadata.component_tag;
+            auto state_entry = data_assets_.find(*packet_id);
+            if (state_entry == data_assets_.end()) {
+                if (!acquire_state_()) {
+                    on_error_(ErrorCode::ResourceLimit, input_offset, true,
+                              "global MMTP packet/track-state limit exceeded");
+                    continue;
+                }
+                state_entry = data_assets_.emplace(*packet_id, DataAssetState{}).first;
+            }
+            state_entry->second.info = info;
             on_data_asset_(std::move(info));
         }
     }
@@ -1513,11 +1540,143 @@ void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_seq
     on_access_unit_(TimedAccessUnit{std::move(unit), ntp});
 }
 
+void MmtpParser::emit_data_unit(DataAssetState& asset,
+                                const std::uint32_t mpu_sequence,
+                                const std::uint32_t item_id,
+                                const std::uint8_t* data, const std::size_t size,
+                                const std::uint64_t input_offset,
+                                const PacketExtensions& extensions) {
+    DataUnit unit;
+    unit.context_id = context_id_;
+    unit.packet_id = asset.info.packet_id;
+    unit.asset_id = asset.info.asset_id;
+    unit.asset_type = asset.info.asset_type;
+    unit.component_tag = asset.info.component_tag;
+    unit.mpu_sequence_number = mpu_sequence;
+    unit.item_id = item_id;
+    unit.download_id = extensions.download_id;
+    unit.item_fragment_number = extensions.item_fragment_number;
+    unit.last_item_fragment_number = extensions.last_item_fragment_number;
+    unit.data.assign(data, data + size);
+    unit.input_offset = input_offset;
+    unit.discontinuity = asset.discontinuity;
+    asset.discontinuity = false;
+    on_data_unit_(std::move(unit));
+}
+
+void MmtpParser::consume_data_piece(DataAssetState& asset,
+                                    const std::uint32_t packet_sequence,
+                                    const std::uint32_t mpu_sequence,
+                                    const std::uint8_t fragmentation,
+                                    const bool aggregation,
+                                    const std::uint8_t* data, const std::size_t size,
+                                    const std::uint64_t input_offset,
+                                    const PacketExtensions& extensions) {
+    if (size < 4) {
+        asset.discontinuity = true;
+        on_error_(ErrorCode::MalformedInput, input_offset, true,
+                  "truncated non-timed MFU header");
+        return;
+    }
+    const auto item_id = read_be32(data);
+    const auto* payload = data + 4;
+    const auto payload_size = size - 4;
+    auto& assembler = asset.media;
+    if (assembler.state != FragmentState::Initial &&
+        packet_sequence != assembler.last_packet_sequence + 1U &&
+        !(aggregation && fragmentation == 0 &&
+          packet_sequence == assembler.last_packet_sequence)) {
+        if (packet_sequence == assembler.last_packet_sequence) return;
+        if (!assembler.data.empty()) {
+            on_error_(ErrorCode::Discontinuity, input_offset, true,
+                      "MMTP data sequence jump dropped an incomplete MFU");
+        }
+        assembler.data.clear();
+        assembler.state = FragmentState::Skipping;
+        asset.discontinuity = true;
+    }
+    assembler.last_packet_sequence = packet_sequence;
+    auto append_data = [&]() {
+        if (assembler.data.size() > limits_.max_access_unit ||
+            payload_size > limits_.max_access_unit - assembler.data.size()) {
+            assembler.data.clear();
+            assembler.state = FragmentState::Skipping;
+            asset.discontinuity = true;
+            on_error_(ErrorCode::ResourceLimit, input_offset, true,
+                      "fragmented data MFU exceeds configured access-unit limit");
+            return false;
+        }
+        assembler.data.insert(assembler.data.end(), payload, payload + payload_size);
+        return true;
+    };
+    switch (fragmentation) {
+    case 0:
+        if (assembler.state == FragmentState::Collecting) {
+            assembler.data.clear();
+            asset.discontinuity = true;
+        }
+        assembler.state = FragmentState::Idle;
+        emit_data_unit(asset, mpu_sequence, item_id, payload, payload_size,
+                       input_offset, extensions);
+        break;
+    case 1:
+        assembler.data.clear();
+        assembler.state = FragmentState::Collecting;
+        assembler.mpu_sequence = mpu_sequence;
+        assembler.sample_number = item_id;
+        assembler.input_offset = input_offset;
+        assembler.download_id = extensions.download_id;
+        assembler.item_fragment_number = extensions.item_fragment_number;
+        assembler.last_item_fragment_number = extensions.last_item_fragment_number;
+        append_data();
+        break;
+    case 2:
+        if (assembler.state == FragmentState::Skipping) return;
+        if (assembler.state != FragmentState::Collecting ||
+            assembler.mpu_sequence != mpu_sequence || assembler.sample_number != item_id) {
+            assembler.data.clear();
+            assembler.state = FragmentState::Skipping;
+            asset.discontinuity = true;
+            return;
+        }
+        append_data();
+        break;
+    case 3:
+        if (assembler.state == FragmentState::Skipping) {
+            assembler.state = FragmentState::Idle;
+            assembler.data.clear();
+            return;
+        }
+        if (assembler.state != FragmentState::Collecting ||
+            assembler.mpu_sequence != mpu_sequence || assembler.sample_number != item_id) {
+            assembler.data.clear();
+            assembler.state = FragmentState::Idle;
+            asset.discontinuity = true;
+            return;
+        }
+        if (append_data()) {
+            PacketExtensions collected;
+            collected.download_id = assembler.download_id;
+            collected.item_fragment_number = assembler.item_fragment_number;
+            collected.last_item_fragment_number = assembler.last_item_fragment_number;
+            emit_data_unit(asset, assembler.mpu_sequence, assembler.sample_number,
+                           assembler.data.data(), assembler.data.size(),
+                           assembler.input_offset, collected);
+        }
+        assembler.data.clear();
+        assembler.state = FragmentState::Idle;
+        break;
+    default:
+        break;
+    }
+}
+
 void MmtpParser::parse_mpu(const std::uint16_t packet_id,
                            const std::uint32_t packet_sequence,
                            const std::uint32_t delivery_timestamp,
                            const bool random_access, const std::uint8_t* data,
-                           const std::size_t size, const std::uint64_t input_offset) {
+                           const std::size_t size, const std::uint64_t input_offset,
+                           const PacketExtensions& extensions) {
     if (size < 8) {
         on_error_(ErrorCode::MalformedInput, input_offset, true,
                   "truncated MMTP MPU payload");
@@ -1533,15 +1692,50 @@ void MmtpParser::parse_mpu(const std::uint16_t packet_id,
     if (fragment_type != 2) {
         return;
     }
-    const auto track_entry = tracks_.find(packet_id);
-    if (track_entry == tracks_.end()) return;
-    auto& track = track_entry->second;
-
     const auto flags = data[2];
     const bool timed = ((flags >> 3U) & 1U) != 0;
     const auto fragmentation = static_cast<std::uint8_t>((flags >> 1U) & 0x03U);
     const bool aggregation = (flags & 1U) != 0;
     const auto mpu_sequence = read_be32(data + 4);
+    const auto data_asset_entry = data_assets_.find(packet_id);
+    if (data_asset_entry != data_assets_.end()) {
+        auto& asset = data_asset_entry->second;
+        if (timed) {
+            asset.discontinuity = true;
+            on_error_(ErrorCode::UnsupportedFeature, input_offset, true,
+                      "timed data-asset MFU is unsupported");
+            return;
+        }
+        if (aggregation && fragmentation != 0) {
+            asset.discontinuity = true;
+            on_error_(ErrorCode::MalformedInput, input_offset, true,
+                      "aggregated data MPU payload is also fragmented");
+            return;
+        }
+        const auto* body = data + 8;
+        auto body_size = size - 8;
+        if (!aggregation) {
+            consume_data_piece(asset, packet_sequence, mpu_sequence, fragmentation,
+                               false, body, body_size, input_offset, extensions);
+            return;
+        }
+        while (body_size != 0) {
+            if (body_size < 2) return;
+            const auto unit_size = static_cast<std::size_t>(read_be16(body));
+            body += 2;
+            body_size -= 2;
+            if (unit_size > body_size) return;
+            consume_data_piece(asset, packet_sequence, mpu_sequence, 0, true,
+                               body, unit_size, input_offset, extensions);
+            body += unit_size;
+            body_size -= unit_size;
+        }
+        return;
+    }
+
+    const auto track_entry = tracks_.find(packet_id);
+    if (track_entry == tracks_.end()) return;
+    auto& track = track_entry->second;
     track.delivery_timestamps[mpu_sequence] = delivery_timestamp;
     while (track.delivery_timestamps.size() > 32) {
         track.delivery_timestamps.erase(track.delivery_timestamps.begin());
