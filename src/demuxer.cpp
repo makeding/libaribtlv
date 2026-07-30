@@ -85,7 +85,7 @@ public:
     void reset() {
         tlv_.reset();
         ip_.reset();
-        application_resources_.reset();
+        if (limits_.collect_application_resources) application_resources_.reset();
         services_.clear();
         current_tracks_.clear();
         application_services_.clear();
@@ -131,7 +131,7 @@ public:
     void select_service(std::optional<std::uint32_t> context_id) {
         selected_service_ = context_id;
         ip_.select_service(context_id);
-        application_resources_.reset();
+        if (limits_.collect_application_resources) application_resources_.reset();
         services_.clear();
         current_tracks_.clear();
         application_services_.clear();

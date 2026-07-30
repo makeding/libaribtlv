@@ -7,6 +7,31 @@ const KEYBOARD_KEYS = {
   5: 53, 6: 54, 7: 55, 8: 56, 9: 57,
 };
 
+export function createDemoProgramInfo(is8k, now = Date.now()) {
+  const startTime = new Date(now - 60 * 1000);
+  const duration = 24 * 60 * 60 * 1000;
+  const followingStartTime = new Date(startTime.getTime() + duration);
+  const eventName = is8k ? 'BS8K' : 'BS4K';
+  return {
+    original_network_id: 4,
+    transport_stream_id: 11,
+    service_id: is8k ? 102 : 101,
+    event_id: 1,
+    name: eventName,
+    event_name: eventName,
+    start_time: startTime,
+    duration,
+    desc: '',
+    event_text: '',
+    event_extended_text: '',
+    f_event_id: 2,
+    f_name: `${eventName} NEXT`,
+    f_start_time: followingStartTime,
+    f_duration: duration,
+    f_desc: '',
+  };
+}
+
 function isBackgroundHoleApplication(pathname) {
   return /\/(?:caption)\/source\//.test(String(pathname));
 }
@@ -113,6 +138,7 @@ export class DataBroadcastController {
     this.readyEntry = null;
     this.readyContextId = null;
     this.loadedEntry = null;
+    this.launchRequested = false;
     this.log = () => {};
 
     if (!window.ARIBHTML5?.AribReceiverHost) {
@@ -227,7 +253,8 @@ export class DataBroadcastController {
     }
   }
 
-  beginSession() {
+  beginSession(preserveLaunchRequest = false) {
+    const launchRequested = preserveLaunchRequest && this.launchRequested;
     this.sessionGeneration += 1;
     if (this.applicationLoadTimer !== null) clearTimeout(this.applicationLoadTimer);
     this.applicationLoadTimer = null;
@@ -240,6 +267,7 @@ export class DataBroadcastController {
     this.readyContextId = null;
     this.loadedEntry = null;
     this.readyResourceCount = 0;
+    this.launchRequested = launchRequested;
     this.url.textContent = '';
     this.setVisible(false);
     this.pendingWrites = this.bridge.begin();
@@ -330,7 +358,11 @@ export class DataBroadcastController {
     this.readyEntry = entry;
     this.readyContextId = state.contextId;
     this.readyResourceCount = state.resourceCount;
-    this.scheduleApplicationLoad(entry, state.contextId);
+    // Keep the broadcast application dormant until the viewer presses the
+    // data key, matching receiver behavior and keeping playback startup
+    // independent from application navigation.
+    this.status.textContent = 'データ放送準備完了';
+    if (this.launchRequested) this.scheduleApplicationLoad(entry, state.contextId, true);
   }
 
   scheduleApplicationLoad(entry, contextId, immediate = false) {
@@ -354,7 +386,7 @@ export class DataBroadcastController {
   }
 
   resourcesReset() {
-    this.beginSession();
+    this.beginSession(true);
   }
 
   loadApplication(path) {
@@ -370,18 +402,7 @@ export class DataBroadcastController {
       throw new Error(`許可されていないデータ放送 URL: ${resolved.href}`);
     }
     const is8k = resolved.pathname.startsWith('/sh8/');
-    const programStart = new Date(Date.now() - 60 * 1000);
-    this.host.setProgramInfo({
-      original_network_id: 4,
-      transport_stream_id: 11,
-      service_id: is8k ? 102 : 101,
-      event_id: 1,
-      event_name: is8k ? 'BS8K' : 'BS4K',
-      start_time: programStart,
-      duration: 24 * 60 * 60,
-      event_text: '',
-      event_extended_text: '',
-    });
+    this.host.setProgramInfo(createDemoProgramInfo(is8k));
     this.host.loadApplication(resolved.href);
     this.setVisible(true);
     this.setStatus('アプリケーション読込中', this.detail.textContent);
@@ -397,8 +418,15 @@ export class DataBroadcastController {
         'broadcast-video-plane-visible', 'broadcast-background-hole',
       );
     }
-    this.remote.classList.toggle('disabled', !visible);
-    this.remote.querySelectorAll('button').forEach(button => { button.disabled = !visible; });
+    this.updateRemoteAvailability();
+  }
+
+  updateRemoteAvailability() {
+    this.remote.classList.toggle('disabled', !this.visible);
+    this.remote.querySelectorAll('button').forEach(button => {
+      const isDataKey = Number(button.dataset.aribKey) === 457;
+      button.disabled = !this.visible && !isDataKey;
+    });
   }
 
   applicationUrlChanged(value) {
@@ -411,6 +439,7 @@ export class DataBroadcastController {
 
   dispatchKey(code) {
     if (code === 457 && !this.visible) {
+      this.launchRequested = true;
       if (!this.readyEntry) {
         this.setStatus('データ放送を準備中', this.detail.textContent);
         return;

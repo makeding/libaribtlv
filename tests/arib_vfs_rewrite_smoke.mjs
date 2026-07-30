@@ -3,6 +3,10 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
 const source = await readFile(new URL('../demo/arib-vfs-sw.js', import.meta.url), 'utf8');
+const controllerSource = await readFile(
+  new URL('../demo/data-broadcast.js', import.meta.url),
+  'utf8',
+);
 const context = {
   Map, Response, TextDecoder, TextEncoder, URL, Uint8Array, setTimeout,
   self: {
@@ -48,5 +52,21 @@ context.putPath('bsfuji4k/40/0000/html/index.html');
 assert.equal(context.hasBroadcastRoot('/bsfuji4k/40/0000/html/index.html'), true);
 assert.equal(context.hasBroadcastRoot('/bsfuji4k/40/0000/css/main.css'), true);
 assert.equal(context.hasBroadcastRoot('/demo/demo.js'), false);
+
+const controllerContext = { Date };
+vm.runInNewContext(`${controllerSource.replace(/^export /gm, '')}
+this.createDemoProgramInfo = createDemoProgramInfo;
+`, controllerContext);
+const now = Date.UTC(2026, 6, 31, 12, 0, 0);
+const program = controllerContext.createDemoProgramInfo(false, now);
+assert.equal(program.duration, 24 * 60 * 60 * 1000);
+assert.equal(program.f_duration, program.duration);
+assert.equal(program.start_time.getTime(), now - 60 * 1000);
+assert.equal(
+  program.f_start_time.getTime(),
+  program.start_time.getTime() + program.duration,
+);
+assert.equal(program.name, 'BS4K');
+assert.equal(program.f_name, 'BS4K NEXT');
 
 console.log('ARIB VFS HTML rewrite smoke test passed');

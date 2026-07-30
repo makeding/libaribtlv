@@ -41,8 +41,10 @@ try {
     const count = fs.readSync(input, buffer, 0, buffer.length, null)
     if (count === 0) break
     demuxer.push(new Uint8Array(buffer.buffer, buffer.byteOffset, count))
+    demuxer.drainApplicationResources(32)
   }
   demuxer.flush()
+  demuxer.drainApplicationResources(0)
   virtualFiles = demuxer.applicationResources(null)
   virtualEntry = demuxer.applicationEntry(1)
   const entry = demuxer.applicationResource(1, virtualEntry)

@@ -42,6 +42,7 @@ dataBroadcast.setLogger(appendLog);
 let wasmModule = null;
 let activeProbe = null;
 let activeDemuxer = null;
+let activeApplicationDrainState = null;
 let activeController = null;
 let activeMediaSource = null;
 let activeObjectUrl = null;
@@ -557,6 +558,8 @@ function stopPlayback(quiet = false, preserveMedia = false) {
   activeController?.abort();
   activeProbe?.cancel();
   activeProbe?.delete();
+  if (activeApplicationDrainState) activeApplicationDrainState.alive = false;
+  activeApplicationDrainState = null;
   activeDemuxer?.delete();
   activeController = null;
   activeProbe = null;
@@ -952,6 +955,28 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   });
   demuxer.setMseOutputEnabled(!suppressOutput);
   activeDemuxer = demuxer;
+  const applicationDrainState = { alive: true, scheduled: false };
+  activeApplicationDrainState = applicationDrainState;
+  const scheduleApplicationDrain = () => {
+    if (applicationDrainState.scheduled || !applicationDrainState.alive) return;
+    applicationDrainState.scheduled = true;
+    const run = () => {
+      applicationDrainState.scheduled = false;
+      if (!applicationDrainState.alive || generation !== runGeneration) return;
+      try {
+        if (demuxer.drainApplicationResources(32)) scheduleApplicationDrain();
+      } catch (error) {
+        callbackError = error;
+      }
+    };
+    if (globalThis.scheduler?.postTask) {
+      globalThis.scheduler.postTask(run, { priority: 'background' }).catch(error => {
+        callbackError = error;
+      });
+    } else {
+      setTimeout(run, 0);
+    }
+  };
   activeAudioSwitch = async packetId => {
     const track = [...tracks.values()].find(item => item.kind === 'audio' && item.packetId === packetId);
     if (!track) throw new Error(`音声 packet_id=0x${packetId.toString(16)} は利用できません`);
@@ -992,6 +1017,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       const data = await source.read(headEnd, length);
       if (generation !== runGeneration) return;
       if (!demuxer.push(data)) throw new Error(`先頭解析に失敗しました: ${headEnd}`);
+      scheduleApplicationDrain();
       if (callbackError) throw callbackError;
       headEnd += length;
       playbackBytes += length;
@@ -1018,6 +1044,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         const data = await source.read(probeOffset, length);
         if (generation !== runGeneration) return;
         if (!demuxer.push(data)) throw new Error(`シーク位置の検証に失敗しました: ${probeOffset}`);
+        scheduleApplicationDrain();
         if (callbackError) throw callbackError;
         probeOffset += length;
         playbackBytes += length;
@@ -1047,6 +1074,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     for await (const data of source.stream()) {
       if (generation !== runGeneration) return;
       if (!demuxer.push(data)) throw new Error(`Live 分離入力に失敗しました: ${playbackBytes}`);
+      scheduleApplicationDrain();
       if (callbackError) throw callbackError;
       playbackBytes += BigInt(data.byteLength);
       elements.transferred.textContent = `${formatBytes(playbackBytes)} / ${bufferedAhead().toFixed(1)}s`;
@@ -1062,6 +1090,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     const data = await source.read(offset, length);
     if (generation !== runGeneration) return;
     if (!demuxer.push(data)) throw new Error(`分離入力に失敗しました: ${offset}`);
+    scheduleApplicationDrain();
     if (callbackError) throw callbackError;
     offset += length;
     playbackBytes += length;
@@ -1074,9 +1103,15 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   }
   if (generation !== runGeneration) return;
   demuxer.flush();
+  while (demuxer.drainApplicationResources(256)) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    if (generation !== runGeneration) return;
+  }
   if (callbackError) throw callbackError;
   if (!liveMode) demuxer.finalizeIndex();
   appendLog(`索引 RAP ${demuxer.seekPointCount()} 点、状態=${demuxer.indexState()}`);
+  applicationDrainState.alive = false;
+  if (activeApplicationDrainState === applicationDrainState) activeApplicationDrainState = null;
   demuxer.delete();
   activeDemuxer = null;
   activeAudioSwitch = null;
@@ -1157,6 +1192,8 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false, operationLa
     if (generation === runGeneration) {
       activeProbe?.delete();
       activeProbe = null;
+      if (activeApplicationDrainState) activeApplicationDrainState.alive = false;
+      activeApplicationDrainState = null;
       activeDemuxer?.delete();
       activeDemuxer = null;
       activeController = null;

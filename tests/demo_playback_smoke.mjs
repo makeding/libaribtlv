@@ -122,8 +122,12 @@ function assertNoLeadingPicturesAfterRap(segments) {
   const nominalDuration = sampleDurations[Math.floor(sampleDurations.length / 2)];
   for (let index = 1; index < presentationPts.length; index += 1) {
     const gap = presentationPts[index] - presentationPts[index - 1];
-    assert.ok(gap <= nominalDuration * 2,
-      `video presentation gap ${gap} exceeds two frames (${nominalDuration * 2})`);
+    // VideoToolbox treats each CRA as a decoder restart, so the RASL pictures
+    // associated with it cannot safely be submitted through MSE on macOS.
+    // Seven leading pictures plus the normal frame interval form this gap.
+    assert.ok(gap <= nominalDuration * 9 + 1,
+      `video presentation gap ${gap} at ${presentationPts[index - 1]} -> ` +
+      `${presentationPts[index]} exceeds the CRA recovery window (${nominalDuration * 9})`);
   }
 }
 

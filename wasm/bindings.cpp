@@ -1,13 +1,16 @@
 #include <tlvdemux/demuxer.hpp>
 #include <tlvdemux/duration_probe.hpp>
+#include <tlvdemux/application_resources.hpp>
 
 #include "mse_remuxer.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <emscripten/bind.h>
@@ -216,10 +219,12 @@ private:
     tlvdemux::DurationProbe probe_;
 };
 
-class WasmDemuxer final : public tlvdemux::Sink {
+class WasmDemuxer final : public tlvdemux::Sink,
+                          public tlvdemux::ApplicationResourceSink {
 public:
     explicit WasmDemuxer(val callbacks)
-        : callbacks_(std::move(callbacks)), demuxer_(*this), mse_remuxer_(callbacks_) {
+        : callbacks_(std::move(callbacks)), application_assembler_(*this),
+          demuxer_(*this, media_limits()), mse_remuxer_(callbacks_) {
         mse_enabled_ = has_callback("onMseInit") || has_callback("onMseSegment");
     }
 
@@ -246,17 +251,20 @@ public:
         if (mse_enabled_) mse_remuxer_.flush();
     }
     void reset() {
+        reset_application_resources();
         demuxer_.reset();
         if (mse_enabled_) mse_remuxer_.reset();
         if (index_active_) recording_index_.begin(index_growing_);
     }
 
     void reposition(const std::uint64_t input_offset, const bool preserve_timeline) {
+        reset_application_resources();
         demuxer_.reposition(tlvdemux::RepositionOptions{input_offset, preserve_timeline});
         if (mse_enabled_) mse_remuxer_.reposition();
     }
 
     void selectService(const val& context_id) {
+        reset_application_resources();
         demuxer_.selectService(optional_number<std::uint32_t>(context_id));
         if (index_active_) recording_index_.begin(index_growing_);
     }
@@ -278,6 +286,17 @@ public:
 
     void setMseOutputEnabled(const bool enabled) {
         mse_remuxer_.setOutputEnabled(enabled);
+    }
+
+    bool drainApplicationResources(std::size_t max_events) {
+        if (max_events == 0) max_events = application_events_.size();
+        while (max_events-- != 0 && !application_events_.empty()) {
+            auto event = std::move(application_events_.front());
+            application_events_.pop_front();
+            std::visit([this](auto&& value) { consume_application_event(std::move(value)); },
+                       std::move(event));
+        }
+        return !application_events_.empty();
     }
 
     void startIndex(const bool growing) {
@@ -424,6 +443,22 @@ public:
         emit("onAccessUnit", access_unit_event(unit, copy_bytes(unit.data)));
     }
 
+    void onApplication(const tlvdemux::ApplicationInfo& info) override {
+        application_events_.emplace_back(info);
+    }
+
+    void onDataDirectoryTable(const tlvdemux::DataDirectoryTable& table) override {
+        application_events_.emplace_back(table);
+    }
+
+    void onDataAssetManagementTable(const tlvdemux::DataAssetManagementTable& table) override {
+        application_events_.emplace_back(table);
+    }
+
+    void onDataUnit(tlvdemux::DataUnit&& unit) override {
+        application_events_.emplace_back(std::move(unit));
+    }
+
     void onError(const tlvdemux::Error& error) override {
         auto event = val::object();
         event.set("code", std::string(error_code_name(error.code)));
@@ -466,6 +501,35 @@ public:
     }
 
 private:
+    using ApplicationEvent = std::variant<tlvdemux::ApplicationInfo,
+                                          tlvdemux::DataDirectoryTable,
+                                          tlvdemux::DataAssetManagementTable,
+                                          tlvdemux::DataUnit>;
+
+    static tlvdemux::Limits media_limits() {
+        auto limits = tlvdemux::Limits{};
+        limits.collect_application_resources = false;
+        return limits;
+    }
+
+    void reset_application_resources() {
+        application_events_.clear();
+        application_assembler_.reset();
+    }
+
+    void consume_application_event(tlvdemux::ApplicationInfo info) {
+        application_assembler_.onApplication(info);
+    }
+    void consume_application_event(tlvdemux::DataDirectoryTable table) {
+        application_assembler_.onDataDirectoryTable(table);
+    }
+    void consume_application_event(tlvdemux::DataAssetManagementTable table) {
+        application_assembler_.onDataAssetManagementTable(table);
+    }
+    void consume_application_event(tlvdemux::DataUnit unit) {
+        application_assembler_.onDataUnit(unit);
+    }
+
     static val access_unit_event(const tlvdemux::AccessUnit& unit, const val& data) {
         auto event = val::object();
         event.set("trackId", unit.track_id);
@@ -579,6 +643,8 @@ private:
     }
 
     val callbacks_;
+    tlvdemux::ApplicationResourceAssembler application_assembler_;
+    std::deque<ApplicationEvent> application_events_;
     tlvdemux::Demuxer demuxer_;
     tlvdemux::ApplicationResourceStore application_resources_;
     WasmMseRemuxer mse_remuxer_;
@@ -601,6 +667,7 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("selectService", &WasmDemuxer::selectService)
         .function("selectTrack", &WasmDemuxer::selectTrack)
         .function("setMseOutputEnabled", &WasmDemuxer::setMseOutputEnabled)
+        .function("drainApplicationResources", &WasmDemuxer::drainApplicationResources)
         .function("startIndex", &WasmDemuxer::startIndex)
         .function("finalizeIndex", &WasmDemuxer::finalizeIndex)
         .function("indexState", &WasmDemuxer::indexState)

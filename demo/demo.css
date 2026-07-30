@@ -177,6 +177,7 @@ h2 { font-size: 15px; }
 
 .data-remote-status span { margin-top: 3px; color: #91a49a; font-size: 10px; }
 .data-remote.disabled { opacity: .68; }
+.data-remote.disabled [data-arib-key="457"] { opacity: 1; }
 .color-keys { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-top: 10px; }
 .color-keys button { color: #fff; font-size: 18px; }
 .color-keys .blue { background: #0875cf; }
