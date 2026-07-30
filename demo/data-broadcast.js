@@ -141,7 +141,7 @@ export class DataBroadcastController {
     this.readyContextId = null;
     this.loadedEntry = null;
     this.is8k = false;
-    this.launchRequested = false;
+    this.showRequested = false;
     this.log = () => {};
 
     if (!window.ARIBHTML5?.AribReceiverHost) {
@@ -256,8 +256,7 @@ export class DataBroadcastController {
     }
   }
 
-  beginSession(preserveLaunchRequest = false) {
-    const launchRequested = preserveLaunchRequest && this.launchRequested;
+  beginSession() {
     this.sessionGeneration += 1;
     if (this.applicationLoadTimer !== null) clearTimeout(this.applicationLoadTimer);
     this.applicationLoadTimer = null;
@@ -271,7 +270,7 @@ export class DataBroadcastController {
     this.loadedEntry = null;
     this.host.clearBroadcastClock();
     this.readyResourceCount = 0;
-    this.launchRequested = launchRequested;
+    this.showRequested = false;
     this.url.textContent = '';
     this.setVisible(false);
     this.pendingWrites = this.bridge.begin();
@@ -317,12 +316,15 @@ export class DataBroadcastController {
       },
     });
     this.scheduleResourceDrain();
-    // entryReady can precede delivery of the entry resource. Resume the same
-    // launch request when its VFS write barrier appears, so one d-data press
-    // cannot be lost in that callback ordering window.
-    if (this.launchRequested && this.readyEntry === notification.path &&
+    // entryReady can precede delivery of the entry resource. Start the
+    // broadcast startup application as soon as its VFS write barrier exists.
+    if (this.readyEntry === notification.path &&
         this.readyContextId === notification.contextId) {
       this.scheduleApplicationLoad(this.readyEntry, this.readyContextId, true);
+    }
+    if (this.showRequested) {
+      const application = this.visibleApplication();
+      if (application) this.showApplication(application.path, application.contextId);
     }
   }
 
@@ -388,7 +390,11 @@ export class DataBroadcastController {
     this.readyContextId = state.contextId;
     this.readyResourceCount = state.resourceCount;
     this.status.textContent = 'データ放送準備完了';
-    if (this.launchRequested) this.scheduleApplicationLoad(entry, state.contextId, true);
+    this.scheduleApplicationLoad(entry, state.contextId, true);
+    if (this.showRequested) {
+      const application = this.visibleApplication();
+      if (application) this.showApplication(application.path, application.contextId);
+    }
   }
 
   scheduleApplicationLoad(entry, contextId, immediate = false) {
@@ -404,18 +410,18 @@ export class DataBroadcastController {
       if (entryBarrier === undefined) return;
       this.waitForResources(entryBarrier).then(() => {
         if (sessionGeneration !== this.sessionGeneration || this.readyEntry !== entry) return;
-        this.loadApplication(`/${entry}`);
+        this.loadApplication(`/${entry}`, false, contextId);
         this.loadedEntry = entry;
-        this.log(`データ放送 entry /${entry} (${this.readyResourceCount} files)`);
+        this.log(`データ放送 バックグラウンド起動 /${entry} (${this.readyResourceCount} files)`);
       }).catch(error => this.setStatus('アプリケーション起動失敗', error.message));
     }, immediate ? 0 : 300);
   }
 
   resourcesReset() {
-    this.beginSession(true);
+    this.beginSession();
   }
 
-  loadApplication(path) {
+  loadApplication(path, visible, contextId = this.readyContextId) {
     const resolved = new URL(path, location.href);
     let decodedPath = '';
     try {
@@ -423,16 +429,59 @@ export class DataBroadcastController {
     } catch {
       // Keep the empty value so malformed URL escapes fail the check below.
     }
-    if (resolved.origin !== location.origin ||
-        decodedPath !== `/${this.readyEntry}`) {
+    const resourcePath = decodedPath.slice(1);
+    const resourceKey = `${contextId}:${resourcePath}`;
+    if (resolved.origin !== location.origin || !this.resourceSequenceByPath.has(resourceKey)) {
       throw new Error(`許可されていないデータ放送 URL: ${resolved.href}`);
     }
     const is8k = resolved.pathname.startsWith('/sh8/');
     this.is8k = is8k;
     this.host.setProgramInfo(createDemoProgramInfo(is8k, this.host.getBroadcastTime()));
     this.host.loadApplication(resolved.href);
-    this.setVisible(true);
-    this.setStatus('アプリケーション読込中', this.detail.textContent);
+    this.visible = visible;
+    this.viewport.classList.toggle('data-broadcast-visible', visible);
+    this.setStatus(visible ? 'データ放送へ移動中' : 'データ放送準備完了', this.detail.textContent);
+  }
+
+  visibleApplication() {
+    if (!this.readyEntry) return null;
+    const serviceRoot = this.readyEntry.split('/', 1)[0];
+    const candidates = [];
+    for (const [key, sequence] of this.resourceSequenceByPath) {
+      const separator = key.indexOf(':');
+      const contextId = Number(key.slice(0, separator));
+      const path = key.slice(separator + 1);
+      if (!Number.isInteger(contextId) || !path.startsWith(`${serviceRoot}/`)) continue;
+      if (!/\/top\/source\/index[^/]*\.html$/i.test(path)) continue;
+      candidates.push({ contextId, path, sequence });
+    }
+    candidates.sort((left, right) => {
+      const leftPreferred = /\/60\/[^/]+\/top\/source\//.test(left.path) ? 0 : 1;
+      const rightPreferred = /\/60\/[^/]+\/top\/source\//.test(right.path) ? 0 : 1;
+      return leftPreferred - rightPreferred || left.sequence - right.sequence;
+    });
+    return candidates[0] || null;
+  }
+
+  showApplication(entry, contextId = this.readyContextId) {
+    if (!entry || contextId === null) return;
+    const barrier = this.resourceSequenceByPath.get(`${contextId}:${entry}`);
+    if (barrier === undefined) {
+      this.setStatus('データ放送を準備中', this.detail.textContent);
+      return;
+    }
+    if (this.applicationLoadTimer !== null) {
+      clearTimeout(this.applicationLoadTimer);
+      this.applicationLoadTimer = null;
+    }
+    const sessionGeneration = this.sessionGeneration;
+    this.waitForResources(barrier).then(() => {
+      if (!this.showRequested || sessionGeneration !== this.sessionGeneration) return;
+      this.loadApplication(`/${entry}`, true, contextId);
+      this.loadedEntry = entry;
+      this.showRequested = false;
+      this.log(`データ放送 表示ページ /${entry}`);
+    }).catch(error => this.setStatus('アプリケーション起動失敗', error.message));
   }
 
   setVisible(visible) {
@@ -457,17 +506,14 @@ export class DataBroadcastController {
 
   dispatchKey(code) {
     if (code === 457 && !this.visible) {
-      this.launchRequested = true;
+      this.showRequested = true;
       if (!this.readyEntry) {
         this.setStatus('データ放送を準備中', this.detail.textContent);
         return;
       }
-      if (this.loadedEntry === this.readyEntry) {
-        this.setVisible(true);
-        return;
-      }
-      this.scheduleApplicationLoad(this.readyEntry, this.readyContextId, true);
-      this.setStatus('データ放送を起動中', this.detail.textContent);
+      const application = this.visibleApplication();
+      if (application) this.showApplication(application.path, application.contextId);
+      else this.setStatus('データ放送を準備中', this.detail.textContent);
       return;
     }
     if (!this.visible) return;
