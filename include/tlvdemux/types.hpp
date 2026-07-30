@@ -49,6 +49,16 @@ struct Timestamp {
     std::uint32_t timescale = 1;
 };
 
+// A point which maps the normalized media timeline to the absolute broadcast
+// clock. broadcast_time uses the NTP epoch; consumers may project any media
+// position from this anchor without tying clock progression to demux speed.
+struct BroadcastClock {
+    Timestamp media_time;
+    Timestamp broadcast_time;
+    std::uint64_t input_offset = 0;
+    bool discontinuity = false;
+};
+
 struct SubtitleInfo {
     std::uint8_t tag = 0;
     std::uint8_t info_version = 0;

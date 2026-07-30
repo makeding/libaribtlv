@@ -22,6 +22,7 @@ public:
     virtual void onTrack(const TrackInfo&) = 0;
     virtual void onAccessUnit(AccessUnit&&) = 0;
     virtual void onError(const Error&) = 0;
+    virtual void onBroadcastClock(const BroadcastClock&) {}
     virtual void onApplicationService(const ApplicationServiceInfo&) {}
     virtual void onDataAsset(const DataAssetInfo&) {}
     virtual void onDataUnit(DataUnit&&) {}
@@ -52,6 +53,7 @@ public:
     void reposition(RepositionOptions);
     void selectService(std::optional<std::uint32_t> context_id);
     void selectTrack(TrackKind kind, std::optional<std::uint64_t> track_id);
+    std::optional<BroadcastClock> broadcastClock() const;
 
 private:
     class Impl;

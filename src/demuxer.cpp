@@ -96,6 +96,8 @@ public:
         data_asset_management_versions_.clear();
         error_counts_.clear();
         origin_.reset();
+        broadcast_clock_.reset();
+        last_clock_mpu_sequence_.reset();
         reposition_epoch_ = 0;
         emitted_reposition_epochs_.clear();
         input_end_offset_ = 0;
@@ -112,6 +114,8 @@ public:
         tlv_.reset(options.input_offset);
         ip_.reset();
         if (!options.preserve_timeline) origin_.reset();
+        if (!options.preserve_timeline) broadcast_clock_.reset();
+        last_clock_mpu_sequence_.reset();
         input_end_offset_ = options.input_offset;
         for (std::size_t index = 0; index < selected_tracks_.size(); ++index) {
             selection_boundaries_[index] = options.input_offset;
@@ -137,6 +141,8 @@ public:
         data_directory_versions_.clear();
         data_asset_management_versions_.clear();
         origin_.reset();
+        broadcast_clock_.reset();
+        last_clock_mpu_sequence_.reset();
     }
 
     void select_track(const TrackKind kind, std::optional<std::uint64_t> track_id) {
@@ -147,7 +153,10 @@ public:
         selection_pending_[index] = track_id.has_value();
         selection_wait_for_rap_[index] =
             kind == TrackKind::Video && track_id.has_value();
+        if (kind == TrackKind::Video) last_clock_mpu_sequence_.reset();
     }
+
+    std::optional<BroadcastClock> broadcast_clock() const { return broadcast_clock_; }
 
 private:
     static bool same_track(const TrackInfo& left, const TrackInfo& right) {
@@ -411,6 +420,7 @@ private:
                   "access unit has an invalid or inconsistent timescale");
             return;
         }
+        const auto presentation_offset = unit.pts;
         if (!origin_.has_value()) {
             origin_ = TimelineOrigin{timed.source_ntp_raw, unit.pts.value, unit.pts.timescale};
         }
@@ -436,6 +446,30 @@ private:
         }
         unit.pts.value = normalized_pts;
         unit.dts.value = normalized_dts;
+
+        if (track_info->second.kind == TrackKind::Video && unit.source_ntp.has_value()) {
+            std::int64_t offset_us = 0;
+            std::int64_t broadcast_us = 0;
+            if (rescale_offset(presentation_offset.value, presentation_offset.timescale,
+                               1000000, offset_us) &&
+                add_checked(unit.source_ntp->value, offset_us, broadcast_us)) {
+                broadcast_clock_ = BroadcastClock{
+                    unit.pts,
+                    Timestamp{broadcast_us, 1000000},
+                    unit.input_offset,
+                    unit.discontinuity,
+                };
+                if (!last_clock_mpu_sequence_.has_value() ||
+                    last_clock_mpu_sequence_ != unit.mpu_sequence_number ||
+                    unit.discontinuity) {
+                    last_clock_mpu_sequence_ = unit.mpu_sequence_number;
+                    sink_.onBroadcastClock(*broadcast_clock_);
+                }
+            } else {
+                error(ErrorCode::Discontinuity, unit.input_offset, true,
+                      "broadcast clock mapping overflowed");
+            }
+        }
         if (track_info->second.subtitle &&
             track_info->second.subtitle->reference_start_ntp) {
             std::int64_t reference_ticks = 0;
@@ -501,6 +535,8 @@ private:
         std::uint32_t timescale = 1;
     };
     std::optional<TimelineOrigin> origin_;
+    std::optional<BroadcastClock> broadcast_clock_;
+    std::optional<std::uint32_t> last_clock_mpu_sequence_;
 };
 
 Demuxer::Demuxer(Sink& sink) : Demuxer(sink, Limits{}) {}
@@ -534,6 +570,10 @@ void Demuxer::selectService(std::optional<std::uint32_t> context_id) {
 
 void Demuxer::selectTrack(const TrackKind kind, std::optional<std::uint64_t> track_id) {
     impl_->select_track(kind, track_id);
+}
+
+std::optional<BroadcastClock> Demuxer::broadcastClock() const {
+    return impl_->broadcast_clock();
 }
 
 } // namespace tlvdemux

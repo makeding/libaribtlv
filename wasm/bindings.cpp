@@ -130,6 +130,17 @@ val seek_point_value(const tlvdemux::SeekPoint& point) {
     return result;
 }
 
+val broadcast_clock_value(const tlvdemux::BroadcastClock& clock) {
+    auto result = val::object();
+    result.set("mediaTimeValue", clock.media_time.value);
+    result.set("mediaTimeTimescale", clock.media_time.timescale);
+    result.set("broadcastTimeValue", clock.broadcast_time.value);
+    result.set("broadcastTimeTimescale", clock.broadcast_time.timescale);
+    result.set("inputOffset", clock.input_offset);
+    result.set("discontinuity", clock.discontinuity);
+    return result;
+}
+
 class WasmDurationProbe final {
 public:
     bool begin(const std::uint64_t source_size, const val& js_options) {
@@ -322,6 +333,46 @@ public:
         return offset.has_value() ? val(*offset) : val::null();
     }
 
+    val applicationResources(const val& context_id) const {
+        const auto resources = application_resources_.list(
+            optional_number<std::uint32_t>(context_id));
+        auto result = val::array();
+        for (std::size_t index = 0; index < resources.size(); ++index) {
+            result.set(index, application_resource_metadata_event(resources[index]));
+        }
+        return result;
+    }
+
+    val applicationResource(const std::uint32_t context_id,
+                            const std::string& path) const {
+        const auto resource = application_resources_.get(context_id, path);
+        if (!resource) return val::null();
+        return application_resource_event(*resource, copy_bytes(resource->data));
+    }
+
+    val applicationEntry(const std::uint32_t context_id) const {
+        const auto path = application_resources_.entryPath(context_id);
+        return path.has_value() ? val(*path) : val::null();
+    }
+
+    val applications() const {
+        const auto applications = application_resources_.applications();
+        auto result = val::array();
+        for (std::size_t index = 0; index < applications.size(); ++index) {
+            result.set(index, application_state_event(applications[index]));
+        }
+        return result;
+    }
+
+    std::uint64_t applicationResourceGeneration() const {
+        return application_resources_.generation();
+    }
+
+    val broadcastClock() const {
+        const auto clock = demuxer_.broadcastClock();
+        return clock.has_value() ? broadcast_clock_value(*clock) : val::null();
+    }
+
     void onService(const tlvdemux::ServiceInfo& info) override {
         auto event = val::object();
         event.set("contextId", info.context_id);
@@ -382,41 +433,35 @@ public:
         emit("onError", event);
     }
 
+    void onBroadcastClock(const tlvdemux::BroadcastClock& clock) override {
+        emit("onBroadcastClock", broadcast_clock_value(clock));
+    }
+
     void onApplicationState(const tlvdemux::ApplicationState& state) override {
-        auto event = val::object();
-        event.set("contextId", state.application.context_id);
-        event.set("sourcePacketId", state.application.source_packet_id);
-        event.set("applicationType", state.application.application_type);
-        event.set("organizationId", state.application.organization_id);
-        event.set("applicationId", state.application.application_id);
-        event.set("controlCode", state.application.control_code);
-        event.set("version", state.application.version);
-        event.set("entryPath", state.application.entry_path);
-        auto urls = val::array();
-        for (std::size_t index = 0; index < state.application.transport_urls.size(); ++index) {
-            urls.set(index, state.application.transport_urls[index]);
-        }
-        event.set("transportUrls", urls);
-        event.set("state", std::string(application_collection_state_name(state.state)));
-        event.set("entryReady", state.entry_ready);
-        event.set("resourceCount", state.resource_count);
-        emit("onApplicationState", event);
+        application_resources_.onApplicationState(state);
+        emit("onApplicationState", application_state_event(state));
     }
 
     void onApplicationResource(tlvdemux::ApplicationResource&& resource) override {
+        const auto context_id = resource.context_id;
+        const auto path = resource.path;
+        application_resources_.onApplicationResource(std::move(resource));
+        const auto stored = application_resources_.get(context_id, path);
+        if (!stored) return;
         if (has_callback("onApplicationResourceView")) {
-            auto event = application_resource_event(resource, view_bytes(resource.data));
+            auto event = application_resource_event(*stored, view_bytes(stored->data));
             event.set("dataLifetime", std::string("callback"));
             emit("onApplicationResourceView", event);
             return;
         }
         if (has_callback("onApplicationResource")) {
             emit("onApplicationResource",
-                 application_resource_event(resource, copy_bytes(resource.data)));
+                 application_resource_event(*stored, copy_bytes(stored->data)));
         }
     }
 
     void onApplicationResourcesReset() override {
+        application_resources_.onApplicationResourcesReset();
         emit("onApplicationResourcesReset", val::object());
     }
 
@@ -477,6 +522,45 @@ private:
         return event;
     }
 
+    static val application_resource_metadata_event(
+        const tlvdemux::ApplicationResourceMetadata& resource) {
+        auto event = val::object();
+        event.set("contextId", resource.context_id);
+        event.set("componentTag", resource.component_tag);
+        event.set("transactionId", resource.transaction_id);
+        event.set("downloadId", resource.download_id);
+        event.set("mpuSequenceNumber", resource.mpu_sequence_number);
+        event.set("itemId", resource.item_id);
+        event.set("version", resource.version);
+        event.set("path", resource.path);
+        event.set("contentType", resource.content_type);
+        event.set("size", resource.size);
+        event.set("generation", resource.generation);
+        return event;
+    }
+
+    static val application_state_event(const tlvdemux::ApplicationState& state) {
+        auto event = val::object();
+        event.set("contextId", state.application.context_id);
+        event.set("sourcePacketId", state.application.source_packet_id);
+        event.set("applicationType", state.application.application_type);
+        event.set("organizationId", state.application.organization_id);
+        event.set("applicationId", state.application.application_id);
+        event.set("controlCode", state.application.control_code);
+        event.set("version", state.application.version);
+        event.set("entryPath", state.application.entry_path);
+        auto urls = val::array();
+        for (std::size_t index = 0;
+             index < state.application.transport_urls.size(); ++index) {
+            urls.set(index, state.application.transport_urls[index]);
+        }
+        event.set("transportUrls", urls);
+        event.set("state", std::string(application_collection_state_name(state.state)));
+        event.set("entryReady", state.entry_ready);
+        event.set("resourceCount", state.resource_count);
+        return event;
+    }
+
     bool has_callback(const char* name) const {
         if (callbacks_.isNull() || callbacks_.isUndefined()) return false;
         return callbacks_[name].typeOf().as<std::string>() == "function";
@@ -496,6 +580,7 @@ private:
 
     val callbacks_;
     tlvdemux::Demuxer demuxer_;
+    tlvdemux::ApplicationResourceStore application_resources_;
     WasmMseRemuxer mse_remuxer_;
     tlvdemux::RecordingIndex recording_index_;
     bool index_active_ = false;
@@ -525,7 +610,14 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("indexedVideoTrack", &WasmDemuxer::indexedVideoTrack)
         .function("previousSync", &WasmDemuxer::previousSync)
         .function("seekPointsFor", &WasmDemuxer::seekPointsFor)
-        .function("estimateOffset", &WasmDemuxer::estimateOffset);
+        .function("estimateOffset", &WasmDemuxer::estimateOffset)
+        .function("applicationResources", &WasmDemuxer::applicationResources)
+        .function("applicationResource", &WasmDemuxer::applicationResource)
+        .function("applicationEntry", &WasmDemuxer::applicationEntry)
+        .function("applications", &WasmDemuxer::applications)
+        .function("applicationResourceGeneration",
+                  &WasmDemuxer::applicationResourceGeneration)
+        .function("broadcastClock", &WasmDemuxer::broadcastClock);
 
     emscripten::class_<WasmDurationProbe>("DurationProbe")
         .constructor<>()
