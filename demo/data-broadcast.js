@@ -9,7 +9,9 @@ const KEYBOARD_KEYS = {
 
 export function createDemoProgramInfo(is8k, now = Date.now()) {
   const startTime = new Date(now - 60 * 1000);
-  const duration = 24 * 60 * 60 * 1000;
+  // MH-EIT is not decoded yet. Keep this clearly synthetic, but anchor it to
+  // the recording clock and avoid the misleading same-time 24-hour range.
+  const duration = 30 * 60 * 1000;
   const followingStartTime = new Date(startTime.getTime() + duration);
   const eventName = is8k ? 'BS8K' : 'BS4K';
   return {
@@ -138,6 +140,7 @@ export class DataBroadcastController {
     this.readyEntry = null;
     this.readyContextId = null;
     this.loadedEntry = null;
+    this.is8k = false;
     this.launchRequested = false;
     this.log = () => {};
 
@@ -266,6 +269,7 @@ export class DataBroadcastController {
     this.readyEntry = null;
     this.readyContextId = null;
     this.loadedEntry = null;
+    this.host.clearBroadcastClock();
     this.readyResourceCount = 0;
     this.launchRequested = launchRequested;
     this.url.textContent = '';
@@ -273,6 +277,24 @@ export class DataBroadcastController {
     this.pendingWrites = this.bridge.begin();
     this.pendingWrites.catch(error => this.setStatus('VFS エラー', error.message));
     this.setStatus('データ放送を収集中', '0 ファイル');
+  }
+
+  broadcastClockChanged(clock) {
+    const broadcastTimescale = Number(clock.broadcastTimeTimescale);
+    const mediaTimescale = Number(clock.mediaTimeTimescale);
+    if (!(broadcastTimescale > 0) || !(mediaTimescale > 0)) return;
+    const ntpMilliseconds = Number(clock.broadcastTimeValue) * 1000 / broadcastTimescale;
+    const unixMilliseconds = ntpMilliseconds - 2208988800 * 1000;
+    const mediaTimeSeconds = Number(clock.mediaTimeValue) / mediaTimescale;
+    if (!Number.isFinite(unixMilliseconds) || !Number.isFinite(mediaTimeSeconds)) return;
+    this.host.setBroadcastClock({
+      epochMilliseconds: unixMilliseconds,
+      mediaTimeSeconds,
+      currentMediaTimeSeconds: () => this.video.currentTime,
+    });
+    if (this.loadedEntry) {
+      this.host.setProgramInfo(createDemoProgramInfo(this.is8k, this.host.getBroadcastTime()));
+    }
   }
 
   resourceChanged(notification) {
@@ -358,11 +380,11 @@ export class DataBroadcastController {
     this.readyEntry = entry;
     this.readyContextId = state.contextId;
     this.readyResourceCount = state.resourceCount;
-    // Keep the broadcast application dormant until the viewer presses the
-    // data key, matching receiver behavior and keeping playback startup
-    // independent from application navigation.
     this.status.textContent = 'データ放送準備完了';
-    if (this.launchRequested) this.scheduleApplicationLoad(entry, state.contextId, true);
+    // Start the receiver application as soon as its entry file is available,
+    // but keep the iframe hidden. The data key then only reveals an already
+    // initialized application instead of becoming a second-stage load button.
+    this.scheduleApplicationLoad(entry, state.contextId, this.launchRequested);
   }
 
   scheduleApplicationLoad(entry, contextId, immediate = false) {
@@ -378,7 +400,7 @@ export class DataBroadcastController {
       if (entryBarrier === undefined) return;
       this.waitForResources(entryBarrier).then(() => {
         if (sessionGeneration !== this.sessionGeneration || this.readyEntry !== entry) return;
-        this.loadApplication(`/${entry}`);
+        this.loadApplication(`/${entry}`, this.launchRequested);
         this.loadedEntry = entry;
         this.log(`データ放送 entry /${entry} (${this.readyResourceCount} files)`);
       }).catch(error => this.setStatus('アプリケーション起動失敗', error.message));
@@ -389,7 +411,7 @@ export class DataBroadcastController {
     this.beginSession(true);
   }
 
-  loadApplication(path) {
+  loadApplication(path, show = true) {
     const resolved = new URL(path, location.href);
     let decodedPath = '';
     try {
@@ -402,10 +424,17 @@ export class DataBroadcastController {
       throw new Error(`許可されていないデータ放送 URL: ${resolved.href}`);
     }
     const is8k = resolved.pathname.startsWith('/sh8/');
-    this.host.setProgramInfo(createDemoProgramInfo(is8k));
+    this.is8k = is8k;
+    this.host.setProgramInfo(createDemoProgramInfo(is8k, this.host.getBroadcastTime()));
     this.host.loadApplication(resolved.href);
-    this.setVisible(true);
-    this.setStatus('アプリケーション読込中', this.detail.textContent);
+    if (show) {
+      this.setVisible(true);
+      this.setStatus('アプリケーション読込中', this.detail.textContent);
+    } else {
+      this.visible = false;
+      this.viewport.classList.remove('data-broadcast-visible');
+      this.setStatus('データ放送をバックグラウンド準備中', this.detail.textContent);
+    }
   }
 
   setVisible(visible) {
@@ -418,15 +447,6 @@ export class DataBroadcastController {
         'broadcast-video-plane-visible', 'broadcast-background-hole',
       );
     }
-    this.updateRemoteAvailability();
-  }
-
-  updateRemoteAvailability() {
-    this.remote.classList.toggle('disabled', !this.visible);
-    this.remote.querySelectorAll('button').forEach(button => {
-      const isDataKey = Number(button.dataset.aribKey) === 457;
-      button.disabled = !this.visible && !isDataKey;
-    });
   }
 
   applicationUrlChanged(value) {

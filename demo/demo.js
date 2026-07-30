@@ -1,5 +1,5 @@
 import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
-import { DataBroadcastController } from './data-broadcast.js';
+import { DataBroadcastController } from './data-broadcast.js?v=always-on-remote';
 
 const MiB = 1024n * 1024n;
 const PLAYBACK_CHUNK = 2n * MiB;
@@ -894,6 +894,10 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         const desired = preferredSubtitlePacketId ?? selectedSubtitlePacketId;
         if (selectedSubtitle === null || track.packetId === desired) selectSubtitleTrack(track);
       }
+    },
+    onBroadcastClock(clock) {
+      try { dataBroadcast.broadcastClockChanged(clock); }
+      catch (error) { callbackError = error; }
     },
     onApplicationResourceView(resource) {
       try { dataBroadcast.resourceChanged(resource); }

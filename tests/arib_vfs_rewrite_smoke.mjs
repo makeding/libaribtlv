@@ -35,9 +35,20 @@ for (const html of [
   assert.match(rewritten, /data-arib-type="video\/x-arib2-broadcast"/);
 }
 
-const sound = context.defer('<audio src="romsound://9"></audio>');
-assert.doesNotMatch(sound, /\ssrc=/i);
-assert.match(sound, /data-arib-romsound="romsound:\/\/9"/);
+for (const html of [
+  '<audio src="romsound://9"></audio>',
+  "<source src='romsound://7' type='audio/X-arib-romsound'>",
+  '<source src=romsound://9 type=audio/X-arib-romsound>',
+  '<SOURCE SRC = ROMSOUND://13/>',
+]) {
+  const sound = context.defer(html);
+  assert.doesNotMatch(sound, /\ssrc\s*=/i);
+  assert.match(sound, /data-arib-romsound="romsound:\/\/\d+"/i);
+}
+assert.equal(
+  context.defer('<img src="https://example.test/romsound://9">'),
+  '<img src="https://example.test/romsound://9">',
+);
 
 context.putPath('sh4/60/001/top/source/index4k.html');
 assert.equal(
@@ -56,10 +67,11 @@ assert.equal(context.hasBroadcastRoot('/demo/demo.js'), false);
 const controllerContext = { Date };
 vm.runInNewContext(`${controllerSource.replace(/^export /gm, '')}
 this.createDemoProgramInfo = createDemoProgramInfo;
+this.broadcastClockChanged = DataBroadcastController.prototype.broadcastClockChanged;
 `, controllerContext);
 const now = Date.UTC(2026, 6, 31, 12, 0, 0);
 const program = controllerContext.createDemoProgramInfo(false, now);
-assert.equal(program.duration, 24 * 60 * 60 * 1000);
+assert.equal(program.duration, 30 * 60 * 1000);
 assert.equal(program.f_duration, program.duration);
 assert.equal(program.start_time.getTime(), now - 60 * 1000);
 assert.equal(
@@ -68,5 +80,22 @@ assert.equal(
 );
 assert.equal(program.name, 'BS4K');
 assert.equal(program.f_name, 'BS4K NEXT');
+
+let projectedClock = null;
+controllerContext.broadcastClockChanged.call({
+  host: {
+    setBroadcastClock(value) { projectedClock = value; },
+  },
+  video: { currentTime: 12 },
+  loadedEntry: null,
+}, {
+  broadcastTimeValue: 2208988800 + now / 1000,
+  broadcastTimeTimescale: 1,
+  mediaTimeValue: 10,
+  mediaTimeTimescale: 1,
+});
+assert.equal(projectedClock.epochMilliseconds, now);
+assert.equal(projectedClock.mediaTimeSeconds, 10);
+assert.equal(projectedClock.currentMediaTimeSeconds(), 12);
 
 console.log('ARIB VFS HTML rewrite smoke test passed');

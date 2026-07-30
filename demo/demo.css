@@ -125,13 +125,17 @@ h2 { font-size: 15px; }
   z-index: 1;
   left: 0;
   top: 0;
-  display: none;
+  visibility: hidden;
+  pointer-events: none;
   border: 0;
   background: transparent;
   transform-origin: top left;
 }
 
-.data-broadcast-visible #broadcastFrame { display: block; }
+.data-broadcast-visible #broadcastFrame {
+  visibility: visible;
+  pointer-events: auto;
+}
 
 .subtitle-overlay {
   position: absolute;
@@ -176,8 +180,6 @@ h2 { font-size: 15px; }
 }
 
 .data-remote-status span { margin-top: 3px; color: #91a49a; font-size: 10px; }
-.data-remote.disabled { opacity: .68; }
-.data-remote.disabled [data-arib-key="457"] { opacity: 1; }
 .color-keys { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-top: 10px; }
 .color-keys button { color: #fff; font-size: 18px; }
 .color-keys .blue { background: #0875cf; }

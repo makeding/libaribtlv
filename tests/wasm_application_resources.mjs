@@ -18,6 +18,7 @@ let virtualEntryBytes = null
 let virtualApplications = []
 let virtualGeneration = 0n
 let dumpedResource = null
+let resourceResets = 0
 const demuxer = new module.TlvDemuxer({
   onApplicationResourceView(resource) {
     if (resource.dataLifetime !== 'callback') {
@@ -31,6 +32,9 @@ const demuxer = new module.TlvDemuxer({
   },
   onApplicationState(state) {
     states.push(state)
+  },
+  onApplicationResourcesReset() {
+    resourceResets += 1
   },
 })
 
@@ -51,6 +55,12 @@ try {
   virtualEntryBytes = entry && Uint8Array.from(entry.data)
   virtualApplications = demuxer.applications()
   virtualGeneration = demuxer.applicationResourceGeneration()
+  demuxer.reposition(0n, true)
+  if (resourceResets !== 0 ||
+      demuxer.applicationEntry(1) !== virtualEntry ||
+      demuxer.applicationResources(null).length !== virtualFiles.length) {
+    throw new Error('media reposition discarded the completed application VFS')
+  }
   if (process.env.TLVDEMUX_DUMP_RESOURCE) {
     const dumped = demuxer.applicationResource(1, process.env.TLVDEMUX_DUMP_RESOURCE)
     dumpedResource = dumped && Uint8Array.from(dumped.data)

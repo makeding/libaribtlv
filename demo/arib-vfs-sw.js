@@ -97,8 +97,8 @@ function rewriteBroadcastObjects(source) {
 
 function deferRomSounds(source) {
   return source.replace(
-    /\s+src\s*=\s*(["'])(romsound:\/\/\d+)\1/gi,
-    ' data-arib-romsound=$1$2$1',
+    /\s+src\s*=\s*(?:(["'])(romsound:\/\/\d+)\1|(romsound:\/\/\d+)(?=[\s/>]))/gi,
+    (_match, _quote, quoted, bare) => ` data-arib-romsound="${quoted || bare}"`,
   );
 }
 

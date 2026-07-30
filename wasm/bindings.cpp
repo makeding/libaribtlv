@@ -258,7 +258,12 @@ public:
     }
 
     void reposition(const std::uint64_t input_offset, const bool preserve_timeline) {
-        reset_application_resources();
+        // A media seek is not a service change. Drop only incomplete carousel
+        // assembly state so fragments from both byte positions cannot mix,
+        // while retaining files already published into the VFS. Receivers can
+        // therefore open data broadcasting immediately after a seek and keep
+        // refreshing it from later carousel cycles.
+        restart_application_assembly();
         demuxer_.reposition(tlvdemux::RepositionOptions{input_offset, preserve_timeline});
         if (mse_enabled_) mse_remuxer_.reposition();
     }
@@ -515,6 +520,13 @@ private:
     void reset_application_resources() {
         application_events_.clear();
         application_assembler_.reset();
+    }
+
+    void restart_application_assembly() {
+        application_events_.clear();
+        // Replacing the assembler clears partial tables/units without sending
+        // onApplicationResourcesReset(), which would erase the completed VFS.
+        application_assembler_ = tlvdemux::ApplicationResourceAssembler(*this);
     }
 
     void consume_application_event(tlvdemux::ApplicationInfo info) {
