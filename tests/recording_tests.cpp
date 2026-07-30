@@ -1,5 +1,6 @@
 #include <tlvdemux/playback.hpp>
 #include <tlvdemux/recording.hpp>
+#include <tlvdemux/duration_probe.hpp>
 
 #include <cstdint>
 #include <cstdlib>
@@ -182,6 +183,71 @@ void test_duration_uses_recording_timeline_endpoint() {
           "complete duration did not include the final frame interval on the recording timeline");
 }
 
+void test_duration_probe_range_protocol() {
+    tlvdemux::DurationProbe probe;
+    tlvdemux::DurationProbeOptions options;
+    options.initial_range_size = 10;
+    options.max_range_size = 40;
+    check(probe.begin(100, options), "duration probe rejected a valid source");
+
+    auto request = probe.nextRange();
+    check(request.has_value() && request->offset == 0 && request->length == 10,
+          "duration probe did not request its initial head range");
+    const auto generation = request->generation;
+    const std::vector<std::uint8_t> garbage(40, 0x55);
+    check(!probe.pushRange(request->request_id + 1, 0, garbage.data(), 10, true) &&
+              probe.state() == tlvdemux::DurationProbeState::NeedRange,
+          "stale duration response changed the active request");
+    check(probe.pushRange(request->request_id, 0, garbage.data(), 4, false) &&
+              probe.pushRange(request->request_id, 4, garbage.data() + 4, 6, true),
+          "chunked duration response was rejected");
+
+    request = probe.nextRange();
+    check(request.has_value() && request->generation == generation &&
+              request->offset == 10 && request->length == 10,
+          "duration probe did not double its head window");
+    check(probe.pushRange(request->request_id, 10, garbage.data(), 10, true),
+          "second duration range was rejected");
+    request = probe.nextRange();
+    check(request.has_value() && request->offset == 20 && request->length == 20,
+          "duration probe did not reach its configured maximum head window");
+    check(probe.pushRange(request->request_id, 20, garbage.data(), 20, true) &&
+              probe.state() == tlvdemux::DurationProbeState::Unknown &&
+              probe.failure() == tlvdemux::DurationProbeFailure::NoVideo &&
+              probe.transferredBytes() == 40,
+          "duration probe did not stop after its no-video byte budget");
+
+    check(probe.begin(100, options), "duration probe could not restart");
+    request = probe.nextRange();
+    check(request.has_value(), "restarted duration probe has no range request");
+    const auto old_request = *request;
+    probe.cancel();
+    check(probe.state() == tlvdemux::DurationProbeState::Cancelled &&
+              !probe.pushRange(old_request.request_id, old_request.offset,
+                               garbage.data(), 10, true),
+          "cancelled duration probe accepted a late response");
+
+    check(probe.begin(100, options), "duration probe could not restart after cancel");
+    request = probe.nextRange();
+    check(request.has_value() && probe.failRange(request->request_id) &&
+              probe.state() == tlvdemux::DurationProbeState::Failed &&
+              probe.failure() == tlvdemux::DurationProbeFailure::SourceError,
+          "duration probe did not preserve a source failure");
+
+    check(probe.begin(100, options), "duration probe could not restart after failure");
+    request = probe.nextRange();
+    check(request.has_value() &&
+              !probe.pushRange(request->request_id, request->offset,
+                               garbage.data(), 5, true) &&
+              probe.failure() == tlvdemux::DurationProbeFailure::InvalidResponse,
+          "duration probe accepted a short completed range");
+
+    check(!probe.begin(0, options) &&
+              probe.state() == tlvdemux::DurationProbeState::Unknown &&
+              probe.failure() == tlvdemux::DurationProbeFailure::InvalidSource,
+          "duration probe accepted a zero-sized source");
+}
+
 } // namespace
 
 int main() {
@@ -189,6 +255,7 @@ int main() {
     test_playback_state_machine();
     test_recording_index();
     test_duration_uses_recording_timeline_endpoint();
+    test_duration_probe_range_protocol();
     std::cout << "all recording tests passed\n";
     return 0;
 }

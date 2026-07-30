@@ -2,8 +2,6 @@ cmake_minimum_required(VERSION 3.16)
 
 project(tlvdemux VERSION 0.1.0 LANGUAGES CXX)
 
-find_package(ZLIB REQUIRED)
-
 include(CTest)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -15,6 +13,7 @@ option(TLVDEMUX_BUILD_WASM_BINDINGS "Build the Emscripten JavaScript/WASM wrappe
 add_library(tlvdemux
     src/compressed_ip_parser.cpp
     src/demuxer.cpp
+    src/duration_probe.cpp
     src/mmtp_parser.cpp
     src/playback.cpp
     src/recording.cpp
@@ -74,22 +73,28 @@ install(FILES
 )
 
 if(TLVDEMUX_BUILD_TOOLS)
+    find_package(ZLIB REQUIRED)
     add_executable(tlvdemux-inspect tools/tlvdemux-inspect.cpp)
     target_link_libraries(tlvdemux-inspect PRIVATE tlvdemux::tlvdemux)
     add_executable(tlvdemux-cocktail tools/tlvdemux-cocktail.cpp)
     target_link_libraries(tlvdemux-cocktail PRIVATE tlvdemux::tlvdemux)
     add_executable(tlvdemux-extract tools/tlvdemux-extract.cpp)
     target_link_libraries(tlvdemux-extract PRIVATE tlvdemux::tlvdemux ZLIB::ZLIB)
+    add_executable(tlvdemux-probe tools/tlvdemux-probe.cpp)
+    target_link_libraries(tlvdemux-probe PRIVATE tlvdemux::tlvdemux)
     if(MSVC)
         target_compile_options(tlvdemux-inspect PRIVATE /W4 /permissive-)
         target_compile_options(tlvdemux-cocktail PRIVATE /W4 /permissive-)
         target_compile_options(tlvdemux-extract PRIVATE /W4 /permissive-)
+        target_compile_options(tlvdemux-probe PRIVATE /W4 /permissive-)
     else()
         target_compile_options(tlvdemux-inspect PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(tlvdemux-cocktail PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(tlvdemux-extract PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(tlvdemux-probe PRIVATE -Wall -Wextra -Wpedantic)
     endif()
-    install(TARGETS tlvdemux-inspect tlvdemux-extract RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(TARGETS tlvdemux-inspect tlvdemux-extract tlvdemux-probe
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 if(TLVDEMUX_BUILD_WASM_BINDINGS)

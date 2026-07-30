@@ -121,7 +121,7 @@ script and create a demuxer asynchronously:
 const module = await createTlvDemuxModule();
 const demuxer = new module.TlvDemuxer({
   onTrack: track => console.log(track),
-  onAccessUnit: unit => consume(unit),
+  onAccessUnitView: unit => consumeSynchronously(unit),
   onError: error => console.warn(error),
 });
 
@@ -133,12 +133,29 @@ demuxer.delete();
 For loaders that already manage buffers, `_malloc`, `_free`, `HEAPU8`, and
 `pushFromHeap(address, size)` provide a reusable heap-buffer path. JavaScript
 receives 64-bit offsets, timestamps, and track IDs as `BigInt` values.
+`onAccessUnitView` avoids copying media output, but its `data` view is valid only
+for the duration of the callback and must be consumed synchronously. Use
+`onAccessUnit` instead when the callback needs an owned `Uint8Array` copy.
+
+`DurationProbe` drives fast head/tail reads without owning a file or HTTP
+client. Start it with the known file size, fulfill each object returned by
+`nextRange()`, and pass the exact bytes to `pushRange()`. A successful
+`duration()` has `status: "complete"`; failure remains explicit through
+`state()` and `failure()` and never falls back to downloading the whole file.
+The native `tlvdemux-probe INPUT` tool exercises the same protocol.
+
+For precise recorded seek, call `startIndex(false)` before feeding the full
+stream and `finalizeIndex()` at its real EOF. `seekPointsFor(targetUs)` returns
+the surrounding RAP checkpoints. Reposition to `first.signallingOffset`, feed
+from there, decode from the emitted RAP, and present the first frame at or after
+the requested time.
 
 ## Current scope
 
 Version 0.1 supports the ARIB broadcast subset exercised by the validation
 streams: all four HCfB compressed-IP modes (`0x20`, `0x21`, `0x60`, `0x61`),
 MMTP signalling and fragmented media, HEVC Annex B, AAC-LATM/LOAS, and ARIB
-STD-B62 TTML. CAS/descrambling,
-TTML rendering, EPG/application assets, seeking, indexing, and general-purpose
-ISO MMT are outside the library's current scope.
+STD-B62 TTML. The recording helpers provide bounded duration probing, sparse RAP
+indexing, and recording-relative repositioning. CAS/descrambling, decoder and
+TTML rendering, persistent index serialization, and general-purpose ISO MMT are
+outside the library's current scope.
