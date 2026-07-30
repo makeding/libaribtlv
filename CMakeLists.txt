@@ -8,6 +8,7 @@ include(CMakePackageConfigHelpers)
 
 option(BUILD_SHARED_LIBS "Build libtlvdemux as a shared library" ON)
 option(TLVDEMUX_BUILD_TOOLS "Build tlvdemux command-line tools" ON)
+option(TLVDEMUX_BUILD_WASM_BINDINGS "Build the Emscripten JavaScript/WASM wrapper" ${EMSCRIPTEN})
 
 add_library(tlvdemux
     src/compressed_ip_parser.cpp
@@ -75,14 +76,49 @@ if(TLVDEMUX_BUILD_TOOLS)
     target_link_libraries(tlvdemux-inspect PRIVATE tlvdemux::tlvdemux)
     add_executable(tlvdemux-cocktail tools/tlvdemux-cocktail.cpp)
     target_link_libraries(tlvdemux-cocktail PRIVATE tlvdemux::tlvdemux)
+    add_executable(tlvdemux-extract tools/tlvdemux-extract.cpp)
+    target_link_libraries(tlvdemux-extract PRIVATE tlvdemux::tlvdemux)
     if(MSVC)
         target_compile_options(tlvdemux-inspect PRIVATE /W4 /permissive-)
         target_compile_options(tlvdemux-cocktail PRIVATE /W4 /permissive-)
+        target_compile_options(tlvdemux-extract PRIVATE /W4 /permissive-)
     else()
         target_compile_options(tlvdemux-inspect PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(tlvdemux-cocktail PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(tlvdemux-extract PRIVATE -Wall -Wextra -Wpedantic)
     endif()
-    install(TARGETS tlvdemux-inspect RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(TARGETS tlvdemux-inspect tlvdemux-extract RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+if(TLVDEMUX_BUILD_WASM_BINDINGS)
+    if(NOT EMSCRIPTEN)
+        message(FATAL_ERROR "TLVDEMUX_BUILD_WASM_BINDINGS requires the Emscripten toolchain")
+    endif()
+
+    add_executable(tlvdemux-wasm wasm/bindings.cpp)
+    target_link_libraries(tlvdemux-wasm PRIVATE tlvdemux::tlvdemux)
+    target_link_options(tlvdemux-wasm PRIVATE
+        --bind
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-sENVIRONMENT=web,worker,node"
+        "-sEXPORTED_FUNCTIONS=['_malloc','_free']"
+        "-sEXPORTED_RUNTIME_METHODS=['HEAPU8']"
+        "-sEXPORT_NAME=createTlvDemuxModule"
+        "-sFILESYSTEM=0"
+        "-sMODULARIZE=1"
+        "-sNO_EXIT_RUNTIME=1"
+        "-sSINGLE_FILE=1"
+        "-sWASM_BIGINT=1"
+    )
+    set_target_properties(tlvdemux-wasm PROPERTIES
+        OUTPUT_NAME tlvdemux
+        SUFFIX ".js"
+    )
+
+    install(PROGRAMS
+        ${CMAKE_CURRENT_BINARY_DIR}/tlvdemux.js
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/tlvdemux/wasm
+    )
 endif()
 
 if(BUILD_TESTING)
@@ -103,4 +139,16 @@ if(BUILD_TESTING)
         target_compile_options(tlvdemux-recording-tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME tlvdemux-recording-tests COMMAND tlvdemux-recording-tests)
+
+    if(TLVDEMUX_BUILD_WASM_BINDINGS)
+        find_program(NODE_EXECUTABLE node)
+        if(NODE_EXECUTABLE)
+            add_test(
+                NAME tlvdemux-wasm-smoke
+                COMMAND ${NODE_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_smoke.mjs
+                        $<TARGET_FILE:tlvdemux-wasm>
+            )
+        endif()
+    endif()
 endif()

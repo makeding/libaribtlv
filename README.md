@@ -102,6 +102,38 @@ already-usable media payloads. B61 message-authentication metadata is parsed so
 an appended authentication code is not exposed as part of the media payload;
 cryptographic verification itself remains the caller's responsibility.
 
+## WebAssembly
+
+Build the browser/worker wrapper with Emscripten:
+
+```sh
+nix-shell
+emcmake cmake -S . -B build-wasm -G Ninja \
+  -DBUILD_SHARED_LIBS=OFF -DTLVDEMUX_BUILD_TOOLS=OFF
+cmake --build build-wasm --target tlvdemux-wasm
+```
+
+The result is a single self-contained `build-wasm/tlvdemux.js`; the WebAssembly
+binary is embedded and no separate `.wasm` request is made. Load it as a normal
+script and create a demuxer asynchronously:
+
+```js
+const module = await createTlvDemuxModule();
+const demuxer = new module.TlvDemuxer({
+  onTrack: track => console.log(track),
+  onAccessUnit: unit => consume(unit),
+  onError: error => console.warn(error),
+});
+
+demuxer.push(chunk); // Uint8Array; copied into WASM memory
+demuxer.flush();
+demuxer.delete();
+```
+
+For loaders that already manage buffers, `_malloc`, `_free`, `HEAPU8`, and
+`pushFromHeap(address, size)` provide a reusable heap-buffer path. JavaScript
+receives 64-bit offsets, timestamps, and track IDs as `BigInt` values.
+
 ## Current scope
 
 Version 0.1 supports the ARIB broadcast subset exercised by the validation
