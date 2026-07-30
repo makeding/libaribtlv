@@ -515,12 +515,23 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   elements.video.defaultPlaybackRate = DEFAULT_PLAYBACK_RATE;
   elements.video.playbackRate = DEFAULT_PLAYBACK_RATE;
   let mediaSource;
+  const openFreshMediaSource = async () => {
+    activeQueueByType = new Map();
+    const fresh = new MediaSource();
+    fresh.tlvdemuxQueues = activeQueueByType;
+    activeMediaSource = fresh;
+    activeObjectUrl = URL.createObjectURL(fresh);
+    elements.video.src = activeObjectUrl;
+    await once(fresh, 'sourceopen');
+    return fresh;
+  };
   if (reuseMedia && (!activeMediaSource || !activeObjectUrl)) reuseMedia = false;
   if (reuseMedia) {
     mediaSource = activeMediaSource;
     const registry = mediaSource.tlvdemuxQueues;
-    if (!(registry instanceof Map) || registry.size !== mediaSource.sourceBuffers.length) {
-      appendLog('シーク用 SourceBuffer 情報が失われたため MediaSource を再構築します');
+    if (mediaSource.readyState !== 'open' || !(registry instanceof Map) ||
+        registry.size !== mediaSource.sourceBuffers.length) {
+      appendLog(`MediaSource を再構築します (状態=${mediaSource.readyState})`);
       releaseMedia();
       reuseMedia = false;
     } else {
@@ -530,15 +541,16 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     }
   }
   if (!reuseMedia) {
-    activeQueueByType = new Map();
-    mediaSource = new MediaSource();
-    mediaSource.tlvdemuxQueues = activeQueueByType;
-    activeMediaSource = mediaSource;
-    activeObjectUrl = URL.createObjectURL(mediaSource);
-    elements.video.src = activeObjectUrl;
-    await once(mediaSource, 'sourceopen');
+    mediaSource = await openFreshMediaSource();
   }
   if (generation !== runGeneration) return;
+  if (mediaSource.readyState !== 'open') {
+    appendLog(`シーク準備中に MediaSource が ${mediaSource.readyState} になったため再構築します`);
+    if (mediaSource === activeMediaSource) releaseMedia();
+    reuseMedia = false;
+    mediaSource = await openFreshMediaSource();
+    if (generation !== runGeneration) return;
+  }
   const mediaDuration = liveMode ? Infinity : durationSeconds(probeResult.duration);
   mediaSource.duration = mediaDuration;
 
