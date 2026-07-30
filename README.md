@@ -166,6 +166,7 @@ script and create a demuxer asynchronously:
 const module = await createTlvDemuxModule();
 const demuxer = new module.TlvDemuxer({
   onTrack: track => console.log(track),
+  onEventInfo: event => console.log(event.title, event.startTimeUnixMilliseconds),
   onAccessUnitView: unit => consumeSynchronously(unit),
   onApplicationState: application => console.log(application.state),
   onApplicationResourceView: resource => console.log(resource.path),
@@ -180,6 +181,9 @@ demuxer.delete();
 For loaders that already manage buffers, `_malloc`, `_free`, `HEAPU8`, and
 `pushFromHeap(address, size)` provide a reusable heap-buffer path. JavaScript
 receives 64-bit offsets, timestamps, and track IDs as `BigInt` values.
+MH-EIT current/following and schedule entries are reported through
+`onEventInfo`; `tableId === 0x8b` with `sectionNumber` 0/1 identifies the
+present/following event for the service.
 `onAccessUnitView` avoids copying media output, but its `data` view is valid only
 for the duration of the callback and must be consumed synchronously. Use
 `onAccessUnit` instead when the callback needs an owned `Uint8Array` copy.
