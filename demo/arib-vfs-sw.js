@@ -2,8 +2,6 @@ const resources = new Map();
 const waiters = new Map();
 let enabled = false;
 
-const broadcastPath = /^\/(?:sh[48]|[4567][012])\//;
-
 function normalizePath(value) {
   let pathname;
   try {
@@ -14,6 +12,17 @@ function normalizePath(value) {
   const parts = pathname.split('/').filter(Boolean);
   if (!parts.length || parts.some(part => part === '.' || part === '..')) return null;
   return parts.join('/');
+}
+
+function hasBroadcastRoot(value) {
+  const path = normalizePath(value);
+  if (!path) return false;
+  const slash = path.indexOf('/');
+  const root = slash < 0 ? path : path.slice(0, slash);
+  for (const candidate of resources.keys()) {
+    if (candidate === root || candidate.startsWith(`${root}/`)) return true;
+  }
+  return false;
 }
 
 function contentType(path, supplied) {
@@ -58,6 +67,19 @@ function waitFor(path, timeout = 10000) {
   });
 }
 
+function uniqueBasenameMatch(path) {
+  const slash = path.lastIndexOf('/');
+  const basename = slash >= 0 ? path.slice(slash + 1) : path;
+  if (!basename) return null;
+  let match = null;
+  for (const candidate of resources.keys()) {
+    if (candidate !== basename && !candidate.endsWith(`/${basename}`)) continue;
+    if (match !== null) return null;
+    match = candidate;
+  }
+  return match;
+}
+
 function rewriteBroadcastObjects(source) {
   return source.replace(/<object\b[^>]*>/gi, tag => {
     const broadcast = /\btype\s*=\s*(?:["']video\/x-arib2-broadcast["']|video\/x-arib2-broadcast)(?:\s|\/?>)/i
@@ -94,6 +116,12 @@ function injectRuntime(bytes) {
 async function serve(request) {
   const path = normalizePath(request.url);
   if (!path) return new Response('Bad broadcast path', { status: 400 });
+  if (!resources.has(path)) {
+    const fallback = uniqueBasenameMatch(path);
+    if (fallback && fallback !== path) {
+      return Response.redirect(new URL(`/${fallback}`, self.location.origin), 302);
+    }
+  }
   const resource = await waitFor(path);
   if (!resource) return new Response('Broadcast resource is not available', { status: 404 });
 
@@ -163,7 +191,7 @@ self.addEventListener('message', event => {
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
   if (!enabled || url.origin !== self.location.origin ||
-      !broadcastPath.test(url.pathname) ||
+      !hasBroadcastRoot(url.pathname) ||
       (event.request.method !== 'GET' && event.request.method !== 'HEAD')) return;
   event.respondWith(serve(event.request));
 });

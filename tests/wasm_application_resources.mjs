@@ -17,6 +17,7 @@ let virtualEntry = null
 let virtualEntryBytes = null
 let virtualApplications = []
 let virtualGeneration = 0n
+let dumpedResource = null
 const demuxer = new module.TlvDemuxer({
   onApplicationResourceView(resource) {
     if (resource.dataLifetime !== 'callback') {
@@ -48,6 +49,10 @@ try {
   virtualEntryBytes = entry && Uint8Array.from(entry.data)
   virtualApplications = demuxer.applications()
   virtualGeneration = demuxer.applicationResourceGeneration()
+  if (process.env.TLVDEMUX_DUMP_RESOURCE) {
+    const dumped = demuxer.applicationResource(1, process.env.TLVDEMUX_DUMP_RESOURCE)
+    dumpedResource = dumped && Uint8Array.from(dumped.data)
+  }
 } finally {
   fs.closeSync(input)
   demuxer.delete()
@@ -70,3 +75,10 @@ if (!virtualApplications.some(state => state.contextId === 1 && state.entryReady
 }
 
 console.log(`tlvdemux WASM collected ${resources.size} virtual files`)
+if (process.env.TLVDEMUX_DUMP_RESOURCES === '1') {
+  console.log(virtualFiles.map(resource => resource.path).sort().join('\n'))
+}
+if (process.env.TLVDEMUX_DUMP_RESOURCE) {
+  if (!dumpedResource) throw new Error(`resource not found: ${process.env.TLVDEMUX_DUMP_RESOURCE}`)
+  console.log(new TextDecoder().decode(dumpedResource))
+}

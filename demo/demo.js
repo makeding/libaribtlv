@@ -1,4 +1,5 @@
 import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
+import { DataBroadcastController } from './data-broadcast.js';
 
 const MiB = 1024n * 1024n;
 const PLAYBACK_CHUNK = 2n * MiB;
@@ -21,9 +22,22 @@ const elements = Object.fromEntries([
   'videoPacketId', 'probeButton', 'cancelButton', 'clearButton',
   'probeState', 'duration', 'sourceSize', 'transferred', 'log',
   'video', 'mediaInfo', 'liveMode', 'audioTrack', 'subtitleTrack', 'subtitleOverlay',
-  'broadcastViewport', 'broadcastVideoSurface', 'broadcastFrame', 'dataRemote',
+  'broadcastViewport', 'broadcastVideoSurface', 'broadcastMediaPlane', 'broadcastFrame', 'dataRemote',
   'dataStatus', 'dataDetail', 'dataUrl',
 ].map(id => [id, document.getElementById(id)]));
+
+const dataBroadcast = new DataBroadcastController({
+  viewport: elements.broadcastViewport,
+  videoSurface: elements.broadcastVideoSurface,
+  mediaPlane: elements.broadcastMediaPlane,
+  video: elements.video,
+  iframe: elements.broadcastFrame,
+  remote: elements.dataRemote,
+  status: elements.dataStatus,
+  detail: elements.dataDetail,
+  url: elements.dataUrl,
+});
+dataBroadcast.setLogger(appendLog);
 
 let wasmModule = null;
 let activeProbe = null;
@@ -878,6 +892,17 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         if (selectedSubtitle === null || track.packetId === desired) selectSubtitleTrack(track);
       }
     },
+    onApplicationResourceView(resource) {
+      try { dataBroadcast.resourceChanged(resource); }
+      catch (error) { callbackError = error; }
+    },
+    onApplicationState(state) {
+      try { dataBroadcast.applicationStateChanged(demuxer, state); }
+      catch (error) { callbackError = error; }
+    },
+    onApplicationResourcesReset() {
+      dataBroadcast.resourcesReset();
+    },
     onAccessUnitView(unit) {
       try {
         if (unit.trackId === selectedVideo) {
@@ -1064,6 +1089,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
 }
 
 async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false, operationLabel = null) {
+  if (!reuseMedia && startTimeSeconds === 0) dataBroadcast.beginSession();
   if (!reuseMedia) {
     releaseMedia();
     knownAudioTracks = new Map();

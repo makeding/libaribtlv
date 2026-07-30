@@ -7,6 +7,10 @@ const KEYBOARD_KEYS = {
   5: 53, 6: 54, 7: 55, 8: 56, 9: 57,
 };
 
+function isBackgroundHoleApplication(pathname) {
+  return /\/(?:caption)\/source\//.test(String(pathname));
+}
+
 class ServiceWorkerResourceBridge {
   constructor(url) {
     this.url = url;
@@ -85,9 +89,10 @@ class ServiceWorkerResourceBridge {
 }
 
 export class DataBroadcastController {
-  constructor({ viewport, videoSurface, video, iframe, remote, status, detail, url }) {
+  constructor({ viewport, videoSurface, mediaPlane, video, iframe, remote, status, detail, url }) {
     this.viewport = viewport;
     this.videoSurface = videoSurface;
+    this.video = video;
     this.iframe = iframe;
     this.remote = remote;
     this.status = status;
@@ -98,6 +103,7 @@ export class DataBroadcastController {
     this.resourceQueue = [];
     this.resourceDrainScheduled = false;
     this.resourceSequence = 0;
+    this.resourceSequenceByPath = new Map();
     this.completedResourceSequence = 0;
     this.resourceWaiters = [];
     this.sessionGeneration = 0;
@@ -105,21 +111,44 @@ export class DataBroadcastController {
     this.readyResourceCount = 0;
     this.visible = false;
     this.readyEntry = null;
+    this.readyContextId = null;
     this.loadedEntry = null;
     this.log = () => {};
 
     if (!window.ARIBHTML5?.AribReceiverHost) {
       throw new Error('libaribhtml5 SDK が読み込まれていません');
     }
+    if (!window.ARIBHTML5?.BehindIframeMediaPlaneAdapter) {
+      throw new Error('libaribhtml5 media-plane adapter が読み込まれていません');
+    }
+    Object.assign(mediaPlane.style, { position: 'relative', overflow: 'hidden' });
+    Object.assign(video.style, {
+      display: 'block', width: '100%', height: '100%', objectFit: 'contain', background: '#080b09',
+    });
+    const subtitleOverlay = mediaPlane.querySelector('.subtitle-overlay');
+    if (subtitleOverlay) Object.assign(subtitleOverlay.style, {
+      position: 'absolute', zIndex: '1', inset: '0', pointerEvents: 'none', overflow: 'hidden',
+    });
+    this.mediaPlaneAdapter = new window.ARIBHTML5.BehindIframeMediaPlaneAdapter({
+      surface: videoSurface,
+      keepVisible: false,
+    });
     this.host = new window.ARIBHTML5.AribReceiverHost({
       iframe,
       viewport,
-      videoSurface,
-      keepVideoVisible: true,
-      onStatus: value => this.setStatus(value),
-      onUrlChange: value => { this.url.textContent = value; },
+      mediaPlaneAdapter: this.mediaPlaneAdapter,
+      onStatus: value => {
+        this.setStatus(value);
+        if (value === 'アプリケーション終了') this.setVisible(false);
+      },
+      onUrlChange: value => this.applicationUrlChanged(value),
+      onMediaPlane: plane => {
+        videoSurface.classList.toggle('broadcast-video-plane-visible', plane.visible);
+        if (plane.visible && videoSurface.classList.contains('broadcast-background-hole')) {
+          viewport.style.backgroundColor = '#000';
+        }
+      },
     });
-    this.host.attachVideo(video);
     window.__ARIB_HTML5_INSTALL__ = target => this.installRuntimeCooperatively(target);
     window.addEventListener('keydown', this.handleKeyboard);
     this.remote.querySelectorAll('[data-arib-key]').forEach(button => {
@@ -137,6 +166,17 @@ export class DataBroadcastController {
   }
 
   installRuntimeCooperatively(target) {
+    if (isBackgroundHoleApplication(target.location.pathname)) {
+      const style = target.document.createElement('style');
+      style.dataset.tlvdemuxBackgroundHole = '';
+      style.textContent = `
+        html, body, #backscreen, #container, #vstream,
+        #vstream object, #vstream [data-arib-type="video/x-arib2-broadcast"] {
+          background: transparent !important;
+        }
+      `;
+      (target.document.head || target.document.documentElement).append(style);
+    }
     const NativeMutationObserver = target.MutationObserver;
     const nativeSetInterval = target.setInterval;
     const callSetInterval = nativeSetInterval.bind(target);
@@ -192,33 +232,41 @@ export class DataBroadcastController {
     if (this.applicationLoadTimer !== null) clearTimeout(this.applicationLoadTimer);
     this.applicationLoadTimer = null;
     this.resourceQueue = [];
+    this.resourceSequenceByPath.clear();
     this.resourceDrainScheduled = false;
     this.completedResourceSequence = this.resourceSequence;
     this.resolveResourceWaiters();
     this.readyEntry = null;
+    this.readyContextId = null;
     this.loadedEntry = null;
     this.readyResourceCount = 0;
     this.url.textContent = '';
-    this.iframe.src = 'about:blank';
     this.setVisible(false);
     this.pendingWrites = this.bridge.begin();
     this.pendingWrites.catch(error => this.setStatus('VFS エラー', error.message));
     this.setStatus('データ放送を収集中', '0 ファイル');
   }
 
-  resourceChanged(demuxer, notification) {
+  resourceChanged(notification) {
     const sequence = ++this.resourceSequence;
+    // onApplicationResourceView is callback-lifetime data. Copy it before the
+    // callback returns; never retain or call back into the WASM demuxer from
+    // the asynchronous VFS drain.
+    const data = Uint8Array.from(notification.data);
+    this.resourceSequenceByPath.set(
+      `${notification.contextId}:${notification.path}`,
+      sequence,
+    );
     this.resourceQueue.push({
       sequence,
       sessionGeneration: this.sessionGeneration,
-      demuxer,
-      contextId: notification.contextId,
-      path: notification.path,
+      resource: {
+        path: notification.path,
+        contentType: notification.contentType,
+        data,
+      },
     });
     this.scheduleResourceDrain();
-    if (this.readyEntry && this.loadedEntry !== this.readyEntry) {
-      this.scheduleApplicationLoad(this.readyEntry);
-    }
   }
 
   scheduleResourceDrain() {
@@ -228,9 +276,7 @@ export class DataBroadcastController {
       this.resourceDrainScheduled = false;
       return this.drainOneResource();
     };
-    if (typeof globalThis.requestIdleCallback === 'function') {
-      globalThis.requestIdleCallback(run, { timeout: 1000 });
-    } else if (globalThis.scheduler?.postTask) {
+    if (globalThis.scheduler?.postTask) {
       globalThis.scheduler.postTask(run, { priority: 'background' }).catch(error => {
         this.setStatus('VFS タスク失敗', error.message);
       });
@@ -244,13 +290,10 @@ export class DataBroadcastController {
     if (!item) return;
     try {
       if (item.sessionGeneration === this.sessionGeneration) {
-        const resource = item.demuxer.applicationResource(item.contextId, item.path);
-        if (resource) {
-          this.pendingWrites = this.pendingWrites
-            .catch(() => undefined)
-            .then(() => this.bridge.put(resource));
-          await this.pendingWrites;
-        }
+        this.pendingWrites = this.pendingWrites
+          .catch(() => undefined)
+          .then(() => this.bridge.put(item.resource));
+        await this.pendingWrites;
       }
     } catch (error) {
       this.setStatus('VFS 書き込み失敗', error.message);
@@ -285,24 +328,29 @@ export class DataBroadcastController {
     const entry = demuxer.applicationEntry(state.contextId);
     if (!entry) return;
     this.readyEntry = entry;
+    this.readyContextId = state.contextId;
     this.readyResourceCount = state.resourceCount;
-    this.scheduleApplicationLoad(entry);
+    this.scheduleApplicationLoad(entry, state.contextId);
   }
 
-  scheduleApplicationLoad(entry) {
+  scheduleApplicationLoad(entry, contextId, immediate = false) {
     if (this.loadedEntry === entry) return;
-    if (this.applicationLoadTimer !== null) clearTimeout(this.applicationLoadTimer);
+    if (this.applicationLoadTimer !== null) {
+      if (!immediate) return;
+      clearTimeout(this.applicationLoadTimer);
+    }
     const sessionGeneration = this.sessionGeneration;
     this.applicationLoadTimer = setTimeout(() => {
       this.applicationLoadTimer = null;
-      const resourceBarrier = this.resourceSequence;
-      this.waitForResources(resourceBarrier).then(() => this.pendingWrites).then(() => {
+      const entryBarrier = this.resourceSequenceByPath.get(`${contextId}:${entry}`);
+      if (entryBarrier === undefined) return;
+      this.waitForResources(entryBarrier).then(() => {
         if (sessionGeneration !== this.sessionGeneration || this.readyEntry !== entry) return;
         this.loadApplication(`/${entry}`);
         this.loadedEntry = entry;
         this.log(`データ放送 entry /${entry} (${this.readyResourceCount} files)`);
       }).catch(error => this.setStatus('アプリケーション起動失敗', error.message));
-    }, 300);
+    }, immediate ? 0 : 300);
   }
 
   resourcesReset() {
@@ -311,17 +359,28 @@ export class DataBroadcastController {
 
   loadApplication(path) {
     const resolved = new URL(path, location.href);
+    let decodedPath = '';
+    try {
+      decodedPath = decodeURIComponent(resolved.pathname);
+    } catch {
+      // Keep the empty value so malformed URL escapes fail the check below.
+    }
     if (resolved.origin !== location.origin ||
-        !/^\/(?:sh[48]|[4567][012])\//.test(resolved.pathname)) {
+        decodedPath !== `/${this.readyEntry}`) {
       throw new Error(`許可されていないデータ放送 URL: ${resolved.href}`);
     }
     const is8k = resolved.pathname.startsWith('/sh8/');
+    const programStart = new Date(Date.now() - 60 * 1000);
     this.host.setProgramInfo({
       original_network_id: 4,
       transport_stream_id: 11,
       service_id: is8k ? 102 : 101,
       event_id: 1,
       event_name: is8k ? 'BS8K' : 'BS4K',
+      start_time: programStart,
+      duration: 24 * 60 * 60,
+      event_text: '',
+      event_extended_text: '',
     });
     this.host.loadApplication(resolved.href);
     this.setVisible(true);
@@ -330,29 +389,49 @@ export class DataBroadcastController {
 
   setVisible(visible) {
     this.visible = visible;
+    if (!visible) this.host.exitApplication();
     this.viewport.classList.toggle('data-broadcast-visible', visible);
+    if (!visible) {
+      this.video.controls = true;
+      this.videoSurface.classList.remove(
+        'broadcast-video-plane-visible', 'broadcast-background-hole',
+      );
+    }
     this.remote.classList.toggle('disabled', !visible);
     this.remote.querySelectorAll('button').forEach(button => { button.disabled = !visible; });
-    if (!visible) {
-      Object.assign(this.videoSurface.style, {
-        display: 'grid', left: '0%', top: '0%', width: '100%', height: '100%',
-      });
-    }
+  }
+
+  applicationUrlChanged(value) {
+    this.url.textContent = value;
+    const backgroundHole = isBackgroundHoleApplication(value);
+    this.videoSurface.classList.toggle('broadcast-background-hole', backgroundHole);
+    this.video.controls = !backgroundHole;
+    if (backgroundHole) this.viewport.style.backgroundColor = '#000';
   }
 
   dispatchKey(code) {
-    if (code === 457 && !this.visible && this.readyEntry) {
-      this.setVisible(true);
+    if (code === 457 && !this.visible) {
+      if (!this.readyEntry) {
+        this.setStatus('データ放送を準備中', this.detail.textContent);
+        return;
+      }
+      if (this.loadedEntry === this.readyEntry) {
+        this.setVisible(true);
+        return;
+      }
+      this.scheduleApplicationLoad(this.readyEntry, this.readyContextId, true);
+      this.setStatus('データ放送を起動中', this.detail.textContent);
+      return;
     }
     if (!this.visible) return;
     this.host.dispatchKey(code);
   }
 
   handleKeyboard = event => {
-    if (!this.visible || event.target instanceof HTMLInputElement ||
+    if (event.target instanceof HTMLInputElement ||
         event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) return;
     const code = KEYBOARD_KEYS[event.key];
-    if (code === undefined) return;
+    if (code === undefined || (!this.visible && code !== 457)) return;
     event.preventDefault();
     this.dispatchKey(code);
   };

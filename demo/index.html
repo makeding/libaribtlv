@@ -21,14 +21,16 @@
       <div class="receiver-workbench">
         <div id="broadcastViewport" class="video-stage">
           <div id="broadcastVideoSurface" class="broadcast-video-surface">
-            <video id="video" controls playsinline muted></video>
+            <div id="broadcastMediaPlane" class="broadcast-media-plane">
+              <video id="video" controls playsinline muted></video>
+              <div id="subtitleOverlay" class="subtitle-overlay" aria-live="off"></div>
+            </div>
           </div>
           <iframe
             id="broadcastFrame"
             title="BS4K データ放送アプリケーション"
             sandbox="allow-scripts allow-same-origin"
           ></iframe>
-          <div id="subtitleOverlay" class="subtitle-overlay" aria-live="off"></div>
         </div>
         <aside id="dataRemote" class="data-remote disabled" aria-label="データ放送リモコン">
           <div class="data-remote-status">
@@ -148,6 +150,7 @@
   </main>
 
   <script src="../build-wasm/tlvdemux.js"></script>
+  <script src="/libaribhtml5/libaribhtml5.js"></script>
   <script type="module" src="demo.js"></script>
 </body>
 </html>
