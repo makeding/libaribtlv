@@ -70,11 +70,23 @@ h2 { font-size: 15px; }
   box-shadow: 0 16px 44px rgba(18, 28, 22, .16);
 }
 
-.video-panel video {
+.video-stage {
+  position: relative;
+}
+
+.video-stage video {
   display: block;
   width: 100%;
   aspect-ratio: 16 / 9;
   background: #080b09;
+}
+
+.subtitle-overlay {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
 }
 
 .video-status {
@@ -112,7 +124,7 @@ input:focus, select:focus { outline: 3px solid rgba(73, 125, 91, .16); border-co
 
 .options {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 8px;
   margin-top: 8px;
   padding: 9px 12px;

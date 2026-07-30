@@ -18,7 +18,10 @@
     </header>
 
     <section class="video-panel">
-      <video id="video" controls playsinline muted></video>
+      <div class="video-stage">
+        <video id="video" controls playsinline muted></video>
+        <div id="subtitleOverlay" class="subtitle-overlay" aria-live="off"></div>
+      </div>
       <div id="mediaInfo" class="video-status">未読み込み</div>
     </section>
 
@@ -56,6 +59,12 @@
       <label>
         音声トラック
         <select id="audioTrack" disabled>
+          <option value="">自動</option>
+        </select>
+      </label>
+      <label>
+        字幕トラック
+        <select id="subtitleTrack" disabled>
           <option value="">自動</option>
         </select>
       </label>

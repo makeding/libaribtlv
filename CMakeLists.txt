@@ -10,7 +10,9 @@ option(BUILD_SHARED_LIBS "Build libtlvdemux as a shared library" ON)
 option(TLVDEMUX_BUILD_TOOLS "Build tlvdemux command-line tools" ON)
 option(TLVDEMUX_BUILD_WASM_BINDINGS "Build the Emscripten JavaScript/WASM wrapper" ${EMSCRIPTEN})
 
-find_package(ZLIB REQUIRED)
+if(NOT EMSCRIPTEN)
+    find_package(ZLIB REQUIRED)
+endif()
 
 add_library(tlvdemux
     src/application_resources.cpp
@@ -31,7 +33,12 @@ set_target_properties(tlvdemux PROPERTIES
 )
 
 target_compile_features(tlvdemux PUBLIC cxx_std_17)
-target_link_libraries(tlvdemux PUBLIC ZLIB::ZLIB)
+if(EMSCRIPTEN)
+    target_compile_options(tlvdemux PRIVATE "-sUSE_ZLIB=1")
+    target_link_options(tlvdemux PUBLIC "-sUSE_ZLIB=1")
+else()
+    target_link_libraries(tlvdemux PUBLIC ZLIB::ZLIB)
+endif()
 target_include_directories(tlvdemux
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -133,6 +140,17 @@ if(TLVDEMUX_BUILD_WASM_BINDINGS)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(tlvdemux-application-resources-tests tests/application_resources_tests.cpp)
+    target_link_libraries(tlvdemux-application-resources-tests PRIVATE tlvdemux::tlvdemux)
+    if(MSVC)
+        target_compile_options(tlvdemux-application-resources-tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(tlvdemux-application-resources-tests PRIVATE
+            -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME tlvdemux-application-resources-tests
+             COMMAND tlvdemux-application-resources-tests)
+
     add_executable(tlvdemux-tests tests/demuxer_tests.cpp)
     target_link_libraries(tlvdemux-tests PRIVATE tlvdemux::tlvdemux)
     if(MSVC)

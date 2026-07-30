@@ -1,3 +1,5 @@
+import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
+
 const MiB = 1024n * 1024n;
 const PLAYBACK_CHUNK = 2n * MiB;
 const FORWARD_BUFFER_HIGH_SECONDS = 15;
@@ -12,11 +14,12 @@ const MAX_SEEK_PROBE_ATTEMPTS = 5;
 const DEFAULT_PLAYBACK_RATE = 2;
 const URL_STORAGE_KEY = 'tlvdemux.demo.httpUrl';
 const AUDIO_STORAGE_KEY = 'tlvdemux.demo.audioPacketId';
+const SUBTITLE_STORAGE_KEY = 'tlvdemux.demo.subtitlePacketId';
 const elements = Object.fromEntries([
   'wasmStatus', 'fileInput', 'urlInput', 'initialRange', 'maxRange',
   'videoPacketId', 'probeButton', 'cancelButton', 'clearButton',
   'probeState', 'duration', 'sourceSize', 'transferred', 'log',
-  'video', 'mediaInfo', 'liveMode', 'audioTrack',
+  'video', 'mediaInfo', 'liveMode', 'audioTrack', 'subtitleTrack', 'subtitleOverlay',
 ].map(id => [id, document.getElementById(id)]));
 
 let wasmModule = null;
@@ -30,11 +33,17 @@ let activeQueueByType = new Map();
 let runGeneration = 0;
 let cachedProbe = null;
 let seekTimer = null;
+let internalSeekTarget = null;
 let currentLiveMode = false;
 let activeAudioSwitch = null;
+let activeSubtitleSwitch = null;
+let activeSubtitleRenderer = null;
 let selectedAudioPacketId = null;
 let preferredAudioPacketId = null;
 let knownAudioTracks = new Map();
+let selectedSubtitlePacketId = null;
+let preferredSubtitlePacketId = null;
+let knownSubtitleTracks = new Map();
 
 elements.video.defaultPlaybackRate = DEFAULT_PLAYBACK_RATE;
 elements.video.playbackRate = DEFAULT_PLAYBACK_RATE;
@@ -44,6 +53,10 @@ try {
   if (savedUrl !== null) elements.urlInput.value = savedUrl;
   const savedAudio = localStorage.getItem(AUDIO_STORAGE_KEY);
   if (savedAudio !== null && /^\d+$/.test(savedAudio)) preferredAudioPacketId = Number(savedAudio);
+  const savedSubtitle = localStorage.getItem(SUBTITLE_STORAGE_KEY);
+  if (savedSubtitle !== null && /^\d+$/.test(savedSubtitle)) {
+    preferredSubtitlePacketId = Number(savedSubtitle);
+  }
 } catch (_) {
   // localStorage may be unavailable for restricted or opaque origins.
 }
@@ -85,6 +98,34 @@ function renderAudioTracks() {
   const desired = preferredAudioPacketId ?? selectedAudioPacketId;
   elements.audioTrack.value = desired !== null && knownAudioTracks.has(desired) ? String(desired) : '';
   elements.audioTrack.disabled = knownAudioTracks.size === 0;
+}
+
+function subtitleTrackLabel(track) {
+  const parts = [`0x${track.packetId.toString(16)}`];
+  if (track.language) parts.push(track.language);
+  if (track.subtitle) {
+    parts.push(`mode=${track.subtitle.operationMode}`);
+    parts.push(`timing=${track.subtitle.timingMode}`);
+  }
+  return parts.join(' · ');
+}
+
+function renderSubtitleTracks() {
+  elements.subtitleTrack.replaceChildren();
+  const automatic = document.createElement('option');
+  automatic.value = '';
+  automatic.textContent = '自動';
+  elements.subtitleTrack.append(automatic);
+  for (const track of [...knownSubtitleTracks.values()].sort((a, b) => a.packetId - b.packetId)) {
+    const option = document.createElement('option');
+    option.value = String(track.packetId);
+    option.textContent = subtitleTrackLabel(track);
+    elements.subtitleTrack.append(option);
+  }
+  const desired = preferredSubtitlePacketId ?? selectedSubtitlePacketId;
+  elements.subtitleTrack.value = desired !== null && knownSubtitleTracks.has(desired)
+    ? String(desired) : '';
+  elements.subtitleTrack.disabled = knownSubtitleTracks.size === 0;
 }
 
 function appendLog(message) {
@@ -253,11 +294,13 @@ class AppendQueue {
     this.error = null;
     this.retryTimer = null;
     this.trimBeforeTime = null;
+    this.state = 'running';
     this.sourceBuffer.addEventListener('updateend', () => {
       this.queuedBytes -= this.currentBytes;
       this.currentBytes = 0;
+      if (this.state === 'quiescing') this.state = 'idle';
+      else this.pump();
       this.resolveWaiters();
-      this.pump();
     });
     this.sourceBuffer.addEventListener('error', () => {
       this.error = new Error(mediaErrorMessage(this.mediaElement.error) || `SourceBuffer エラー: ${mime}`);
@@ -266,12 +309,15 @@ class AppendQueue {
   }
   append(data) {
     if (this.error) throw this.error;
+    if (this.state !== 'running') {
+      throw new DOMException(`SourceBuffer キューは ${this.state} 状態です`, 'InvalidStateError');
+    }
     this.queue.push(data);
     this.queuedBytes += data.byteLength;
     this.pump();
   }
   pump() {
-    if (this.error || this.sourceBuffer.updating) return;
+    if (this.error || this.state !== 'running' || this.sourceBuffer.updating) return;
     const mediaFailure = mediaErrorMessage(this.mediaElement.error);
     if (mediaFailure) {
       this.error = new Error(mediaFailure);
@@ -320,7 +366,7 @@ class AppendQueue {
     return 0;
   }
   trimBefore(time) {
-    if (time <= 0) return;
+    if (time <= 0 || this.state !== 'running') return;
     this.trimBeforeTime = this.trimBeforeTime === null
       ? time : Math.max(this.trimBeforeTime, time);
     this.scheduleRetry();
@@ -335,38 +381,61 @@ class AppendQueue {
   waitBelow(limit) {
     if (this.error) return Promise.reject(this.error);
     if (this.queuedBytes <= limit) return Promise.resolve();
-    return new Promise((resolve, reject) => this.waiters.push({ limit, resolve, reject }));
+    return new Promise((resolve, reject) => this.waiters.push({ limit, idle: false, resolve, reject }));
   }
-  waitEmpty() { return this.waitBelow(0); }
-  discardPending() {
+  isIdle() {
+    return !this.sourceBuffer.updating && this.queuedBytes === 0 &&
+      this.queue.length === 0 && this.trimBeforeTime === null;
+  }
+  waitIdle() {
+    if (this.error) return Promise.reject(this.error);
+    if (this.isIdle()) return Promise.resolve();
+    return new Promise((resolve, reject) => this.waiters.push({ idle: true, resolve, reject }));
+  }
+  async quiesce() {
+    if (this.error) throw this.error;
+    this.state = 'quiescing';
     if (this.retryTimer !== null) clearTimeout(this.retryTimer);
     this.retryTimer = null;
+    this.trimBeforeTime = null;
     this.queue = [];
     this.queuedBytes = this.currentBytes;
+    if (!this.sourceBuffer.updating) {
+      this.currentBytes = 0;
+      this.queuedBytes = 0;
+      this.state = 'idle';
+    }
     this.resolveWaiters();
-    return this.waitEmpty();
+    await this.waitIdle();
+  }
+  resume() {
+    if (this.error || this.state === 'destroyed') return;
+    this.state = 'running';
+    this.pump();
   }
   async removeAfter(time) {
-    await this.discardPending();
-    if (this.error || this.mediaSource.readyState === 'closed') return;
-    if (this.mediaSource.readyState === 'ended') {
-      this.mediaSource.duration = this.mediaSource.duration;
+    await this.quiesce();
+    try {
+      if (this.error || this.mediaSource.readyState !== 'open') return;
+      const ranges = this.sourceBuffer.buffered;
+      let removeStart = null;
+      let removeEnd = null;
+      for (let index = 0; index < ranges.length; index += 1) {
+        if (ranges.end(index) <= time) continue;
+        removeStart = removeStart === null ? Math.max(time, ranges.start(index)) : removeStart;
+        removeEnd = ranges.end(index);
+      }
+      if (removeStart === null || removeEnd <= removeStart) return;
+      this.sourceBuffer.remove(removeStart, removeEnd);
+      await once(this.sourceBuffer, 'updateend');
+    } finally {
+      this.resume();
     }
-    const ranges = this.sourceBuffer.buffered;
-    let removeStart = null;
-    let removeEnd = null;
-    for (let index = 0; index < ranges.length; index += 1) {
-      if (ranges.end(index) <= time) continue;
-      removeStart = removeStart === null ? Math.max(time, ranges.start(index)) : removeStart;
-      removeEnd = ranges.end(index);
-    }
-    if (removeStart === null || removeEnd <= removeStart) return;
-    this.sourceBuffer.remove(removeStart, removeEnd);
-    await once(this.sourceBuffer, 'updateend');
   }
   destroy() {
     if (this.retryTimer !== null) clearTimeout(this.retryTimer);
     this.retryTimer = null;
+    this.state = 'destroyed';
     this.error = this.error || new Error('SourceBuffer キューを停止しました');
     this.queue = [];
     this.queuedBytes = 0;
@@ -378,7 +447,7 @@ class AppendQueue {
     this.waiters = [];
     for (const waiter of pending) {
       if (this.error) waiter.reject(this.error);
-      else if (this.queuedBytes <= waiter.limit) waiter.resolve();
+      else if (waiter.idle ? this.isIdle() : this.queuedBytes <= waiter.limit) waiter.resolve();
       else this.waiters.push(waiter);
     }
   }
@@ -405,9 +474,35 @@ function setRunning(running) {
   elements.liveMode.disabled = running;
 }
 
+function createSubtitleRenderer(liveMode) {
+  activeSubtitleRenderer?.destroy();
+  activeSubtitleRenderer = new B62TTMLRenderer({
+    mediaElement: elements.video,
+    overlayElement: elements.subtitleOverlay,
+    isLive: liveMode,
+    maxCues: liveMode ? 300 : 100000,
+    normalFont: '"Rounded M+ 1m for ARIB", "Hiragino Maru Gothic Pro", "BIZ UDGothic", "Yu Gothic Medium", sans-serif',
+    forceStrokeColor: '#000000',
+    strokeWidthInPlane: 4,
+    backgroundPadding: '0 0.08em',
+    lineBackground: true,
+  });
+}
+
+function timestampMilliseconds(value, timescale) {
+  if (value === null || value === undefined || !Number.isFinite(timescale) || timescale <= 0) {
+    return undefined;
+  }
+  return Number(value) * 1000 / timescale;
+}
+
 function releaseMedia() {
   activeMediaSource = null;
   activeAudioSwitch = null;
+  activeSubtitleSwitch = null;
+  activeSubtitleRenderer?.destroy();
+  activeSubtitleRenderer = null;
+  internalSeekTarget = null;
   for (const queue of activeQueues) queue.destroy();
   elements.video.pause();
   elements.video.removeAttribute('src');
@@ -427,6 +522,9 @@ function stopPlayback(quiet = false, preserveMedia = false) {
   activeController = null;
   activeProbe = null;
   activeDemuxer = null;
+  activeAudioSwitch = null;
+  activeSubtitleSwitch = null;
+  activeSubtitleRenderer?.reset();
   if (!preserveMedia) releaseMedia();
   setRunning(false);
   if (!quiet) {
@@ -537,7 +635,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     } else {
       activeQueueByType = registry;
       activeQueues = [...registry.values()];
-      await Promise.all(activeQueues.map(queue => queue.discardPending()));
+      await Promise.all(activeQueues.map(queue => queue.quiesce()));
     }
   }
   if (!reuseMedia) {
@@ -552,12 +650,26 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     if (generation !== runGeneration) return;
   }
   const mediaDuration = liveMode ? Infinity : durationSeconds(probeResult.duration);
-  mediaSource.duration = mediaDuration;
+  try {
+    mediaSource.duration = mediaDuration;
+  } catch (error) {
+    if (error.name !== 'InvalidStateError') throw error;
+    appendLog(`MediaSource 設定競合 (${error.message}) のため再構築します`);
+    if (mediaSource === activeMediaSource) releaseMedia();
+    reuseMedia = false;
+    mediaSource = await openFreshMediaSource();
+    if (generation !== runGeneration) return;
+    mediaSource.duration = mediaDuration;
+  }
+  for (const queue of activeQueues) queue.resume();
+  createSubtitleRenderer(liveMode);
 
   const queues = reuseMedia ? new Map(activeQueueByType) : new Map();
   const tracks = new Map();
   let selectedVideo = null;
   let selectedAudio = null;
+  let selectedSubtitle = null;
+  let subtitleEventCount = 0;
   let callbackError = null;
   let recoverableErrors = 0;
   let played = reuseMedia && !elements.video.paused;
@@ -661,6 +773,14 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     renderAudioTracks();
   };
 
+  const selectSubtitleTrack = track => {
+    selectedSubtitle = track.trackId;
+    selectedSubtitlePacketId = track.packetId;
+    demuxer.selectTrack('subtitle', selectedSubtitle);
+    activeSubtitleRenderer?.reset();
+    renderSubtitleTracks();
+  };
+
   let demuxer;
   demuxer = new wasmModule.TlvDemuxer({
     onMseVideoStart(detail) {
@@ -683,6 +803,11 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         renderAudioTracks();
         const desired = preferredAudioPacketId ?? selectedAudioPacketId;
         if (selectedAudio === null || track.packetId === desired) selectAudioTrack(track);
+      } else if (track.kind === 'subtitle' && track.codec === 'ttml') {
+        knownSubtitleTracks.set(track.packetId, track);
+        renderSubtitleTracks();
+        const desired = preferredSubtitlePacketId ?? selectedSubtitlePacketId;
+        if (selectedSubtitle === null || track.packetId === desired) selectSubtitleTrack(track);
       }
     },
     onAccessUnitView(unit) {
@@ -694,6 +819,35 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
               seconds: Number(unit.ptsValue) / unit.ptsTimescale,
               restartOffset: BigInt(unit.restartOffset),
             };
+          }
+        } else if (unit.trackId === selectedSubtitle && !suppressOutput) {
+          const track = tracks.get(unit.trackId);
+          if (!track || !activeSubtitleRenderer) return;
+          if (unit.discontinuity) activeSubtitleRenderer.reset();
+          const subtitleData = {
+            packetId: track.packetId,
+            mpuSequenceNumber: unit.mpuSequenceNumber ?? undefined,
+            pts: timestampMilliseconds(unit.ptsValue, unit.ptsTimescale),
+            dts: timestampMilliseconds(unit.dtsValue, unit.dtsTimescale),
+            subtitleTimingMode: track.subtitle?.timingMode,
+            subtitleReferenceStartMediaTime: timestampMilliseconds(
+              unit.subtitleReferenceStartPtsValue,
+              unit.subtitleReferenceStartPtsTimescale,
+            ),
+            data: unit.data,
+            len: unit.data.byteLength,
+            resources: (unit.subtitleResources || []).map(resource => ({
+              index: resource.subsampleNumber,
+              dataType: resource.dataType,
+              data: resource.data,
+            })),
+          };
+          const result = activeSubtitleRenderer.push(subtitleData);
+          subtitleEventCount += 1;
+          if (subtitleEventCount <= 8) {
+            appendLog(`字幕 #${subtitleEventCount} packet_id=0x${track.packetId.toString(16)}` +
+              ` cues=${result.cueCount} resources=${result.resourceCount}` +
+              ` pts=${subtitleData.pts?.toFixed(3) ?? '—'}ms`);
           }
         }
       } catch (error) { callbackError = error; }
@@ -720,6 +874,15 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     } finally {
       if (serial === audioSwitchSerial) audioSwitching = false;
     }
+  };
+  activeSubtitleSwitch = packetId => {
+    const track = [...tracks.values()].find(
+      item => item.kind === 'subtitle' && item.packetId === packetId,
+    );
+    if (!track) throw new Error(`字幕 packet_id=0x${packetId.toString(16)} は利用できません`);
+    if (track.trackId === selectedSubtitle) return;
+    selectSubtitleTrack(track);
+    appendLog(`字幕切替 packet_id=0x${packetId.toString(16)}`);
   };
   demuxer.startIndex(liveMode);
   if (typeof demuxer.setIndexDuration !== 'function' && startTimeSeconds > 0) {
@@ -785,7 +948,10 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     demuxer.reposition(offset, true);
     suppressOutput = false;
     demuxer.setMseOutputEnabled(true);
-    if (!reuseMedia) elements.video.currentTime = startTimeSeconds;
+    if (!reuseMedia) {
+      internalSeekTarget = startTimeSeconds;
+      elements.video.currentTime = startTimeSeconds;
+    }
     appendLog(`シーク ${startTimeSeconds.toFixed(3)}s -> 推定 ${formatBytes(estimate)}、RAP ${seekProbeRap.seconds.toFixed(3)}s @ ${formatBytes(offset)}、preroll ${formatBytes(preroll)}`);
   }
   if (liveMode && source.stream) {
@@ -825,7 +991,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   demuxer.delete();
   activeDemuxer = null;
   activeAudioSwitch = null;
-  await Promise.all(activeQueues.map(queue => queue.waitEmpty()));
+  activeSubtitleSwitch = null;
+  await Promise.all(activeQueues.map(queue => queue.waitIdle()));
   if (generation !== runGeneration) return;
   if (mediaSource.readyState === 'open') mediaSource.endOfStream();
   elements.probeState.textContent = liveMode ? 'Live 終了' : '読み込み完了';
@@ -838,6 +1005,9 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false) {
     knownAudioTracks = new Map();
     selectedAudioPacketId = null;
     renderAudioTracks();
+    knownSubtitleTracks = new Map();
+    selectedSubtitlePacketId = null;
+    renderSubtitleTracks();
   }
   const generation = ++runGeneration;
   const controller = new AbortController();
@@ -924,6 +1094,24 @@ elements.audioTrack.addEventListener('change', () => {
     });
   }
 });
+elements.subtitleTrack.addEventListener('change', () => {
+  const value = elements.subtitleTrack.value;
+  preferredSubtitlePacketId = value === '' ? null : Number(value);
+  try {
+    if (preferredSubtitlePacketId === null) localStorage.removeItem(SUBTITLE_STORAGE_KEY);
+    else localStorage.setItem(SUBTITLE_STORAGE_KEY, String(preferredSubtitlePacketId));
+  } catch (_) { /* Keep track switching available without storage. */ }
+  const target = preferredSubtitlePacketId === null
+    ? knownSubtitleTracks.values().next().value
+    : knownSubtitleTracks.get(preferredSubtitlePacketId);
+  if (target && activeSubtitleSwitch) {
+    try { activeSubtitleSwitch(target.packetId); }
+    catch (error) {
+      appendLog(`字幕切替エラー ${error.message || error}`);
+      console.error(error);
+    }
+  }
+});
 elements.video.addEventListener('error', () => {
   const message = mediaErrorMessage();
   appendLog(`映像エラー ${message || '不明'}`);
@@ -934,6 +1122,8 @@ elements.video.addEventListener('error', () => {
 elements.video.addEventListener('seeking', () => {
   if (currentLiveMode || !activeMediaSource) return;
   const target = elements.video.currentTime;
+  if (internalSeekTarget !== null && Math.abs(target - internalSeekTarget) < 0.1) return;
+  internalSeekTarget = null;
   if (isTimeBuffered(target)) return;
   clearTimeout(seekTimer);
   seekTimer = setTimeout(() => {
@@ -942,6 +1132,12 @@ elements.video.addEventListener('seeking', () => {
     stopPlayback(true, true);
     loadAndPlay(target, true);
   }, 120);
+});
+elements.video.addEventListener('seeked', () => {
+  if (internalSeekTarget !== null &&
+      Math.abs(elements.video.currentTime - internalSeekTarget) < 0.1) {
+    internalSeekTarget = null;
+  }
 });
 
 if (typeof createTlvDemuxModule !== 'function') {

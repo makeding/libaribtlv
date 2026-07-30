@@ -99,6 +99,16 @@ const char* index_state_name(const tlvdemux::IndexState state) noexcept {
     return "unknown";
 }
 
+const char* application_collection_state_name(
+    const tlvdemux::ApplicationCollectionState state) noexcept {
+    switch (state) {
+    case tlvdemux::ApplicationCollectionState::Discovered: return "discovered";
+    case tlvdemux::ApplicationCollectionState::Collecting: return "collecting";
+    case tlvdemux::ApplicationCollectionState::Ready: return "ready";
+    }
+    return "discovered";
+}
+
 val duration_value(const tlvdemux::DurationInfo duration) {
     if (duration.status == tlvdemux::DurationStatus::Unknown) return val::null();
     auto result = val::object();
@@ -372,6 +382,44 @@ public:
         emit("onError", event);
     }
 
+    void onApplicationState(const tlvdemux::ApplicationState& state) override {
+        auto event = val::object();
+        event.set("contextId", state.application.context_id);
+        event.set("sourcePacketId", state.application.source_packet_id);
+        event.set("applicationType", state.application.application_type);
+        event.set("organizationId", state.application.organization_id);
+        event.set("applicationId", state.application.application_id);
+        event.set("controlCode", state.application.control_code);
+        event.set("version", state.application.version);
+        event.set("entryPath", state.application.entry_path);
+        auto urls = val::array();
+        for (std::size_t index = 0; index < state.application.transport_urls.size(); ++index) {
+            urls.set(index, state.application.transport_urls[index]);
+        }
+        event.set("transportUrls", urls);
+        event.set("state", std::string(application_collection_state_name(state.state)));
+        event.set("entryReady", state.entry_ready);
+        event.set("resourceCount", state.resource_count);
+        emit("onApplicationState", event);
+    }
+
+    void onApplicationResource(tlvdemux::ApplicationResource&& resource) override {
+        if (has_callback("onApplicationResourceView")) {
+            auto event = application_resource_event(resource, view_bytes(resource.data));
+            event.set("dataLifetime", std::string("callback"));
+            emit("onApplicationResourceView", event);
+            return;
+        }
+        if (has_callback("onApplicationResource")) {
+            emit("onApplicationResource",
+                 application_resource_event(resource, copy_bytes(resource.data)));
+        }
+    }
+
+    void onApplicationResourcesReset() override {
+        emit("onApplicationResourcesReset", val::object());
+    }
+
 private:
     static val access_unit_event(const tlvdemux::AccessUnit& unit, const val& data) {
         auto event = val::object();
@@ -382,10 +430,50 @@ private:
         event.set("ptsTimescale", unit.pts.timescale);
         event.set("dtsValue", unit.dts.value);
         event.set("dtsTimescale", unit.dts.timescale);
+        event.set("mpuSequenceNumber", unit.mpu_sequence_number.has_value()
+                                           ? val(*unit.mpu_sequence_number)
+                                           : val::null());
+        if (unit.subtitle_reference_start_pts.has_value()) {
+            event.set("subtitleReferenceStartPtsValue",
+                      unit.subtitle_reference_start_pts->value);
+            event.set("subtitleReferenceStartPtsTimescale",
+                      unit.subtitle_reference_start_pts->timescale);
+        } else {
+            event.set("subtitleReferenceStartPtsValue", val::null());
+            event.set("subtitleReferenceStartPtsTimescale", val::null());
+        }
+        auto resources = val::array();
+        for (std::size_t index = 0; index < unit.subtitle_resources.size(); ++index) {
+            const auto& source = unit.subtitle_resources[index];
+            auto resource = val::object();
+            resource.set("subsampleNumber", source.subsample_number);
+            resource.set("dataType", source.data_type);
+            // B62RendererStateMachine keeps a resource scope beyond this
+            // callback, so resource payloads cannot borrow the AccessUnit.
+            resource.set("data", copy_bytes(source.data));
+            resources.set(index, resource);
+        }
+        event.set("subtitleResources", resources);
         event.set("restartOffset", unit.restart_offset);
         event.set("inputOffset", unit.input_offset);
         event.set("randomAccess", unit.random_access);
         event.set("discontinuity", unit.discontinuity);
+        return event;
+    }
+
+    static val application_resource_event(const tlvdemux::ApplicationResource& resource,
+                                          const val& data) {
+        auto event = val::object();
+        event.set("contextId", resource.context_id);
+        event.set("componentTag", resource.component_tag);
+        event.set("transactionId", resource.transaction_id);
+        event.set("downloadId", resource.download_id);
+        event.set("mpuSequenceNumber", resource.mpu_sequence_number);
+        event.set("itemId", resource.item_id);
+        event.set("version", resource.version);
+        event.set("path", resource.path);
+        event.set("contentType", resource.content_type);
+        event.set("data", data);
         return event;
     }
 

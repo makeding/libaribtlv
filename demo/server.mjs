@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { extname, resolve, sep } from 'node:path';
 
 const root = resolve(process.cwd());
+const aribb62Root = resolve(root, '..', 'aribb62.js');
 const port = Number(process.argv[2] || 8000);
 const mimeTypes = new Map([
   ['.css', 'text/css; charset=utf-8'],
@@ -43,8 +44,13 @@ const server = createServer(async (request, response) => {
     }
     const url = new URL(request.url || '/', 'http://localhost');
     let pathname = decodeURIComponent(url.pathname);
-    let filename = resolve(root, `.${pathname}`);
-    if (filename !== root && !filename.startsWith(`${root}${sep}`)) {
+    let staticRoot = root;
+    if (pathname.startsWith('/aribb62.js/')) {
+      staticRoot = aribb62Root;
+      pathname = pathname.slice('/aribb62.js'.length);
+    }
+    let filename = resolve(staticRoot, `.${pathname}`);
+    if (filename !== staticRoot && !filename.startsWith(`${staticRoot}${sep}`)) {
       response.writeHead(403);
       response.end('Forbidden');
       return;

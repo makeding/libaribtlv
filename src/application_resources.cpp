@@ -1,7 +1,9 @@
 #include <tlvdemux/application_resources.hpp>
 
 #include <algorithm>
+#include <condition_variable>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -486,5 +488,105 @@ void ApplicationResourceAssembler::onDataUnit(const DataUnit& value) {
     impl_->unit(value);
 }
 void ApplicationResourceAssembler::reset() { impl_->reset(); }
+
+class ApplicationResourceStore::Impl {
+public:
+    struct StoredResource {
+        std::shared_ptr<const ApplicationResource> resource;
+        std::uint64_t generation = 0;
+    };
+
+    mutable std::mutex mutex;
+    mutable std::condition_variable changed;
+    std::map<std::pair<std::uint32_t, std::string>, StoredResource> resources;
+    std::unordered_map<std::string, ApplicationState> application_states;
+    std::uint64_t generation = 0;
+};
+
+ApplicationResourceStore::ApplicationResourceStore() : impl_(std::make_unique<Impl>()) {}
+ApplicationResourceStore::~ApplicationResourceStore() = default;
+ApplicationResourceStore::ApplicationResourceStore(ApplicationResourceStore&&) noexcept = default;
+ApplicationResourceStore& ApplicationResourceStore::operator=(
+    ApplicationResourceStore&&) noexcept = default;
+
+void ApplicationResourceStore::onApplicationState(const ApplicationState& state) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->application_states[application_key(state.application)] = state;
+    ++impl_->generation;
+    impl_->changed.notify_all();
+}
+
+void ApplicationResourceStore::onApplicationResource(ApplicationResource&& resource) {
+    auto shared = std::make_shared<const ApplicationResource>(std::move(resource));
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    ++impl_->generation;
+    impl_->resources[{shared->context_id, shared->path}] =
+        Impl::StoredResource{std::move(shared), impl_->generation};
+    impl_->changed.notify_all();
+}
+
+void ApplicationResourceStore::onApplicationResourcesReset() { clear(); }
+
+std::shared_ptr<const ApplicationResource> ApplicationResourceStore::get(
+    const std::uint32_t context_id, const std::string& path) const {
+    const auto normalized = safe_path(path);
+    if (!normalized.has_value()) return {};
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    const auto found = impl_->resources.find({context_id, *normalized});
+    return found == impl_->resources.end() ? nullptr : found->second.resource;
+}
+
+std::shared_ptr<const ApplicationResource> ApplicationResourceStore::waitFor(
+    const std::uint32_t context_id, const std::string& path,
+    const std::chrono::milliseconds timeout) const {
+    const auto normalized = safe_path(path);
+    if (!normalized.has_value()) return {};
+    std::unique_lock<std::mutex> lock(impl_->mutex);
+    const auto key = std::make_pair(context_id, *normalized);
+    if (!impl_->changed.wait_for(lock, timeout, [&] {
+            return impl_->resources.find(key) != impl_->resources.end();
+        })) {
+        return {};
+    }
+    return impl_->resources.at(key).resource;
+}
+
+std::vector<ApplicationResourceMetadata> ApplicationResourceStore::list(
+    const std::optional<std::uint32_t> context_id) const {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    std::vector<ApplicationResourceMetadata> result;
+    result.reserve(impl_->resources.size());
+    for (const auto& item : impl_->resources) {
+        const auto& resource = *item.second.resource;
+        if (context_id.has_value() && resource.context_id != *context_id) continue;
+        result.push_back(ApplicationResourceMetadata{
+            resource.context_id, resource.component_tag, resource.transaction_id,
+            resource.download_id, resource.mpu_sequence_number, resource.item_id,
+            resource.version, resource.path, resource.content_type, resource.data.size(),
+            item.second.generation});
+    }
+    return result;
+}
+
+std::vector<ApplicationState> ApplicationResourceStore::applications() const {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    std::vector<ApplicationState> result;
+    result.reserve(impl_->application_states.size());
+    for (const auto& item : impl_->application_states) result.push_back(item.second);
+    return result;
+}
+
+std::uint64_t ApplicationResourceStore::generation() const {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->generation;
+}
+
+void ApplicationResourceStore::clear() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->resources.clear();
+    impl_->application_states.clear();
+    ++impl_->generation;
+    impl_->changed.notify_all();
+}
 
 } // namespace tlvdemux
