@@ -17,9 +17,19 @@ public:
     using ServiceCallback = std::function<void(ServiceInfo)>;
     using TrackCallback = std::function<std::uint64_t(TrackInfo)>;
     using AccessUnitCallback = std::function<void(TimedAccessUnit)>;
+    using ApplicationServiceCallback = std::function<void(ApplicationServiceInfo)>;
+    using DataAssetCallback = std::function<void(DataAssetInfo)>;
+    using SignallingCallback = std::function<void(SignallingMessage)>;
+    using ApplicationCallback = std::function<void(ApplicationInfo)>;
+    using DataTransmissionCallback = std::function<void(DataTransmissionTable)>;
+    using DataDirectoryCallback = std::function<void(DataDirectoryTable)>;
+    using DataAssetManagementCallback = std::function<void(DataAssetManagementTable)>;
 
     CompressedIpParser(const Limits&, ServiceCallback, TrackCallback,
-                       AccessUnitCallback, ErrorCallback);
+                       AccessUnitCallback, ApplicationServiceCallback,
+                       DataAssetCallback, SignallingCallback, ApplicationCallback,
+                       DataTransmissionCallback, DataDirectoryCallback,
+                       DataAssetManagementCallback, ErrorCallback);
 
     void consume(const TlvPacketView&);
     void flush();
@@ -35,6 +45,13 @@ private:
     ServiceCallback on_service_;
     TrackCallback on_track_;
     AccessUnitCallback on_access_unit_;
+    ApplicationServiceCallback on_application_service_;
+    DataAssetCallback on_data_asset_;
+    SignallingCallback on_signalling_;
+    ApplicationCallback on_application_;
+    DataTransmissionCallback on_data_transmission_;
+    DataDirectoryCallback on_data_directory_;
+    DataAssetManagementCallback on_data_asset_management_;
     ErrorCallback on_error_;
     std::optional<std::uint32_t> selected_service_;
     std::size_t active_packet_states_ = 0;

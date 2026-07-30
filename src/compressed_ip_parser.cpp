@@ -6,9 +6,23 @@ namespace tlvdemux::detail {
 
 CompressedIpParser::CompressedIpParser(const Limits& limits, ServiceCallback on_service,
                                        TrackCallback on_track, AccessUnitCallback on_access_unit,
+                                       ApplicationServiceCallback on_application_service,
+                                       DataAssetCallback on_data_asset,
+                                       SignallingCallback on_signalling,
+                                       ApplicationCallback on_application,
+                                       DataTransmissionCallback on_data_transmission,
+                                       DataDirectoryCallback on_data_directory,
+                                       DataAssetManagementCallback on_data_asset_management,
                                        ErrorCallback on_error)
     : limits_(limits), on_service_(std::move(on_service)), on_track_(std::move(on_track)),
-      on_access_unit_(std::move(on_access_unit)), on_error_(std::move(on_error)) {}
+      on_access_unit_(std::move(on_access_unit)),
+      on_application_service_(std::move(on_application_service)),
+      on_data_asset_(std::move(on_data_asset)), on_signalling_(std::move(on_signalling)),
+      on_application_(std::move(on_application)),
+      on_data_transmission_(std::move(on_data_transmission)),
+      on_data_directory_(std::move(on_data_directory)),
+      on_data_asset_management_(std::move(on_data_asset_management)),
+      on_error_(std::move(on_error)) {}
 
 void CompressedIpParser::reset() {
     contexts_.clear();
@@ -43,7 +57,9 @@ MmtpParser* CompressedIpParser::context(const std::uint32_t context_id,
         [this](const std::uint32_t id, std::vector<std::uint8_t> package_id) {
             on_service_(ServiceInfo{id, std::move(package_id)});
         },
-        on_track_, on_access_unit_,
+        on_track_, on_access_unit_, on_application_service_, on_data_asset_, on_signalling_,
+        on_application_, on_data_transmission_,
+        on_data_directory_, on_data_asset_management_,
         [this]() {
             if (active_packet_states_ >= limits_.max_packet_states) return false;
             ++active_packet_states_;

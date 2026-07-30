@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace {
 
@@ -55,6 +56,7 @@ struct Inspector final : tlvdemux::Sink {
     bool list = false;
     bool trace = false;
     std::unordered_map<std::uint64_t, tlvdemux::TrackInfo> tracks;
+    std::unordered_set<std::string> signalling;
     std::optional<std::uint64_t> video_track;
     std::optional<std::uint64_t> audio_track;
     std::optional<std::uint64_t> subtitle_track;
@@ -102,6 +104,70 @@ struct Inspector final : tlvdemux::Sink {
             }
             std::cerr << '\n';
         }
+    }
+
+    void onApplicationService(const tlvdemux::ApplicationServiceInfo& info) override {
+        if (!list) return;
+        std::cerr << "application-service context=" << info.context_id
+                  << " format=0x" << std::hex
+                  << static_cast<unsigned>(info.application_format)
+                  << " resolution=0x" << static_cast<unsigned>(info.document_resolution)
+                  << std::dec << " default-ait=" << info.default_ait
+                  << " data-transmission=" << info.has_data_transmission_messages;
+        if (info.ait_packet_id.has_value()) {
+            std::cerr << " ait-packet-id=0x" << std::hex << *info.ait_packet_id << std::dec;
+        }
+        if (info.data_transmission_packet_id.has_value()) {
+            std::cerr << " data-packet-id=0x" << std::hex
+                      << *info.data_transmission_packet_id << std::dec;
+        }
+        std::cerr << '\n';
+    }
+
+    void onDataAsset(const tlvdemux::DataAssetInfo& info) override {
+        if (!list) return;
+        std::cerr << "data-asset context=" << info.context_id
+                  << " packet-id=0x" << std::hex << info.packet_id << std::dec
+                  << " type=" << info.asset_type
+                  << " component-tag=0x" << std::hex << info.component_tag << std::dec
+                  << " asset-id-bytes=" << info.asset_id.size() << '\n';
+    }
+
+    void onSignallingMessage(tlvdemux::SignallingMessage&& message) override {
+        if (!list) return;
+        const auto key = std::to_string(message.context_id) + ':' +
+            std::to_string(message.packet_id) + ':' + std::to_string(message.message_id);
+        if (!signalling.insert(key).second) return;
+        std::cerr << "signalling context=" << message.context_id
+                  << " packet-id=0x" << std::hex << message.packet_id
+                  << " message-id=0x" << message.message_id << std::dec
+                  << " size=" << message.data.size() << '\n';
+    }
+
+    void onApplication(const tlvdemux::ApplicationInfo& info) override {
+        if (!list) return;
+        std::cerr << "application context=" << info.context_id
+                  << " source-packet-id=0x" << std::hex << info.source_packet_id
+                  << " type=0x" << info.application_type
+                  << " organization-id=0x" << info.organization_id
+                  << " application-id=0x" << info.application_id
+                  << " control=0x" << static_cast<unsigned>(info.control_code)
+                  << std::dec << " version=" << static_cast<unsigned>(info.version)
+                  << " entry=" << info.entry_path;
+        for (const auto& url : info.transport_urls) std::cerr << " transport=" << url;
+        std::cerr << '\n';
+    }
+
+    void onDataTransmissionTable(tlvdemux::DataTransmissionTable&& table) override {
+        if (!list) return;
+        std::cerr << "data-table context=" << table.context_id
+                  << " source-packet-id=0x" << std::hex << table.source_packet_id
+                  << " table-id=0x" << static_cast<unsigned>(table.table_id)
+                  << std::dec << " session=" << static_cast<unsigned>(table.session_id)
+                  << " version=" << static_cast<unsigned>(table.version)
+                  << " section=" << static_cast<unsigned>(table.section_number)
+                  << '/' << static_cast<unsigned>(table.last_section_number)
+                  << " size=" << table.data.size() << '\n';
     }
 
     void onAccessUnit(tlvdemux::AccessUnit&& unit) override {

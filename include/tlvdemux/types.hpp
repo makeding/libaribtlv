@@ -69,6 +69,110 @@ struct ServiceInfo {
     std::vector<std::uint8_t> package_id;
 };
 
+struct ApplicationServiceInfo {
+    std::uint32_t context_id = 0;
+    std::uint8_t application_format = 0;
+    std::uint8_t document_resolution = 0;
+    bool default_ait = false;
+    bool has_data_transmission_messages = false;
+    std::optional<std::uint16_t> ait_packet_id;
+    std::optional<std::uint16_t> data_transmission_packet_id;
+};
+
+struct DataAssetInfo {
+    std::uint32_t context_id = 0;
+    std::uint16_t packet_id = 0;
+    std::vector<std::uint8_t> asset_id;
+    std::string asset_type;
+    std::uint16_t component_tag = 0;
+};
+
+struct SignallingMessage {
+    std::uint32_t context_id = 0;
+    std::uint16_t packet_id = 0;
+    std::uint16_t message_id = 0;
+    std::vector<std::uint8_t> data;
+    std::uint64_t input_offset = 0;
+};
+
+struct ApplicationInfo {
+    std::uint32_t context_id = 0;
+    std::uint16_t source_packet_id = 0;
+    std::uint16_t application_type = 0;
+    std::uint16_t organization_id = 0;
+    std::uint32_t application_id = 0;
+    std::uint8_t control_code = 0;
+    std::uint8_t version = 0;
+    std::string entry_path;
+    std::vector<std::string> transport_urls;
+};
+
+struct DataTransmissionTable {
+    std::uint32_t context_id = 0;
+    std::uint16_t source_packet_id = 0;
+    std::uint8_t table_id = 0;
+    std::uint8_t session_id = 0;
+    std::uint8_t version = 0;
+    std::uint8_t section_number = 0;
+    std::uint8_t last_section_number = 0;
+    std::vector<std::uint8_t> data;
+    std::uint64_t input_offset = 0;
+};
+
+struct DataDirectoryFile {
+    std::uint16_t node_tag = 0;
+    std::string name;
+};
+
+struct DataDirectoryNode {
+    std::uint16_t node_tag = 0;
+    std::uint8_t version = 0;
+    std::string path;
+    std::vector<DataDirectoryFile> files;
+};
+
+struct DataDirectoryTable {
+    std::uint32_t context_id = 0;
+    std::uint8_t session_id = 0;
+    std::uint8_t version = 0;
+    std::uint8_t section_number = 0;
+    std::uint8_t last_section_number = 0;
+    std::string base_path;
+    std::vector<DataDirectoryNode> directories;
+};
+
+struct DataAssetItem {
+    std::uint16_t node_tag = 0;
+    std::optional<std::uint32_t> item_id;
+    std::optional<std::uint32_t> size;
+    std::optional<std::uint8_t> version;
+    std::optional<std::uint32_t> checksum;
+    std::vector<std::uint8_t> info;
+};
+
+struct DataAssetMpu {
+    std::uint32_t sequence_number = 0;
+    std::uint32_t size = 0;
+    bool index_item = false;
+    std::optional<std::uint32_t> index_item_id;
+    std::uint8_t index_item_compression_type = 0;
+    std::vector<DataAssetItem> items;
+    std::vector<std::uint8_t> info;
+};
+
+struct DataAssetManagementTable {
+    std::uint32_t context_id = 0;
+    std::uint8_t session_id = 0;
+    std::uint8_t version = 0;
+    std::uint8_t section_number = 0;
+    std::uint8_t last_section_number = 0;
+    std::uint32_t transaction_id = 0;
+    std::uint16_t component_tag = 0;
+    std::uint32_t download_id = 0;
+    std::vector<DataAssetMpu> mpus;
+    std::vector<std::uint8_t> component_info;
+};
+
 struct TrackInfo {
     std::uint64_t track_id = 0;
     std::uint32_t context_id = 0;

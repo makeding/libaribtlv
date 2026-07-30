@@ -21,6 +21,13 @@ public:
     virtual void onTrack(const TrackInfo&) = 0;
     virtual void onAccessUnit(AccessUnit&&) = 0;
     virtual void onError(const Error&) = 0;
+    virtual void onApplicationService(const ApplicationServiceInfo&) {}
+    virtual void onDataAsset(const DataAssetInfo&) {}
+    virtual void onSignallingMessage(SignallingMessage&&) {}
+    virtual void onApplication(const ApplicationInfo&) {}
+    virtual void onDataTransmissionTable(DataTransmissionTable&&) {}
+    virtual void onDataDirectoryTable(const DataDirectoryTable&) {}
+    virtual void onDataAssetManagementTable(const DataAssetManagementTable&) {}
 };
 
 class Demuxer {

@@ -47,11 +47,21 @@ public:
     using PackageCallback = std::function<void(std::uint32_t, std::vector<std::uint8_t>)>;
     using TrackCallback = std::function<std::uint64_t(TrackInfo)>;
     using AccessUnitCallback = std::function<void(TimedAccessUnit)>;
+    using ApplicationServiceCallback = std::function<void(ApplicationServiceInfo)>;
+    using DataAssetCallback = std::function<void(DataAssetInfo)>;
+    using SignallingCallback = std::function<void(SignallingMessage)>;
+    using ApplicationCallback = std::function<void(ApplicationInfo)>;
+    using DataTransmissionCallback = std::function<void(DataTransmissionTable)>;
+    using DataDirectoryCallback = std::function<void(DataDirectoryTable)>;
+    using DataAssetManagementCallback = std::function<void(DataAssetManagementTable)>;
     using StateAcquireCallback = std::function<bool()>;
     using StateReleaseCallback = std::function<void()>;
 
     MmtpParser(std::uint32_t context_id, const Limits&, PackageCallback,
-               TrackCallback, AccessUnitCallback, StateAcquireCallback,
+               TrackCallback, AccessUnitCallback, ApplicationServiceCallback,
+               DataAssetCallback, SignallingCallback, ApplicationCallback,
+               DataTransmissionCallback, DataDirectoryCallback,
+               DataAssetManagementCallback, StateAcquireCallback,
                StateReleaseCallback, ErrorCallback);
     ~MmtpParser();
 
@@ -149,18 +159,29 @@ private:
     void finalize_hevc(TrackState&);
     void install_track(TrackInfo, AssetMetadata, std::uint64_t input_offset);
     void release_all_states();
-    void accept_signalling_unit(const std::uint8_t* data, std::size_t size,
+    void accept_signalling_unit(std::uint16_t packet_id,
+                                const std::uint8_t* data, std::size_t size,
                                 std::uint64_t input_offset);
-    bool parse_pa_message(const std::uint8_t* data, std::size_t size,
+    bool parse_pa_message(std::uint16_t packet_id,
+                          const std::uint8_t* data, std::size_t size,
                           std::uint64_t input_offset);
-    bool parse_m2_message(const std::uint8_t* data, std::size_t size,
+    bool parse_m2_message(std::uint16_t packet_id,
+                          const std::uint8_t* data, std::size_t size,
                           std::uint64_t input_offset);
+    bool parse_data_transmission_message(std::uint16_t packet_id,
+                                         const std::uint8_t* data, std::size_t size,
+                                         std::uint64_t input_offset);
     bool parse_tables(const std::uint8_t* data, std::size_t size,
+                      std::uint16_t packet_id,
                       std::uint64_t input_offset);
     bool parse_mpt(const std::uint8_t* data, std::size_t size,
                    std::uint64_t input_offset);
     bool parse_package_list(const std::uint8_t* data, std::size_t size,
                             std::uint64_t input_offset);
+    bool parse_mh_ait(const std::uint8_t* data, std::size_t size,
+                      std::uint16_t packet_id, std::uint64_t input_offset);
+    bool parse_data_directory_table(const DataTransmissionTable&);
+    bool parse_data_asset_management_table(const DataTransmissionTable&);
     bool append(SignallingAssembler&, const std::uint8_t*, std::size_t,
                 std::uint64_t input_offset);
 
@@ -169,6 +190,13 @@ private:
     PackageCallback on_package_;
     TrackCallback on_track_;
     AccessUnitCallback on_access_unit_;
+    ApplicationServiceCallback on_application_service_;
+    DataAssetCallback on_data_asset_;
+    SignallingCallback on_signalling_;
+    ApplicationCallback on_application_;
+    DataTransmissionCallback on_data_transmission_;
+    DataDirectoryCallback on_data_directory_;
+    DataAssetManagementCallback on_data_asset_management_;
     StateAcquireCallback acquire_state_;
     StateReleaseCallback release_state_;
     ErrorCallback on_error_;

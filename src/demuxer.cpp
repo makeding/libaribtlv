@@ -18,6 +18,13 @@ public:
               [this](ServiceInfo info) { service(std::move(info)); },
               [this](TrackInfo info) { return track(std::move(info)); },
               [this](detail::TimedAccessUnit unit) { access_unit(std::move(unit)); },
+              [this](ApplicationServiceInfo info) { application_service(std::move(info)); },
+              [this](DataAssetInfo info) { data_asset(std::move(info)); },
+              [this](SignallingMessage message) { signalling(std::move(message)); },
+              [this](ApplicationInfo info) { application(std::move(info)); },
+              [this](DataTransmissionTable table) { data_transmission(std::move(table)); },
+              [this](DataDirectoryTable table) { data_directory(std::move(table)); },
+              [this](DataAssetManagementTable table) { data_asset_management(std::move(table)); },
               [this](const ErrorCode code, const std::uint64_t offset,
                      const bool recoverable, std::string message) {
                   error(code, offset, recoverable, std::move(message));
@@ -53,6 +60,10 @@ public:
         ip_.reset();
         services_.clear();
         current_tracks_.clear();
+        application_services_.clear();
+        data_assets_.clear();
+        applications_.clear();
+        data_transmission_tables_.clear();
         error_counts_.clear();
         origin_.reset();
         reposition_epoch_ = 0;
@@ -88,6 +99,10 @@ public:
         ip_.select_service(context_id);
         services_.clear();
         current_tracks_.clear();
+        application_services_.clear();
+        data_assets_.clear();
+        applications_.clear();
+        data_transmission_tables_.clear();
         origin_.reset();
     }
 
@@ -183,6 +198,81 @@ private:
         current_tracks_[info.track_id] = info;
         sink_.onTrack(info);
         return info.track_id;
+    }
+
+    void application_service(ApplicationServiceInfo info) {
+        if (selected_service_.has_value() && *selected_service_ != info.context_id) return;
+        const auto key = std::to_string(info.context_id) + ':' +
+            std::to_string(info.ait_packet_id.value_or(0xffffU)) + ':' +
+            std::to_string(info.data_transmission_packet_id.value_or(0xffffU));
+        const auto found = application_services_.find(key);
+        if (found != application_services_.end() &&
+            found->second.application_format == info.application_format &&
+            found->second.document_resolution == info.document_resolution &&
+            found->second.default_ait == info.default_ait &&
+            found->second.has_data_transmission_messages == info.has_data_transmission_messages) {
+            return;
+        }
+        application_services_[key] = info;
+        sink_.onApplicationService(info);
+    }
+
+    void data_asset(DataAssetInfo info) {
+        if (selected_service_.has_value() && *selected_service_ != info.context_id) return;
+        std::string key = std::to_string(info.context_id) + ':' + std::to_string(info.packet_id) + ':';
+        key.append(reinterpret_cast<const char*>(info.asset_id.data()), info.asset_id.size());
+        const auto found = data_assets_.find(key);
+        if (found != data_assets_.end() && found->second.asset_type == info.asset_type &&
+            found->second.component_tag == info.component_tag) {
+            return;
+        }
+        data_assets_[key] = info;
+        sink_.onDataAsset(info);
+    }
+
+    void signalling(SignallingMessage message) {
+        if (selected_service_.has_value() && *selected_service_ != message.context_id) return;
+        sink_.onSignallingMessage(std::move(message));
+    }
+
+    void application(ApplicationInfo info) {
+        if (selected_service_.has_value() && *selected_service_ != info.context_id) return;
+        const auto key = std::to_string(info.context_id) + ':' +
+            std::to_string(info.application_type) + ':' +
+            std::to_string(info.organization_id) + ':' + std::to_string(info.application_id);
+        const auto found = applications_.find(key);
+        if (found != applications_.end() && found->second.version == info.version &&
+            found->second.control_code == info.control_code &&
+            found->second.entry_path == info.entry_path &&
+            found->second.transport_urls == info.transport_urls) {
+            return;
+        }
+        applications_[key] = info;
+        sink_.onApplication(info);
+    }
+
+    void data_transmission(DataTransmissionTable table) {
+        if (selected_service_.has_value() && *selected_service_ != table.context_id) return;
+        const auto key = std::to_string(table.context_id) + ':' +
+            std::to_string(table.table_id) + ':' + std::to_string(table.session_id) + ':' +
+            std::to_string(table.section_number);
+        const auto found = data_transmission_tables_.find(key);
+        if (found != data_transmission_tables_.end() && found->second.version == table.version &&
+            found->second.data == table.data) {
+            return;
+        }
+        data_transmission_tables_[key] = table;
+        sink_.onDataTransmissionTable(std::move(table));
+    }
+
+    void data_directory(DataDirectoryTable table) {
+        if (selected_service_.has_value() && *selected_service_ != table.context_id) return;
+        sink_.onDataDirectoryTable(table);
+    }
+
+    void data_asset_management(DataAssetManagementTable table) {
+        if (selected_service_.has_value() && *selected_service_ != table.context_id) return;
+        sink_.onDataAssetManagementTable(table);
     }
 
     static bool ntp_delta_ticks(const std::uint64_t current, const std::uint64_t origin,
@@ -341,6 +431,10 @@ private:
     std::unordered_map<std::uint32_t, std::vector<std::uint8_t>> services_;
     std::unordered_map<std::string, std::uint64_t> track_ids_;
     std::unordered_map<std::uint64_t, TrackInfo> current_tracks_;
+    std::unordered_map<std::string, ApplicationServiceInfo> application_services_;
+    std::unordered_map<std::string, DataAssetInfo> data_assets_;
+    std::unordered_map<std::string, ApplicationInfo> applications_;
+    std::unordered_map<std::string, DataTransmissionTable> data_transmission_tables_;
     std::uint64_t next_track_id_ = 1;
     std::unordered_map<std::string, std::uint64_t> error_counts_;
     std::uint64_t reposition_epoch_ = 0;
