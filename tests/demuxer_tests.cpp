@@ -457,6 +457,70 @@ std::vector<std::uint8_t> signalling_tlv(const std::uint32_t sequence,
     return tlv(0x03, compressed_payload);
 }
 
+std::vector<std::uint8_t> mh_eit_message() {
+    const std::string title = "録画された番組";
+    const std::string description = "番組概要";
+    std::vector<std::uint8_t> short_event{'j', 'p', 'n',
+        static_cast<std::uint8_t>(title.size())};
+    short_event.insert(short_event.end(), title.begin(), title.end());
+    append_u16(short_event, description.size());
+    short_event.insert(short_event.end(), description.begin(), description.end());
+
+    std::vector<std::uint8_t> descriptors;
+    append_u16(descriptors, 0xf001);
+    append_u16(descriptors, short_event.size());
+    descriptors.insert(descriptors.end(), short_event.begin(), short_event.end());
+
+    std::vector<std::uint8_t> section{
+        0x8b, 0xf0, 0x00,
+        0x00, 0x65, // service_id 101
+        0xc7,       // version 3, current_next=1
+        0x00, 0x01,
+        0x00, 0x0b, // tlv_stream_id 11
+        0x00, 0x04, // original_network_id 4
+        0x01, 0x8b,
+        0x12, 0x34,
+        0xc0, 0x79, 0x12, 0x45, 0x00, // 1993-10-13 12:45:00 JST
+        0x01, 0x45, 0x30,
+        static_cast<std::uint8_t>(0x80U | (descriptors.size() >> 8U)),
+        static_cast<std::uint8_t>(descriptors.size()),
+    };
+    section.insert(section.end(), descriptors.begin(), descriptors.end());
+    append_u32(section, 0);
+    const auto section_length = section.size() - 3;
+    section[1] = static_cast<std::uint8_t>(0xf0U | (section_length >> 8U));
+    section[2] = static_cast<std::uint8_t>(section_length);
+
+    std::vector<std::uint8_t> message{0x80, 0x00, 0x00};
+    append_u16(message, section.size());
+    message.insert(message.end(), section.begin(), section.end());
+    return message;
+}
+
+void test_mh_eit_program_events() {
+    const auto message = mh_eit_message();
+    auto stream = signalling_tlv(1, 0, message);
+    const auto repeated = signalling_tlv(2, 0, message);
+    stream.insert(stream.end(), repeated.begin(), repeated.end());
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+    check(sink.events.size() == 1, "repeated MH-EIT event was not deduplicated");
+    const auto& event = sink.events[0];
+    check(event.table_id == 0x8b && event.current_next && event.section_number == 0 &&
+              event.service_id == 101 && event.tlv_stream_id == 11 &&
+              event.original_network_id == 4 && event.event_id == 0x1234,
+          "MH-EIT event identity was not parsed");
+    check(event.start_time_unix_milliseconds == std::optional<std::int64_t>{750483900000LL} &&
+              event.duration_seconds == std::optional<std::uint32_t>{6330},
+          "MH-EIT MJD/BCD time was not converted from JST");
+    check(event.running_status == 4 && !event.free_ca_mode && event.language == "jpn" &&
+              event.title == "録画された番組" && event.description == "番組概要",
+          "MH short-event descriptor was not parsed");
+}
+
 void test_global_packet_state_budget() {
     const auto data = discovery_stream();
     tlvdemux::Limits limits;
@@ -1232,6 +1296,7 @@ int main() {
     test_global_packet_state_budget();
     test_track_discovery_and_deduplication();
     test_application_and_data_transmission_signalling();
+    test_mh_eit_program_events();
     test_dynamic_audio_layout_metadata();
     test_authenticated_mmtp_payload_bounds();
     test_codec_output_and_timeline();

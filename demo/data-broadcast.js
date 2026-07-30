@@ -34,6 +34,41 @@ export function createDemoProgramInfo(is8k, now = Date.now()) {
   };
 }
 
+export function createProgramInfoFromEvents(present, following = null) {
+  if (!present) return null;
+  const startTime = Number(present.startTimeUnixMilliseconds);
+  const durationSeconds = Number(present.durationSeconds);
+  if (!Number.isFinite(startTime) || !(durationSeconds > 0)) return null;
+  const result = {
+    original_network_id: Number(present.originalNetworkId),
+    transport_stream_id: Number(present.tlvStreamId),
+    service_id: Number(present.serviceId),
+    event_id: Number(present.eventId),
+    name: String(present.title || ''),
+    event_name: String(present.title || ''),
+    start_time: new Date(startTime),
+    duration: durationSeconds * 1000,
+    desc: String(present.description || ''),
+    event_text: String(present.description || ''),
+    running_status: Number(present.runningStatus),
+    free_ca_mode: Boolean(present.freeCaMode),
+  };
+  if (following) {
+    const followingStartTime = Number(following.startTimeUnixMilliseconds);
+    const followingDurationSeconds = Number(following.durationSeconds);
+    if (Number.isFinite(followingStartTime) && followingDurationSeconds > 0) {
+      Object.assign(result, {
+        f_event_id: Number(following.eventId),
+        f_name: String(following.title || ''),
+        f_start_time: new Date(followingStartTime),
+        f_duration: followingDurationSeconds * 1000,
+        f_desc: String(following.description || ''),
+      });
+    }
+  }
+  return result;
+}
+
 function isBackgroundHoleApplication(pathname) {
   return /\/(?:caption)\/source\//.test(String(pathname));
 }
@@ -141,6 +176,7 @@ export class DataBroadcastController {
     this.readyContextId = null;
     this.loadedEntry = null;
     this.is8k = false;
+    this.programEvents = new Map();
     this.showRequested = false;
     this.log = () => {};
 
@@ -269,6 +305,7 @@ export class DataBroadcastController {
     this.readyContextId = null;
     this.loadedEntry = null;
     this.host.clearBroadcastClock();
+    this.programEvents.clear();
     this.readyResourceCount = 0;
     this.showRequested = false;
     this.url.textContent = '';
@@ -291,9 +328,25 @@ export class DataBroadcastController {
       mediaTimeSeconds,
       currentMediaTimeSeconds: () => this.video.currentTime,
     });
-    if (this.loadedEntry) {
-      this.host.setProgramInfo(createDemoProgramInfo(this.is8k, this.host.getBroadcastTime()));
-    }
+    if (this.loadedEntry) this.updateProgramInfo();
+  }
+
+  eventInformationChanged(event) {
+    if (Number(event.tableId) !== 0x8b || !event.currentNext) return;
+    const sectionNumber = Number(event.sectionNumber);
+    if (sectionNumber !== 0 && sectionNumber !== 1) return;
+    this.programEvents.set(sectionNumber, { ...event });
+    this.updateProgramInfo();
+  }
+
+  updateProgramInfo() {
+    const actual = createProgramInfoFromEvents(
+      this.programEvents.get(0),
+      this.programEvents.get(1),
+    );
+    this.host.setProgramInfo(
+      actual ?? createDemoProgramInfo(this.is8k, this.host.getBroadcastTime()),
+    );
   }
 
   resourceChanged(notification) {
@@ -316,12 +369,6 @@ export class DataBroadcastController {
       },
     });
     this.scheduleResourceDrain();
-    // entryReady can precede delivery of the entry resource. Start the
-    // broadcast startup application as soon as its VFS write barrier exists.
-    if (this.readyEntry === notification.path &&
-        this.readyContextId === notification.contextId) {
-      this.scheduleApplicationLoad(this.readyEntry, this.readyContextId, true);
-    }
     if (this.showRequested) {
       const application = this.visibleApplication();
       if (application) this.showApplication(application.path, application.contextId);
@@ -390,31 +437,10 @@ export class DataBroadcastController {
     this.readyContextId = state.contextId;
     this.readyResourceCount = state.resourceCount;
     this.status.textContent = 'データ放送準備完了';
-    this.scheduleApplicationLoad(entry, state.contextId, true);
     if (this.showRequested) {
       const application = this.visibleApplication();
       if (application) this.showApplication(application.path, application.contextId);
     }
-  }
-
-  scheduleApplicationLoad(entry, contextId, immediate = false) {
-    if (this.loadedEntry === entry) return;
-    if (this.applicationLoadTimer !== null) {
-      if (!immediate) return;
-      clearTimeout(this.applicationLoadTimer);
-    }
-    const sessionGeneration = this.sessionGeneration;
-    this.applicationLoadTimer = setTimeout(() => {
-      this.applicationLoadTimer = null;
-      const entryBarrier = this.resourceSequenceByPath.get(`${contextId}:${entry}`);
-      if (entryBarrier === undefined) return;
-      this.waitForResources(entryBarrier).then(() => {
-        if (sessionGeneration !== this.sessionGeneration || this.readyEntry !== entry) return;
-        this.loadApplication(`/${entry}`, false, contextId);
-        this.loadedEntry = entry;
-        this.log(`データ放送 バックグラウンド起動 /${entry} (${this.readyResourceCount} files)`);
-      }).catch(error => this.setStatus('アプリケーション起動失敗', error.message));
-    }, immediate ? 0 : 300);
   }
 
   resourcesReset() {
@@ -436,7 +462,7 @@ export class DataBroadcastController {
     }
     const is8k = resolved.pathname.startsWith('/sh8/');
     this.is8k = is8k;
-    this.host.setProgramInfo(createDemoProgramInfo(is8k, this.host.getBroadcastTime()));
+    this.updateProgramInfo();
     this.host.loadApplication(resolved.href);
     this.visible = visible;
     this.viewport.classList.toggle('data-broadcast-visible', visible);

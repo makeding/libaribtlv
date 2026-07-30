@@ -1,5 +1,5 @@
 import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
-import { DataBroadcastController } from './data-broadcast.js?v=background-data-app';
+import { DataBroadcastController } from './data-broadcast.js?v=direct-data-page';
 
 const MiB = 1024n * 1024n;
 const PLAYBACK_CHUNK = 2n * MiB;
@@ -897,6 +897,10 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     },
     onBroadcastClock(clock) {
       try { dataBroadcast.broadcastClockChanged(clock); }
+      catch (error) { callbackError = error; }
+    },
+    onEventInfo(event) {
+      try { dataBroadcast.eventInformationChanged(event); }
       catch (error) { callbackError = error; }
     },
     onApplicationResourceView(resource) {
