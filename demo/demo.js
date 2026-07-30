@@ -12,6 +12,7 @@ const SEEK_PREROLL_US = 8000000n;
 const SEEK_PROBE_BYTES = 64n * MiB;
 const MAX_SEEK_PROBE_ATTEMPTS = 5;
 const DEFAULT_PLAYBACK_RATE = 2;
+const LIVE_PLAYBACK_RATE = 1;
 const URL_STORAGE_KEY = 'tlvdemux.demo.httpUrl';
 const AUDIO_STORAGE_KEY = 'tlvdemux.demo.audioPacketId';
 const SUBTITLE_STORAGE_KEY = 'tlvdemux.demo.subtitlePacketId';
@@ -20,6 +21,8 @@ const elements = Object.fromEntries([
   'videoPacketId', 'probeButton', 'cancelButton', 'clearButton',
   'probeState', 'duration', 'sourceSize', 'transferred', 'log',
   'video', 'mediaInfo', 'liveMode', 'audioTrack', 'subtitleTrack', 'subtitleOverlay',
+  'broadcastViewport', 'broadcastVideoSurface', 'broadcastFrame', 'dataRemote',
+  'dataStatus', 'dataDetail', 'dataUrl',
 ].map(id => [id, document.getElementById(id)]));
 
 let wasmModule = null;
@@ -44,6 +47,7 @@ let knownAudioTracks = new Map();
 let selectedSubtitlePacketId = null;
 let preferredSubtitlePacketId = null;
 let knownSubtitleTracks = new Map();
+let playbackQualityTimer = null;
 
 elements.video.defaultPlaybackRate = DEFAULT_PLAYBACK_RATE;
 elements.video.playbackRate = DEFAULT_PLAYBACK_RATE;
@@ -280,8 +284,30 @@ async function selectedSource(signal, liveMode) {
   throw new Error('ローカル MMTS ファイルまたは HTTP URL を指定してください');
 }
 
+function snapshotTimeRanges(ranges) {
+  const result = [];
+  for (let index = 0; index < ranges.length; index += 1) {
+    result.push({ start: ranges.start(index), end: ranges.end(index) });
+  }
+  return result;
+}
+
+function intersectBufferedRanges(left, right) {
+  const result = [];
+  let leftIndex = 0;
+  let rightIndex = 0;
+  while (leftIndex < left.length && rightIndex < right.length) {
+    const start = Math.max(left[leftIndex].start, right[rightIndex].start);
+    const end = Math.min(left[leftIndex].end, right[rightIndex].end);
+    if (end > start) result.push({ start, end });
+    if (left[leftIndex].end < right[rightIndex].end) leftIndex += 1;
+    else rightIndex += 1;
+  }
+  return result;
+}
+
 class AppendQueue {
-  constructor(mediaSource, mediaElement, mime) {
+  constructor(mediaSource, mediaElement, mime, onUpdateEnd = null) {
     if (!MediaSource.isTypeSupported(mime)) throw new Error(`このブラウザーは ${mime} に対応していません`);
     this.mediaElement = mediaElement;
     this.mediaSource = mediaSource;
@@ -295,12 +321,19 @@ class AppendQueue {
     this.retryTimer = null;
     this.trimBeforeTime = null;
     this.state = 'running';
+    this.onUpdateEnd = onUpdateEnd;
     this.sourceBuffer.addEventListener('updateend', () => {
       this.queuedBytes -= this.currentBytes;
       this.currentBytes = 0;
-      if (this.state === 'quiescing') this.state = 'idle';
-      else this.pump();
-      this.resolveWaiters();
+      try {
+        if (this.state === 'quiescing') this.state = 'idle';
+        else this.pump();
+        this.onUpdateEnd?.();
+      } catch (error) {
+        this.error = error;
+      } finally {
+        this.resolveWaiters();
+      }
     });
     this.sourceBuffer.addEventListener('error', () => {
       this.error = new Error(mediaErrorMessage(this.mediaElement.error) || `SourceBuffer エラー: ${mime}`);
@@ -324,9 +357,10 @@ class AppendQueue {
       this.resolveWaiters();
       return;
     }
-    if (this.trimBeforeTime !== null && this.sourceBuffer.buffered.length) {
+    const ranges = this.bufferedRanges();
+    if (this.trimBeforeTime !== null && ranges.length) {
       const removeEnd = this.trimBeforeTime;
-      const start = this.sourceBuffer.buffered.start(0);
+      const start = ranges[0].start;
       if (removeEnd > start + 0.25) {
         this.trimBeforeTime = null;
         this.sourceBuffer.remove(start, removeEnd);
@@ -356,14 +390,22 @@ class AppendQueue {
     }
   }
   bufferedAhead() {
-    const ranges = this.sourceBuffer.buffered;
+    const ranges = this.bufferedRanges();
     const time = this.mediaElement.currentTime;
     for (let index = 0; index < ranges.length; index += 1) {
-      if (ranges.start(index) <= time + 0.1 && ranges.end(index) >= time) {
-        return ranges.end(index) - time;
+      if (ranges[index].start <= time + 0.1 && ranges[index].end >= time) {
+        return ranges[index].end - time;
       }
     }
     return 0;
+  }
+  bufferedRanges() {
+    try {
+      return snapshotTimeRanges(this.sourceBuffer.buffered);
+    } catch (error) {
+      if (error.name !== 'InvalidStateError') throw error;
+      return snapshotTimeRanges(this.mediaElement.buffered);
+    }
   }
   trimBefore(time) {
     if (time <= 0 || this.state !== 'running') return;
@@ -478,6 +520,8 @@ function timestampMilliseconds(value, timescale) {
 }
 
 function releaseMedia() {
+  if (playbackQualityTimer !== null) clearInterval(playbackQualityTimer);
+  playbackQualityTimer = null;
   activeMediaSource = null;
   activeAudioSwitch = null;
   activeSubtitleSwitch = null;
@@ -564,6 +608,28 @@ function bufferedAhead() {
   return 0;
 }
 
+function monitorPlaybackQuality(generation) {
+  if (playbackQualityTimer !== null) clearInterval(playbackQualityTimer);
+  if (typeof elements.video.getVideoPlaybackQuality !== 'function') return;
+  let previous = elements.video.getVideoPlaybackQuality();
+  playbackQualityTimer = setInterval(() => {
+    if (generation !== runGeneration) {
+      clearInterval(playbackQualityTimer);
+      playbackQualityTimer = null;
+      return;
+    }
+    const current = elements.video.getVideoPlaybackQuality();
+    const dropped = current.droppedVideoFrames - previous.droppedVideoFrames;
+    const total = current.totalVideoFrames - previous.totalVideoFrames;
+    if (dropped > 0) {
+      const ahead = bufferedAhead();
+      const cause = ahead < 0.5 ? 'MSE 供給不足' : 'デコード/描画負荷';
+      appendLog(`映像品質 ${cause}: 5秒で ${dropped}/${total} フレーム落ち、バッファ=${ahead.toFixed(1)}s`);
+    }
+    previous = current;
+  }, 5000);
+}
+
 function isTimeBuffered(time) {
   const ranges = elements.video.buffered;
   for (let index = 0; index < ranges.length; index += 1) {
@@ -591,8 +657,9 @@ async function playbackBackpressure(generation) {
 
 async function playSource(source, probeResult, generation, startTimeSeconds = 0,
                           liveMode = false, reuseMedia = false) {
-  elements.video.defaultPlaybackRate = DEFAULT_PLAYBACK_RATE;
-  elements.video.playbackRate = DEFAULT_PLAYBACK_RATE;
+  const playbackRate = liveMode ? LIVE_PLAYBACK_RATE : DEFAULT_PLAYBACK_RATE;
+  elements.video.defaultPlaybackRate = playbackRate;
+  elements.video.playbackRate = playbackRate;
   let mediaSource;
   const openFreshMediaSource = async () => {
     activeQueueByType = new Map();
@@ -664,6 +731,35 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const externalDurationUs = liveMode ? null : BigInt(Math.round(
     durationSeconds(probeResult.duration) * 1000000));
 
+  const maybeStartPlayback = () => {
+    if (played || generation !== runGeneration || queues.size < 2) return;
+    let commonRanges = null;
+    for (const queue of queues.values()) {
+      const ranges = queue.bufferedRanges();
+      if (!ranges.length) return;
+      commonRanges = commonRanges === null
+        ? ranges : intersectBufferedRanges(commonRanges, ranges);
+      if (!commonRanges.length) return;
+    }
+    const currentTime = elements.video.currentTime;
+    const range = commonRanges.find(item => item.end > currentTime + 0.001);
+    if (!range) return;
+    const commonAhead = range.end - Math.max(currentTime, range.start);
+    if (currentTime < range.start - 0.001) {
+      internalSeekTarget = range.start;
+      elements.video.currentTime = range.start;
+      appendLog(`再生開始を共通バッファ先頭 ${range.start.toFixed(6)}s に合わせます`);
+    }
+    played = true;
+    monitorPlaybackQuality(generation);
+    elements.probeState.textContent = liveMode ? 'Live 再生中' : '再生中';
+    if (liveMode) appendLog(`Live 共通バッファ ${commonAhead.toFixed(1)}s で再生開始 (1×)`);
+    elements.video.play().catch(() => {
+      appendLog('自動再生がブロックされました。再生ボタンを押してください');
+    });
+  };
+  for (const queue of activeQueues) queue.onUpdateEnd = maybeStartPlayback;
+
   const appendSegment = (type, data) => {
     const queue = queues.get(type);
     if (!queue) {
@@ -675,12 +771,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       return;
     }
     queue.append(data);
-    if (!played && type === 'video') {
-      played = true;
-      elements.video.play().catch(() => {
-        appendLog('自動再生がブロックされました。再生ボタンを押してください');
-      });
-    }
   };
 
   const installPairedInits = () => {
@@ -692,7 +782,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         throw new Error(`シーク中に ${type} codec が変化しました: ${queue.mime} -> ${init.mime}`);
       }
       if (!queue) {
-        queue = new AppendQueue(mediaSource, elements.video, init.mime);
+        queue = new AppendQueue(mediaSource, elements.video, init.mime, maybeStartPlayback);
         activeQueueByType.set(type, queue);
         activeQueues.push(queue);
       }

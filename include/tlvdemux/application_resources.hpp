@@ -109,6 +109,7 @@ public:
     std::vector<ApplicationResourceMetadata> list(
         std::optional<std::uint32_t> context_id = std::nullopt) const;
     std::vector<ApplicationState> applications() const;
+    std::optional<std::string> entryPath(std::uint32_t context_id) const;
     std::uint64_t generation() const;
     void clear();
 

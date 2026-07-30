@@ -168,11 +168,7 @@ const demuxer = new module.TlvDemuxer({
   onTrack: track => console.log(track),
   onAccessUnitView: unit => consumeSynchronously(unit),
   onApplicationState: application => console.log(application.state),
-  onApplicationResourceView: resource => {
-    // Copy here when retaining the file; the view expires after this callback.
-    virtualFiles.set(resource.path, resource.data.slice())
-  },
-  onApplicationResourcesReset: () => virtualFiles.clear(),
+  onApplicationResourceView: resource => console.log(resource.path),
   onError: error => console.warn(error),
 });
 
@@ -189,6 +185,13 @@ for the duration of the callback and must be consumed synchronously. Use
 `onAccessUnit` instead when the callback needs an owned `Uint8Array` copy.
 `onApplicationResourceView` has the same callback-only lifetime; use
 `onApplicationResource` for an owned copy.
+
+`TlvDemuxer` also owns an `ApplicationResourceStore`. `applicationResources()`
+lists its files, `applicationResource(contextId, path)` returns an owned file,
+`applications()` reports current application states, and
+`applicationEntry(contextId)` resolves the ready entry document. This keeps
+path validation, version replacement, and entry resolution in C++/WASM rather
+than duplicating those rules in each browser loader.
 
 Run the application-resource WASM integration test against a captured stream
 with:
@@ -212,10 +215,11 @@ the requested time.
 
 ### Browser demo
 
-After building `build-wasm/tlvdemux.js`, serve the repository root and open
-`/demo/`:
+Build the sibling `libaribhtml5` receiver SDK and `build-wasm/tlvdemux.js`, then
+serve the repository root and open `/demo/`:
 
 ```sh
+(cd ../libaribhtml5 && pnpm build:sdk)
 node demo/server.mjs
 ```
 
@@ -226,6 +230,10 @@ provide the required Range behavior.
 
 The demo accepts either a local MMTS file or an HTTP URL, probes its duration,
 then plays the selected HEVC and AAC tracks through Media Source Extensions.
+Application resources collected by WASM are exposed to a sandboxed data-
+broadcast iframe through a same-origin Service Worker bridge. The receiver API,
+video-plane handling, built-in ROM sounds, and remote-control behavior come
+from `libaribhtml5`; external application URLs remain blocked.
 Local files use `Blob.slice()`; remote files require validated `206` and
 `Content-Range` responses. Live mode skips duration probing and seeking, uses a
 normal streaming `GET`, and exposes the Media Source as an unbounded timeline.

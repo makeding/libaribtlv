@@ -165,6 +165,11 @@ void test_out_of_order_collection_and_update() {
 
 void test_virtual_resource_store() {
     tlvdemux::ApplicationResourceStore store;
+    auto state = tlvdemux::ApplicationState{};
+    state.application = application(4);
+    state.entry_ready = true;
+    state.state = tlvdemux::ApplicationCollectionState::Ready;
+    store.onApplicationState(state);
     tlvdemux::ApplicationResource resource;
     resource.context_id = 4;
     resource.path = "sh4/60/001/top/source/index.html";
@@ -181,6 +186,8 @@ void test_virtual_resource_store() {
           "virtual resource listing omitted metadata");
     check(store.waitFor(4, files[0].path, std::chrono::milliseconds(1)) != nullptr,
           "waitFor did not return an available resource");
+    check(store.entryPath(4) == files[0].path,
+          "virtual resource store did not resolve the ready application entry");
     check(store.get(4, "../escape") == nullptr,
           "virtual resource store accepted path traversal");
     store.clear();

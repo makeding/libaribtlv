@@ -588,6 +588,29 @@ std::vector<ApplicationState> ApplicationResourceStore::applications() const {
     return result;
 }
 
+std::optional<std::string> ApplicationResourceStore::entryPath(
+    const std::uint32_t context_id) const {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    for (const auto& item : impl_->application_states) {
+        const auto& state = item.second;
+        if (state.application.context_id != context_id || !state.entry_ready) continue;
+        const auto entry = safe_path(state.application.entry_path);
+        if (!entry.has_value()) continue;
+        if (impl_->resources.find({context_id, *entry}) != impl_->resources.end()) {
+            return entry;
+        }
+        for (const auto& transport : state.application.transport_urls) {
+            if (transport.find("://") != std::string::npos) continue;
+            const auto candidate = join_path(transport, *entry);
+            if (candidate.has_value() &&
+                impl_->resources.find({context_id, *candidate}) != impl_->resources.end()) {
+                return candidate;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
 std::uint64_t ApplicationResourceStore::generation() const {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->generation;

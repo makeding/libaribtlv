@@ -5,6 +5,7 @@ import { extname, resolve, sep } from 'node:path';
 
 const root = resolve(process.cwd());
 const aribb62Root = resolve(root, '..', 'aribb62.js');
+const aribHtml5Root = resolve(root, '..', 'libaribhtml5', 'dist', 'sdk');
 const port = Number(process.argv[2] || 8000);
 const mimeTypes = new Map([
   ['.css', 'text/css; charset=utf-8'],
@@ -48,6 +49,9 @@ const server = createServer(async (request, response) => {
     if (pathname.startsWith('/aribb62.js/')) {
       staticRoot = aribb62Root;
       pathname = pathname.slice('/aribb62.js'.length);
+    } else if (pathname.startsWith('/libaribhtml5/')) {
+      staticRoot = aribHtml5Root;
+      pathname = pathname.slice('/libaribhtml5'.length);
     }
     let filename = resolve(staticRoot, `.${pathname}`);
     if (filename !== staticRoot && !filename.startsWith(`${staticRoot}${sep}`)) {
@@ -67,6 +71,9 @@ const server = createServer(async (request, response) => {
       'Cache-Control': 'no-cache',
       'Content-Type': mimeTypes.get(extname(filename).toLowerCase()) || 'application/octet-stream',
     };
+    if (filename === resolve(root, 'demo', 'arib-vfs-sw.js')) {
+      headers['Service-Worker-Allowed'] = '/';
+    }
     const requestedRange = request.headers.range;
     if (requestedRange) {
       const range = parseRange(requestedRange, info.size);

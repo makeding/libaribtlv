@@ -347,27 +347,31 @@ public:
             if (nalu.type == 8 || nalu.type == 9) rasl = true;
         }
         if (!has_vcl) return;
+        const bool starting = !started_;
         if (!started_) {
             if (irap < 0) return;
             started_ = true;
+            drop_rasl_ = irap == 21;
             output_.video_start(irap, unit.random_access);
         } else if (drop_rasl_) {
             if (rasl) return;
             drop_rasl_ = false;
         }
-        // CRA_NUT may be followed in decoding order by RASL pictures whose
-        // presentation timestamps precede the CRA. MSE and VideoToolbox do
-        // not reliably support those leading pictures after any random access
-        // point, not just the first one used to start playback.
-        if (irap == 21) drop_rasl_ = true;
         if (!output_enabled) return;
         Bytes data;
         for (const auto& nalu : nalus) if (nalu.type != 32 && nalu.type != 33 && nalu.type != 34 && nalu.type != 35) {
             append(data, u32(nalu.data.size())); append(data, nalu.data);
         }
         if (data.empty()) return;
+        // A CRA in a continuous decoding sequence is followed in decode order
+        // by RASL pictures with earlier PTS. Preserve those pictures, but do
+        // not advertise that CRA as an MP4 sync sample: Chromium otherwise
+        // treats the following RASL as leading pictures after a new MSE RAP.
+        // The first CRA after startup/reposition remains a sync sample and its
+        // unavailable leading RASL pictures are dropped above.
+        const bool sync_sample = irap >= 0 && (irap != 21 || starting);
         enqueue({std::move(data), scaled(unit.dts.value, unit.dts.timescale, 1000000),
-                 scaled(unit.pts.value, unit.pts.timescale, 1000000), 0, irap >= 0});
+                 scaled(unit.pts.value, unit.pts.timescale, 1000000), 0, sync_sample});
     }
 private:
     std::uint32_t default_duration() const override { return 33367; }

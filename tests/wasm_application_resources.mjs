@@ -12,6 +12,11 @@ const createModule = imported.default ?? imported.createTlvDemuxModule
 const module = await createModule()
 const resources = new Map()
 const states = []
+let virtualFiles = []
+let virtualEntry = null
+let virtualEntryBytes = null
+let virtualApplications = []
+let virtualGeneration = 0n
 const demuxer = new module.TlvDemuxer({
   onApplicationResourceView(resource) {
     if (resource.dataLifetime !== 'callback') {
@@ -37,6 +42,12 @@ try {
     demuxer.push(new Uint8Array(buffer.buffer, buffer.byteOffset, count))
   }
   demuxer.flush()
+  virtualFiles = demuxer.applicationResources(null)
+  virtualEntry = demuxer.applicationEntry(1)
+  const entry = demuxer.applicationResource(1, virtualEntry)
+  virtualEntryBytes = entry && Uint8Array.from(entry.data)
+  virtualApplications = demuxer.applications()
+  virtualGeneration = demuxer.applicationResourceGeneration()
 } finally {
   fs.closeSync(input)
   demuxer.delete()
@@ -47,6 +58,15 @@ if (!resources.has('sh4/40/001/startup/html/index.html')) {
 }
 if (!states.some((state) => state.entryReady && state.state === 'ready')) {
   throw new Error('application never reached ready state')
+}
+if (virtualFiles.length !== resources.size ||
+    virtualEntry !== 'sh4/40/001/startup/html/index.html' ||
+    !virtualEntryBytes?.byteLength) {
+  throw new Error('WASM virtual resource catalogue is incomplete')
+}
+if (!virtualApplications.some(state => state.contextId === 1 && state.entryReady) ||
+    virtualGeneration <= 0n) {
+  throw new Error('WASM virtual application state is incomplete')
 }
 
 console.log(`tlvdemux WASM collected ${resources.size} virtual files`)
