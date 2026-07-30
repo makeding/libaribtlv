@@ -125,17 +125,13 @@ h2 { font-size: 15px; }
   z-index: 1;
   left: 0;
   top: 0;
-  visibility: hidden;
-  pointer-events: none;
+  display: none;
   border: 0;
   background: transparent;
   transform-origin: top left;
 }
 
-.data-broadcast-visible #broadcastFrame {
-  visibility: visible;
-  pointer-events: auto;
-}
+.data-broadcast-visible #broadcastFrame { display: block; }
 
 .subtitle-overlay {
   position: absolute;

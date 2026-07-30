@@ -137,6 +137,7 @@ struct Sample {
     std::int64_t pts = 0;
     std::uint32_t duration = 0;
     bool keyframe = false;
+    bool leading = false;
 };
 
 Bytes media_segment(const Mp4Track& track, const std::vector<Sample>& samples,
@@ -145,7 +146,9 @@ Bytes media_segment(const Mp4Track& track, const std::vector<Sample>& samples,
     for (const auto& sample : samples) {
         append(payload, sample.data);
         append(entries, u32(sample.duration)); append(entries, u32(sample.data.size()));
-        append(entries, u32(sample.keyframe ? 0x02000000 : 0x01010000));
+        const auto sample_flags = (sample.leading ? 0x04000000U : 0U) |
+            (sample.keyframe ? 0x02000000U : 0x01010000U);
+        append(entries, u32(sample_flags));
         append(entries, u32(std::uint32_t(sample.pts - sample.dts)));
     }
     auto tfhd = full_box("tfhd", 0, 0x020000, u32(track.id));
@@ -307,14 +310,20 @@ public:
 protected:
     virtual std::uint32_t default_duration() const = 0;
     void set_track(Mp4Track track) { if (track_) return; track_ = std::move(track); output_.init(type_, *track_); }
-    void enqueue(Sample sample) {
+    void enqueue(Sample sample, const bool segment_boundary = false) {
         if (pending_) {
             const auto delta = sample.dts - pending_->dts;
             pending_->duration = delta > 0 ? std::uint32_t(delta) : (last_duration_ ? last_duration_ : default_duration());
             last_duration_ = pending_->duration; ready_duration_ += pending_->duration;
             ready_.push_back(std::move(*pending_));
         }
-        pending_ = std::move(sample); if (track_ && ready_duration_ >= track_->timescale) emit();
+        pending_.reset();
+        // Close the previous fragment before a new HEVC random-access group.
+        // This keeps the CRA and the RASL pictures decoded after it in the same
+        // ISO-BMFF fragment, matching the working mmts.js remux path.
+        if (segment_boundary) emit();
+        pending_ = std::move(sample);
+        if (!segment_boundary && track_ && ready_duration_ >= track_->timescale) emit();
     }
     void emit() {
         if (!track_ || ready_.empty()) return;
@@ -350,16 +359,14 @@ public:
         if (!started_) {
             if (irap < 0) return;
             started_ = true;
+            // Only a real decoder bootstrap lacks the pictures preceding a
+            // CRA. Continuous CRA pictures retain their RASL output.
+            drop_rasl_ = irap == 21;
             output_.video_start(irap, unit.random_access);
         } else if (drop_rasl_) {
             if (rasl) return;
             drop_rasl_ = false;
         }
-        // Chromium/VideoToolbox treats CRA_NUT as a decoder restart even when
-        // ISO-BMFF does not advertise it as a sync sample.  RASL pictures that
-        // follow that CRA then reference a DPB which VideoToolbox has already
-        // discarded, producing kVTVideoDecoderReferenceMissingErr (-17694).
-        if (irap == 21) drop_rasl_ = true;
         if (!output_enabled) return;
         Bytes data;
         for (const auto& nalu : nalus) if (nalu.type != 32 && nalu.type != 33 && nalu.type != 34 && nalu.type != 35) {
@@ -367,7 +374,8 @@ public:
         }
         if (data.empty()) return;
         enqueue({std::move(data), scaled(unit.dts.value, unit.dts.timescale, 1000000),
-                 scaled(unit.pts.value, unit.pts.timescale, 1000000), 0, irap >= 0});
+                 scaled(unit.pts.value, unit.pts.timescale, 1000000), 0, irap >= 0, rasl},
+                irap >= 0);
     }
 private:
     std::uint32_t default_duration() const override { return 33367; }

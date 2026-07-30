@@ -70,9 +70,10 @@ function childBox(data, start, end, wanted) {
   return null;
 }
 
-function assertNoLeadingPicturesAfterRap(segments) {
+function assertLeadingPicturesDeclared(segments) {
   let latestRapPts = null;
   let rapCount = 0;
+  let leadingCount = 0;
   const presentationPts = [];
   const sampleDurations = [];
   for (const data of segments) {
@@ -106,28 +107,33 @@ function assertNoLeadingPicturesAfterRap(segments) {
       presentationPts.push(pts);
       if (duration > 0) sampleDurations.push(duration);
       const keyframe = (sampleFlags & 0x00010000) === 0;
+      const isLeading = (sampleFlags >>> 26) & 0x03;
       if (keyframe) {
         latestRapPts = pts;
         rapCount += 1;
       } else if (latestRapPts !== null) {
-        assert.ok(pts >= latestRapPts,
-          `leading picture PTS ${pts} follows later RAP PTS ${latestRapPts}`);
+        if (pts < latestRapPts) {
+          assert.equal(isLeading, 1,
+            `leading picture PTS ${pts} lacks ISO-BMFF is_leading metadata`);
+          leadingCount += 1;
+        } else {
+          assert.equal(isLeading, 0,
+            `ordinary picture PTS ${pts} is incorrectly marked as leading`);
+        }
       }
       dts += duration;
     }
   }
   assert.ok(rapCount >= 1, 'sample did not contain an initial HEVC RAP');
+  assert.ok(leadingCount >= 1, 'sample did not retain continuous CRA leading pictures');
   presentationPts.sort((left, right) => left - right);
   sampleDurations.sort((left, right) => left - right);
   const nominalDuration = sampleDurations[Math.floor(sampleDurations.length / 2)];
   for (let index = 1; index < presentationPts.length; index += 1) {
     const gap = presentationPts[index] - presentationPts[index - 1];
-    // VideoToolbox treats each CRA as a decoder restart, so the RASL pictures
-    // associated with it cannot safely be submitted through MSE on macOS.
-    // Seven leading pictures plus the normal frame interval form this gap.
-    assert.ok(gap <= nominalDuration * 9 + 1,
+    assert.ok(gap <= nominalDuration * 2 + 1,
       `video presentation gap ${gap} at ${presentationPts[index - 1]} -> ` +
-      `${presentationPts[index]} exceeds the CRA recovery window (${nominalDuration * 9})`);
+      `${presentationPts[index]} exceeds two frame intervals (${nominalDuration * 2})`);
   }
 }
 
@@ -141,7 +147,7 @@ for (const type of ['video', 'audio']) {
   assert.ok(mediaSegments.get(type).length > 0, `missing ${type} media segment`);
   assert.equal(boxType(mediaSegments.get(type)[0]), 'moof');
 }
-assertNoLeadingPicturesAfterRap(mediaSegments.get('video'));
+assertLeadingPicturesDeclared(mediaSegments.get('video'));
 
 if (outputDirectory) {
   await mkdir(outputDirectory, { recursive: true });

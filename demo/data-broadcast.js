@@ -317,6 +317,13 @@ export class DataBroadcastController {
       },
     });
     this.scheduleResourceDrain();
+    // entryReady can precede delivery of the entry resource. Resume the same
+    // launch request when its VFS write barrier appears, so one d-data press
+    // cannot be lost in that callback ordering window.
+    if (this.launchRequested && this.readyEntry === notification.path &&
+        this.readyContextId === notification.contextId) {
+      this.scheduleApplicationLoad(this.readyEntry, this.readyContextId, true);
+    }
   }
 
   scheduleResourceDrain() {
@@ -381,10 +388,7 @@ export class DataBroadcastController {
     this.readyContextId = state.contextId;
     this.readyResourceCount = state.resourceCount;
     this.status.textContent = 'データ放送準備完了';
-    // Start the receiver application as soon as its entry file is available,
-    // but keep the iframe hidden. The data key then only reveals an already
-    // initialized application instead of becoming a second-stage load button.
-    this.scheduleApplicationLoad(entry, state.contextId, this.launchRequested);
+    if (this.launchRequested) this.scheduleApplicationLoad(entry, state.contextId, true);
   }
 
   scheduleApplicationLoad(entry, contextId, immediate = false) {
@@ -400,7 +404,7 @@ export class DataBroadcastController {
       if (entryBarrier === undefined) return;
       this.waitForResources(entryBarrier).then(() => {
         if (sessionGeneration !== this.sessionGeneration || this.readyEntry !== entry) return;
-        this.loadApplication(`/${entry}`, this.launchRequested);
+        this.loadApplication(`/${entry}`);
         this.loadedEntry = entry;
         this.log(`データ放送 entry /${entry} (${this.readyResourceCount} files)`);
       }).catch(error => this.setStatus('アプリケーション起動失敗', error.message));
@@ -411,7 +415,7 @@ export class DataBroadcastController {
     this.beginSession(true);
   }
 
-  loadApplication(path, show = true) {
+  loadApplication(path) {
     const resolved = new URL(path, location.href);
     let decodedPath = '';
     try {
@@ -427,14 +431,8 @@ export class DataBroadcastController {
     this.is8k = is8k;
     this.host.setProgramInfo(createDemoProgramInfo(is8k, this.host.getBroadcastTime()));
     this.host.loadApplication(resolved.href);
-    if (show) {
-      this.setVisible(true);
-      this.setStatus('アプリケーション読込中', this.detail.textContent);
-    } else {
-      this.visible = false;
-      this.viewport.classList.remove('data-broadcast-visible');
-      this.setStatus('データ放送をバックグラウンド準備中', this.detail.textContent);
-    }
+    this.setVisible(true);
+    this.setStatus('アプリケーション読込中', this.detail.textContent);
   }
 
   setVisible(visible) {

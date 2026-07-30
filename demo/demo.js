@@ -1,5 +1,5 @@
 import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
-import { DataBroadcastController } from './data-broadcast.js?v=always-on-remote';
+import { DataBroadcastController } from './data-broadcast.js?v=hevc-leading-samples';
 
 const MiB = 1024n * 1024n;
 const PLAYBACK_CHUNK = 2n * MiB;
