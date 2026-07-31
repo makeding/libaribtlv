@@ -100,7 +100,7 @@ Bytes video_entry(const Mp4Track& track) {
     std::copy(label.begin(), label.end(), compressor.begin() + 1);
     auto header = join(zeros(6), u16(1), zeros(16), u16(track.width), u16(track.height),
                        fixed16(72), fixed16(72), u32(0), u16(1), compressor, u16(24), u16(0xffff));
-    return box("hvc1", header, box("hvcC", track.config));
+    return box("hev1", header, box("hvcC", track.config));
 }
 Bytes descriptor(std::uint8_t tag, const Bytes& payload) {
     if (payload.size() >= 128) throw std::runtime_error("MP4 descriptor is too large");
@@ -224,7 +224,10 @@ SpsInfo parse_sps(const Bytes& nalu) {
     out.height = coded_height - sub_height * (top + bottom);
     for (std::size_t i = 0; i < 4; ++i) out.compatibility |= std::uint32_t(reverse_byte(out.compatibility_bytes[i])) << (i * 8);
     const char prefixes[] = {'\0', 'A', 'B', 'C'};
-    out.codec = "hvc1.";
+    // MMT HEVC carries parameter sets in-band.  In particular, some ARIB 8K
+    // streams update the same PPS id between temporal layers, so hvc1 (which
+    // requires all parameter sets to live in hvcC) cannot represent the input.
+    out.codec = "hev1.";
     if (prefixes[out.profile_space]) out.codec += prefixes[out.profile_space];
     out.codec += std::to_string(out.profile) + ".";
     char buffer[32]; std::snprintf(buffer, sizeof(buffer), "%X.%c%u", out.compatibility, out.tier ? 'H' : 'L', out.level);
@@ -288,11 +291,6 @@ public:
         if (!enabled_ || !has("onMseVideoStart")) return; auto event = val::object(); event.set("nalType", nal_type);
         event.set("signalledRandomAccess", signalled); emit("onMseVideoStart", event);
     }
-    void leading_pictures_dropped(std::size_t count) {
-        if (!enabled_ || count == 0 || !has("onMseLeadingPicturesDropped")) return;
-        auto event = val::object(); event.set("count", count);
-        emit("onMseLeadingPicturesDropped", event);
-    }
 private:
     bool has(const char* name) const { return callbacks_[name].typeOf().as<std::string>() == "function"; }
     void emit(const char* name, const val& event) { callbacks_[name].call<void>("call", callbacks_, event); }
@@ -340,17 +338,11 @@ public:
         parameter_sets_.clear();
         track_.reset();
         started_ = false;
-        waiting_for_trailing_picture_ = false;
-        leading_rasl_dropped_ = 0;
-        first_output_sample_ = true;
     }
     void push(const tlvdemux::AccessUnit& unit, bool output_enabled) {
         if (unit.discontinuity) {
             reset_samples();
             started_ = false;
-            waiting_for_trailing_picture_ = false;
-            leading_rasl_dropped_ = 0;
-            first_output_sample_ = true;
         }
         const auto nalus = annex_b(unit.data);
         for (const auto& nalu : nalus) if (nalu.type >= 32 && nalu.type <= 34) parameter_sets_[nalu.type] = nalu.data;
@@ -360,55 +352,35 @@ public:
             track.config = make_hvcc(parameter_sets_[32], parameter_sets_[33], parameter_sets_[34], d); set_track(std::move(track));
         }
         if (!track_) return;
-        bool has_vcl = false, only_rasl_vcl = true; int irap = -1;
+        bool has_vcl = false; int irap = -1;
         for (const auto& nalu : nalus) if (nalu.type >= 0 && nalu.type <= 31) {
             has_vcl = true;
-            only_rasl_vcl = only_rasl_vcl && (nalu.type == 8 || nalu.type == 9);
             if (nalu.type >= 16 && nalu.type <= 21 && irap < 0) irap = nalu.type;
         }
         if (!has_vcl) return;
         if (!started_) {
             if (irap < 0) return;
             started_ = true;
-            // A CRA is independently decodable, but RASL pictures following it in
-            // decode order can still reference pictures preceding the CRA.  At a
-            // fresh MSE decode sequence those references do not exist.  Apple's
-            // hardware decoder reports kVTVideoDecoderReferenceMissingErr instead
-            // of silently discarding these leading pictures.
-            waiting_for_trailing_picture_ = irap == 21;
             output_.video_start(irap, unit.random_access);
-        } else if (waiting_for_trailing_picture_) {
-            if (only_rasl_vcl) {
-                ++leading_rasl_dropped_;
-                return;
-            }
-            waiting_for_trailing_picture_ = false;
-            output_.leading_pictures_dropped(leading_rasl_dropped_);
         }
         if (!output_enabled) return;
         Bytes data;
-        for (const auto& nalu : nalus) if (nalu.type != 32 && nalu.type != 33 && nalu.type != 34 && nalu.type != 35) {
+        // Keep VPS/SPS/PPS in every sample exactly as signalled.  The hev1 sample
+        // entry permits in-band parameter sets and Chromium's H.265 parser then
+        // applies each PPS before decoding the following slices.
+        for (const auto& nalu : nalus) if (nalu.type != 35) {
             append(data, u32(nalu.data.size())); append(data, nalu.data);
         }
         if (data.empty()) return;
-        // MSE only gets a random-access boundary at the beginning of this decode
-        // sequence.  Later CRA pictures belong to a continuous open GOP: marking
-        // each of them as a sync sample makes Chromium treat their following RASL
-        // pictures as unsupported leading samples even though the decoder already
-        // has the required reference history.
-        const bool keyframe = first_output_sample_ && irap >= 0;
+        const bool keyframe = irap >= 0;
         enqueue({std::move(data), scaled(unit.dts.value, unit.dts.timescale, 1000000),
                  scaled(unit.pts.value, unit.pts.timescale, 1000000), 0, keyframe});
-        first_output_sample_ = false;
     }
 private:
     std::uint32_t default_duration() const override { return 33367; }
     Output& output_;
     std::map<int, Bytes> parameter_sets_;
     bool started_ = false;
-    bool waiting_for_trailing_picture_ = false;
-    std::size_t leading_rasl_dropped_ = 0;
-    bool first_output_sample_ = true;
 };
 
 constexpr std::uint32_t sample_rates[] = {96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350};

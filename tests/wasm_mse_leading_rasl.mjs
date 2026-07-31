@@ -23,17 +23,23 @@ function childBoxes(data, start, end) {
   return boxes;
 }
 
-function nalTypes(sample) {
+function nalUnits(sample) {
   const result = [];
   for (let offset = 0; offset + 4 <= sample.byteLength;) {
     const size = u32(sample, offset);
     offset += 4;
     assert.ok(size >= 2 && offset + size <= sample.byteLength, 'invalid HEVC sample');
-    result.push((sample[offset] >> 1) & 0x3f);
+    result.push(sample.subarray(offset, offset + size));
     offset += size;
   }
   return result;
 }
+
+const nalTypes = sample => nalUnits(sample).map(nalu => (nalu[0] >> 1) & 0x3f);
+const ppsPayload = sample => {
+  const pps = nalUnits(sample).find(nalu => ((nalu[0] >> 1) & 0x3f) === 34);
+  return pps === undefined ? null : Buffer.from(pps.subarray(2)).toString('hex');
+};
 
 function samples(segment) {
   const top = childBoxes(segment, 0, segment.byteLength);
@@ -66,6 +72,7 @@ const createTlvDemuxModule = require(modulePath);
 const module = await createTlvDemuxModule();
 let videoTrack = null;
 let firstVideoSegment = null;
+let videoMime = null;
 let demuxer;
 demuxer = new module.TlvDemuxer({
   onTrack(track) {
@@ -73,6 +80,9 @@ demuxer = new module.TlvDemuxer({
       videoTrack = track.trackId;
       demuxer.selectTrack('video', videoTrack);
     }
+  },
+  onMseInit(init) {
+    if (init.type === 'video') videoMime = init.mime;
   },
   onMseSegment(segment) {
     if (segment.type === 'video' && firstVideoSegment === null) firstVideoSegment = segment.data;
@@ -96,20 +106,26 @@ try {
 }
 
 assert.ok(firstVideoSegment, 'no video media segment was emitted');
+assert.match(videoMime, /^video\/mp4; codecs="hev1\./,
+  `video sample entry does not permit in-band parameter sets: ${videoMime}`);
 const emittedSamples = samples(firstVideoSegment);
 assert.ok(emittedSamples.length >= 2, 'first video segment has fewer than two samples');
 const firstTypes = nalTypes(emittedSamples[0].data);
 const secondTypes = nalTypes(emittedSamples[1].data);
 assert.ok(firstTypes.includes(21), `first sample is not CRA: ${firstTypes}`);
-assert.ok(!secondTypes.some(value => value === 8 || value === 9),
-  `leading RASL leaked into the fresh decode sequence: ${secondTypes}`);
+assert.ok(secondTypes.some(value => value === 8 || value === 9),
+  `open-GOP leading RASL was not preserved: ${secondTypes}`);
+assert.ok(firstTypes.includes(34) && secondTypes.includes(34),
+  `in-band PPS is missing: first=${firstTypes} second=${secondTypes}`);
+assert.notEqual(ppsPayload(emittedSamples[0].data), ppsPayload(emittedSamples[1].data),
+  'temporal-layer PPS update was lost');
 assert.equal(emittedSamples[0].flags, 0x02000000, 'first CRA is not a sync sample');
 const laterCra = emittedSamples.slice(1)
   .map(sample => ({ sample, types: nalTypes(sample.data) }))
   .find(item => item.types.includes(21));
 assert.ok(laterCra, 'first segment does not contain a later CRA');
-assert.equal(laterCra.sample.flags, 0x01010000,
-  `continuous open-GOP CRA was exposed as a sync sample: ${laterCra.sample.flags.toString(16)}`);
+assert.equal(laterCra.sample.flags, 0x02000000,
+  `later CRA is not a sync sample: ${laterCra.sample.flags.toString(16)}`);
 
 console.log(JSON.stringify({
   bytesRead: position,

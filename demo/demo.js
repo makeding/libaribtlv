@@ -871,9 +871,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     onMseVideoStart(detail) {
       appendLog(`映像開始 HEVC NAL=${detail.nalType} シグナルRAP=${detail.signalledRandomAccess}`);
     },
-    onMseLeadingPicturesDropped(detail) {
-      appendLog(`映像開始時の leading RASL を ${detail.count} AU 除外しました`);
-    },
     onMseInit,
     onMseSegment,
     onTrack(track) {

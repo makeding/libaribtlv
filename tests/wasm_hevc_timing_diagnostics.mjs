@@ -2,9 +2,13 @@ import assert from 'node:assert/strict';
 import { open } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 
-const [modulePath, mediaPath] = process.argv.slice(2);
+const [modulePath, mediaPath, maximumAccessUnitsArgument] = process.argv.slice(2);
 assert.ok(modulePath && mediaPath,
-  'usage: node tests/wasm_hevc_timing_diagnostics.mjs TLVDEMUX_JS SAMPLE');
+  'usage: node tests/wasm_hevc_timing_diagnostics.mjs TLVDEMUX_JS SAMPLE [MAX_AU]');
+const maximumAccessUnits = maximumAccessUnitsArgument === undefined
+  ? Number.POSITIVE_INFINITY
+  : Number.parseInt(maximumAccessUnitsArgument, 10);
+assert.ok(maximumAccessUnits > 0, 'MAX_AU must be positive');
 
 function nalUnits(data) {
   const starts = [];
@@ -82,7 +86,7 @@ demuxer = new module.TlvDemuxer({
     }
   },
   onAccessUnitView(unit) {
-    if (unit.trackId !== selectedVideo) return;
+    if (unit.trackId !== selectedVideo || units.length >= maximumAccessUnits) return;
     const nalus = nalUnits(unit.data);
     const types = nalus.map(nalu => nalu.type);
     if (!types.some(type => type <= 31)) return;
@@ -104,6 +108,7 @@ try {
     if (!bytesRead) break;
     assert.equal(demuxer.push(chunk.subarray(0, bytesRead)), true);
     position += bytesRead;
+    if (units.length >= maximumAccessUnits) break;
   }
   demuxer.flush();
 } finally {

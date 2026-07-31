@@ -25,6 +25,7 @@ struct NalUnit {
     const std::uint8_t* data = nullptr;
     std::size_t size = 0;
     std::uint8_t type = 0;
+    std::uint8_t layer_id = 0;
 };
 
 std::vector<NalUnit> split_annex_b(const std::vector<std::uint8_t>& bytes) {
@@ -48,8 +49,13 @@ std::vector<NalUnit> split_annex_b(const std::vector<std::uint8_t>& bytes) {
         auto nal_end = nal_start;
         while (nal_end < bytes.size() && start_code(nal_end) == 0) ++nal_end;
         if (nal_end > nal_start && nal_end - nal_start >= 2) {
-            result.push_back({bytes.data() + nal_start, nal_end - nal_start,
-                              static_cast<std::uint8_t>((bytes[nal_start] >> 1U) & 0x3fU)});
+            result.push_back({
+                bytes.data() + nal_start,
+                nal_end - nal_start,
+                static_cast<std::uint8_t>((bytes[nal_start] >> 1U) & 0x3fU),
+                static_cast<std::uint8_t>(((bytes[nal_start] & 1U) << 5U) |
+                                          (bytes[nal_start + 1] >> 3U)),
+            });
         }
         cursor = nal_end;
     }
@@ -61,6 +67,8 @@ std::string nal_types(const std::vector<NalUnit>& nals) {
     for (const auto& nal : nals) {
         if (!result.empty()) result += ',';
         result += std::to_string(nal.type);
+        result += '@';
+        result += std::to_string(nal.layer_id);
     }
     return result;
 }
