@@ -74,109 +74,6 @@ function isBackgroundHoleApplication(pathname) {
   return /\/(?:caption)\/source\//.test(String(pathname));
 }
 
-class ServiceWorkerResourceBridge {
-  constructor(url) {
-    this.url = url;
-    this.registration = null;
-    this.ready = null;
-  }
-
-  initialize() {
-    if (this.ready) return this.ready;
-    this.ready = (async () => {
-      if (!('serviceWorker' in navigator)) {
-        throw new Error('このブラウザーは Service Worker に対応していません');
-      }
-      const workerUrl = new URL(this.url, location.href).href;
-      for (const previous of await navigator.serviceWorker.getRegistrations()) {
-        const scriptUrl = previous.active?.scriptURL || previous.waiting?.scriptURL ||
-          previous.installing?.scriptURL;
-        if (scriptUrl === workerUrl && new URL(previous.scope).pathname !== VFS_PREFIX) {
-          await previous.unregister();
-        }
-      }
-      this.registration = await navigator.serviceWorker.register(this.url, {
-        scope: VFS_PREFIX,
-        updateViaCache: 'none',
-      });
-      await this.registration.update();
-      const pending = this.registration.installing || this.registration.waiting;
-      if (pending && pending.state !== 'activated') {
-        await new Promise(resolve => {
-          const timeout = setTimeout(
-            () => {
-              pending.removeEventListener('statechange', changed);
-              // An already-active worker remains usable. A slow update must
-              // not turn resource collection into a VFS write failure.
-              resolve();
-            },
-            15000,
-          );
-          const changed = () => {
-            if (pending.state !== 'activated' && pending.state !== 'redundant') return;
-            clearTimeout(timeout);
-            pending.removeEventListener('statechange', changed);
-            resolve();
-          };
-          pending.addEventListener('statechange', changed);
-        });
-      }
-      if (!this.registration.active) throw new Error('VFS worker を有効化できません');
-      return this.registration;
-    })();
-    return this.ready;
-  }
-
-  async request(message, transfer = []) {
-    const registration = await this.initialize();
-    // The demo page intentionally sits outside the VFS scope, so it has no
-    // controller. Send mutations directly to the scoped active worker.
-    const worker = registration.active || registration.waiting || registration.installing;
-    if (!worker) throw new Error('データ放送 VFS worker を開始できません');
-    return new Promise((resolve, reject) => {
-      const channel = new MessageChannel();
-      const timeout = setTimeout(() => reject(new Error('VFS worker が応答しません')), 5000);
-      channel.port1.onmessage = event => {
-        clearTimeout(timeout);
-        if (event.data?.ok) resolve(event.data);
-        else reject(new Error(event.data?.error || 'VFS worker エラー'));
-      };
-      worker.postMessage(message, [channel.port2, ...transfer]);
-    });
-  }
-
-  begin() {
-    return this.request({ type: 'arib-vfs-begin' });
-  }
-
-  put(resource) {
-    const bytes = resource.data instanceof Uint8Array
-      ? resource.data
-      : new Uint8Array(resource.data);
-    // Keep the controller-side copy intact so an in-memory VFS can be rebuilt
-    // after the browser restarts or replaces the service worker.
-    const owned = bytes.slice();
-    return this.request({
-      type: 'arib-vfs-put',
-      path: resource.path,
-      contentType: resource.contentType,
-      data: owned.buffer,
-    }, [owned.buffer]);
-  }
-
-  reset() {
-    return this.request({ type: 'arib-vfs-reset' });
-  }
-
-  async canRead(path) {
-    const response = await this.request({
-      type: 'arib-vfs-probe',
-      path: String(path).replace(/^\/+/, ''),
-    });
-    return response.available === true;
-  }
-}
-
 export class DataBroadcastController {
   constructor({ viewport, videoSurface, mediaPlane, video, iframe, remote, status, detail, url }) {
     this.viewport = viewport;
@@ -188,7 +85,14 @@ export class DataBroadcastController {
     this.status = status;
     this.detail = detail;
     this.url = url;
-    this.bridge = new ServiceWorkerResourceBridge('./arib-vfs-sw.js');
+    if (!window.ARIBHTML5?.ServiceWorkerBroadcastVfs) {
+      throw new Error('libaribhtml5 Service Worker VFS が読み込まれていません');
+    }
+    this.bridge = new window.ARIBHTML5.ServiceWorkerBroadcastVfs({
+      workerUrl: '/libaribhtml5/arib-vfs-sw.js',
+      baseUrl: VFS_PREFIX,
+      uniqueBasenameFallback: true,
+    });
     this.pendingWrites = Promise.resolve();
     this.resourceQueue = [];
     this.resourceDrainScheduled = false;
@@ -250,7 +154,7 @@ export class DataBroadcastController {
         }
       },
     });
-    window.__ARIB_HTML5_INSTALL__ = target => this.installRuntimeCooperatively(target);
+    window.__ARIB_HTML5_INSTALL__ = target => this.installRuntime(target);
     window.addEventListener('keydown', this.handleKeyboard);
     this.remote.querySelectorAll('[data-arib-key]').forEach(button => {
       button.addEventListener('click', () => this.dispatchKey(Number(button.dataset.aribKey)));
@@ -267,7 +171,7 @@ export class DataBroadcastController {
     this.log = typeof callback === 'function' ? callback : () => {};
   }
 
-  installRuntimeCooperatively(target) {
+  installRuntime(target) {
     if (isBackgroundHoleApplication(target.location.pathname)) {
       const style = target.document.createElement('style');
       style.dataset.tlvdemuxBackgroundHole = '';
@@ -279,71 +183,7 @@ export class DataBroadcastController {
       `;
       (target.document.head || target.document.documentElement).append(style);
     }
-    const NativeMutationObserver = target.MutationObserver;
-    const nativeSetInterval = target.setInterval;
-    const callSetInterval = nativeSetInterval.bind(target);
-    target.MutationObserver = class CooperativeMutationObserver extends NativeMutationObserver {
-      constructor(callback) {
-        let timer = null;
-        let latestRecords = [];
-        let latestObserver = null;
-        super((records, observer) => {
-          latestRecords.push(...records);
-          latestObserver = observer;
-          if (timer !== null) return;
-          timer = target.setTimeout(() => {
-            timer = null;
-            const pendingRecords = latestRecords;
-            latestRecords = [];
-            callback(pendingRecords, latestObserver);
-          }, 250);
-        });
-      }
-
-      observe(node, options = {}) {
-        // libaribhtml5 used to poll getBoundingClientRect() every 100 ms to
-        // notice video-plane changes. Observe layout-affecting attributes
-        // instead, so the 4K decoder is not interrupted by forced reflows.
-        if (options.childList && options.subtree && !options.attributes) {
-          super.observe(node, {
-            ...options,
-            attributes: true,
-            attributeFilter: [
-              'style', 'class', 'hidden', 'type', 'data', 'value', 'width', 'height',
-            ],
-          });
-          return;
-        }
-        super.observe(node, options);
-      }
-    };
-    target.setInterval = (callback, delay, ...args) => {
-      if (Number(delay) === 100) return 0;
-      return callSetInterval(callback, delay, ...args);
-    };
-    try {
-      this.host.installRuntime(target);
-      const receiverDevice = target.navigator.receiverDevice;
-      const getSystemInformation = receiverDevice?.getSystemInformation?.bind(receiverDevice);
-      if (getSystemInformation) {
-        receiverDevice.getSystemInformation = (...args) => ({
-          ...getSystemInformation(...args),
-          baseurl: `${target.location.origin}${VFS_PREFIX}`,
-        });
-      }
-      target.document.addEventListener('click', event => {
-        const element = event.target instanceof target.Element ? event.target : null;
-        const anchor = element?.closest('a[href]');
-        const href = anchor?.getAttribute('href');
-        if (!href?.startsWith('/') || href.startsWith('//') || href.startsWith(VFS_PREFIX)) return;
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        target.location.href = `${VFS_PREFIX}${href.slice(1)}`;
-      }, true);
-    } finally {
-      target.MutationObserver = NativeMutationObserver;
-      target.setInterval = nativeSetInterval;
-    }
+    this.host.installRuntime(target);
   }
 
   beginSession() {

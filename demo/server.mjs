@@ -71,7 +71,7 @@ const server = createServer(async (request, response) => {
       'Cache-Control': 'no-cache',
       'Content-Type': mimeTypes.get(extname(filename).toLowerCase()) || 'application/octet-stream',
     };
-    if (filename === resolve(root, 'demo', 'arib-vfs-sw.js')) {
+    if (filename === resolve(aribHtml5Root, 'arib-vfs-sw.js')) {
       headers['Service-Worker-Allowed'] = '/data-broadcast/';
     }
     const requestedRange = request.headers.range;

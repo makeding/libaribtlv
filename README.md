@@ -248,9 +248,10 @@ provide the required Range behavior.
 The demo accepts either a local MMTS file or an HTTP URL, probes its duration,
 then plays the selected HEVC and AAC tracks through Media Source Extensions.
 Application resources collected by WASM are exposed to a sandboxed data-
-broadcast iframe through a same-origin Service Worker bridge. The receiver API,
-video-plane handling, built-in ROM sounds, and remote-control behavior come
-from `libaribhtml5`; external application URLs remain blocked.
+broadcast iframe through the same-origin Service Worker VFS shipped by
+`libaribhtml5`. The receiver API, video-plane handling, document preparation,
+built-in ROM sounds, and remote-control behavior also come from
+`libaribhtml5`; external application URLs remain blocked.
 Local files use `Blob.slice()`; remote files require validated `206` and
 `Content-Range` responses. Live mode skips duration probing and seeking, uses a
 normal streaming `GET`, and exposes the Media Source as an unbounded timeline.
