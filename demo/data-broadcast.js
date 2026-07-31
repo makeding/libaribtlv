@@ -93,16 +93,23 @@ class ServiceWorkerResourceBridge {
       await this.registration.update();
       const pending = this.registration.installing || this.registration.waiting;
       if (pending && pending.state !== 'activated') {
-        await new Promise((resolve, reject) => {
+        await new Promise(resolve => {
           const timeout = setTimeout(
-            () => reject(new Error('VFS worker の更新が完了しません')),
-            5000,
+            () => {
+              pending.removeEventListener('statechange', changed);
+              // An already-active worker remains usable. A slow update must
+              // not turn resource collection into a VFS write failure.
+              resolve();
+            },
+            15000,
           );
-          pending.addEventListener('statechange', () => {
-            if (pending.state !== 'activated') return;
+          const changed = () => {
+            if (pending.state !== 'activated' && pending.state !== 'redundant') return;
             clearTimeout(timeout);
+            pending.removeEventListener('statechange', changed);
             resolve();
-          });
+          };
+          pending.addEventListener('statechange', changed);
         });
       }
       await navigator.serviceWorker.ready;

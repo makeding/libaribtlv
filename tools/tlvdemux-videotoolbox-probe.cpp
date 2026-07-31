@@ -17,6 +17,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <random>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -314,7 +315,9 @@ public:
     }
 
     bool done() const { return done_; }
-    bool ok() const { return pipeline_ok_ && callback_status_.load() == noErr; }
+    bool ok() const {
+        return pipeline_ok_ && callback_status_.load() == noErr && decoded_count_.load() != 0;
+    }
     OSStatus callback_status() const { return callback_status_.load(); }
     std::size_t decoded_count() const { return decoded_count_.load(); }
 
@@ -715,6 +718,8 @@ struct Options {
     bool prepend_parameter_sets_on_irap = false;
     bool skip_leading_rasl = false;
     bool mse_pipeline = false;
+    std::size_t random_seeks = 0;
+    std::uint64_t seed = 0x544c564d5345ULL;
 };
 
 Options parse_options(const int argc, char** argv) {
@@ -733,6 +738,11 @@ Options parse_options(const int argc, char** argv) {
             options.skip_leading_rasl = true;
         } else if (argument == "--mse") {
             options.mse_pipeline = true;
+        } else if (argument == "--random-seeks") {
+            options.random_seeks = static_cast<std::size_t>(
+                std::strtoull(value("--random-seeks").c_str(), nullptr, 0));
+        } else if (argument == "--seed") {
+            options.seed = std::strtoull(value("--seed").c_str(), nullptr, 0);
         } else if (argument == "--prepend-parameter-sets-on-irap") {
             options.prepend_parameter_sets_on_irap = true;
         } else if (argument == "--max-au") {
@@ -765,7 +775,8 @@ Options parse_options(const int argc, char** argv) {
         std::cerr << "usage: tlvdemux-videotoolbox-probe FILE.mmts [MAX_AU] "
                      "[--max-au N] [--offset BYTES] [--rate X] "
                      "[--inflight N] [--skip-leading-rasl] "
-                     "[--prepend-parameter-sets-on-irap] [--mse]\n";
+                     "[--prepend-parameter-sets-on-irap] [--mse] "
+                     "[--random-seeks N] [--seed N]\n";
         std::exit(2);
     }
     return options;
@@ -773,12 +784,12 @@ Options parse_options(const int argc, char** argv) {
 
 } // namespace
 
-int main(int argc, char** argv) {
-    const auto options = parse_options(argc, argv);
+bool run_probe(const Options& options, const std::uint64_t offset,
+               const std::size_t case_index) {
     std::ifstream input(options.path, std::ios::binary);
     if (!input) {
         std::cerr << "cannot open " << options.path << '\n';
-        return 2;
+        return false;
     }
 
     Probe probe(options.maximum_access_units, options.skip_leading_rasl,
@@ -787,14 +798,15 @@ int main(int argc, char** argv) {
     auto limits = tlvdemux::Limits{};
     limits.collect_application_resources = false;
     tlvdemux::Demuxer demuxer(probe, limits);
-    if (options.offset != 0) {
-        demuxer.reposition(tlvdemux::RepositionOptions{options.offset, false});
-        input.seekg(static_cast<std::streamoff>(options.offset), std::ios::beg);
+    if (offset != 0) {
+        demuxer.reposition(tlvdemux::RepositionOptions{offset, false});
+        input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
         if (!input) {
-            std::cerr << "cannot seek to " << options.offset << '\n';
-            return 2;
+            std::cerr << "cannot seek to " << offset << '\n';
+            return false;
         }
     }
+    std::cerr << "case=" << case_index << " offset=" << offset << '\n';
     std::array<std::uint8_t, 1024 * 1024> chunk{};
     while (!probe.done() && input) {
         input.read(reinterpret_cast<char*>(chunk.data()),
@@ -806,5 +818,36 @@ int main(int argc, char** argv) {
     probe.finish();
     std::cerr << "decoded=" << probe.decoded_count()
               << " final_status=" << probe.callback_status() << '\n';
-    return probe.ok() ? 0 : 1;
+    return probe.ok();
+}
+
+int main(int argc, char** argv) {
+    const auto options = parse_options(argc, argv);
+    std::ifstream size_input(options.path, std::ios::binary | std::ios::ate);
+    if (!size_input) {
+        std::cerr << "cannot open " << options.path << '\n';
+        return 2;
+    }
+    const auto end = size_input.tellg();
+    if (end <= 0) {
+        std::cerr << "empty input " << options.path << '\n';
+        return 2;
+    }
+    const auto file_size = static_cast<std::uint64_t>(end);
+    std::vector<std::uint64_t> offsets{options.offset};
+    std::mt19937_64 random(options.seed);
+    // Keep at least 4 MiB after a landing point so a short tail does not turn
+    // into a false decoder failure merely because it contains no following RAP.
+    const auto random_limit = file_size > 4U * 1024U * 1024U
+        ? file_size - 4U * 1024U * 1024U : file_size - 1;
+    for (std::size_t index = 0; index < options.random_seeks; ++index) {
+        offsets.push_back(std::uniform_int_distribution<std::uint64_t>(0, random_limit)(random));
+    }
+    bool passed = true;
+    for (std::size_t index = 0; index < offsets.size(); ++index) {
+        if (!run_probe(options, offsets[index], index)) passed = false;
+    }
+    std::cerr << "cocktail cases=" << offsets.size() << " result="
+              << (passed ? "PASS" : "FAIL") << '\n';
+    return passed ? 0 : 1;
 }

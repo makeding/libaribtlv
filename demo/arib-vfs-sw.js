@@ -221,8 +221,7 @@ async function serve(request) {
 }
 
 self.addEventListener('install', event => {
-  self.skipWaiting();
-  event.waitUntil(Promise.resolve());
+  event.waitUntil(self.skipWaiting());
 });
 
 self.addEventListener('activate', event => {

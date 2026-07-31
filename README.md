@@ -34,6 +34,19 @@ When embedding the project with `add_subdirectory()`, the diagnostic executable
 can be disabled with `-DTLVDEMUX_BUILD_TOOLS=OFF`. Tests follow CMake's standard
 `BUILD_TESTING` option.
 
+On macOS, the VideoToolbox probe can exercise the complete browser-facing MSE
+path without launching a browser. It feeds MMTS through the production
+`MseRemuxer`, validates `tfdt`/`trun` continuity and HEVC sample flags, applies
+Chromium-style `hvc1` conversion, and submits the result to hardware decoding.
+The following also repeats the run at sixteen deterministic random byte
+landings while pacing samples at 3x:
+
+```sh
+./build/tlvdemux-videotoolbox-probe demo/8k.mmts \
+  --mse --rate 3 --inflight 4 --max-au 90 \
+  --random-seeks 16 --seed 20260731
+```
+
 Install the library, public headers and CMake target export with:
 
 ```sh
