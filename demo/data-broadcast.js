@@ -6,6 +6,7 @@ const KEYBOARD_KEYS = {
   0: 48, 1: 49, 2: 50, 3: 51, 4: 52,
   5: 53, 6: 54, 7: 55, 8: 56, 9: 57,
 };
+const VFS_PREFIX = '/data-broadcast/';
 
 export function createDemoProgramInfo(is8k, now = Date.now()) {
   const startTime = new Date(now - 60 * 1000);
@@ -86,8 +87,16 @@ class ServiceWorkerResourceBridge {
       if (!('serviceWorker' in navigator)) {
         throw new Error('このブラウザーは Service Worker に対応していません');
       }
+      const workerUrl = new URL(this.url, location.href).href;
+      for (const previous of await navigator.serviceWorker.getRegistrations()) {
+        const scriptUrl = previous.active?.scriptURL || previous.waiting?.scriptURL ||
+          previous.installing?.scriptURL;
+        if (scriptUrl === workerUrl && new URL(previous.scope).pathname !== VFS_PREFIX) {
+          await previous.unregister();
+        }
+      }
       this.registration = await navigator.serviceWorker.register(this.url, {
-        scope: '/',
+        scope: VFS_PREFIX,
         updateViaCache: 'none',
       });
       await this.registration.update();
@@ -112,25 +121,7 @@ class ServiceWorkerResourceBridge {
           pending.addEventListener('statechange', changed);
         });
       }
-      await navigator.serviceWorker.ready;
-      if (!navigator.serviceWorker.controller) {
-        await new Promise((resolve, reject) => {
-          const finish = () => {
-            if (!navigator.serviceWorker.controller) return;
-            clearTimeout(timeout);
-            navigator.serviceWorker.removeEventListener('controllerchange', finish);
-            resolve();
-          };
-          const timeout = setTimeout(() => {
-            navigator.serviceWorker.removeEventListener('controllerchange', finish);
-            reject(new Error('VFS worker がページを制御できません'));
-          }, 5000);
-          navigator.serviceWorker.addEventListener('controllerchange', finish);
-          // clients.claim() may have completed between the check above and
-          // installing the listener.
-          finish();
-        });
-      }
+      if (!this.registration.active) throw new Error('VFS worker を有効化できません');
       return this.registration;
     })();
     return this.ready;
@@ -138,14 +129,9 @@ class ServiceWorkerResourceBridge {
 
   async request(message, transfer = []) {
     const registration = await this.initialize();
-    // Messages must go to the worker which actually controls this page.  During
-    // a service-worker update registration.active can already point at the new
-    // worker while fetches from the current page still go through the previous
-    // controller.  Splitting VFS writes and fetches across those workers leaves
-    // the UI reporting collected files while every broadcast URL falls through
-    // to the development server with a 404.
-    const worker = navigator.serviceWorker.controller ||
-      registration.active || registration.waiting || registration.installing;
+    // The demo page intentionally sits outside the VFS scope, so it has no
+    // controller. Send mutations directly to the scoped active worker.
+    const worker = registration.active || registration.waiting || registration.installing;
     if (!worker) throw new Error('データ放送 VFS worker を開始できません');
     return new Promise((resolve, reject) => {
       const channel = new MessageChannel();
@@ -184,7 +170,7 @@ class ServiceWorkerResourceBridge {
 
   async canRead(path) {
     await this.initialize();
-    const url = new URL(`/${String(path).replace(/^\/+/, '')}`, location.origin);
+    const url = new URL(`${VFS_PREFIX}${String(path).replace(/^\/+/, '')}`, location.origin);
     url.searchParams.set('arib-vfs-probe', Date.now().toString());
     const response = await fetch(url, { method: 'HEAD', cache: 'no-store' });
     return response.ok;
@@ -337,6 +323,23 @@ export class DataBroadcastController {
     };
     try {
       this.host.installRuntime(target);
+      const receiverDevice = target.navigator.receiverDevice;
+      const getSystemInformation = receiverDevice?.getSystemInformation?.bind(receiverDevice);
+      if (getSystemInformation) {
+        receiverDevice.getSystemInformation = (...args) => ({
+          ...getSystemInformation(...args),
+          baseurl: `${target.location.origin}${VFS_PREFIX}`,
+        });
+      }
+      target.document.addEventListener('click', event => {
+        const element = event.target instanceof target.Element ? event.target : null;
+        const anchor = element?.closest('a[href]');
+        const href = anchor?.getAttribute('href');
+        if (!href?.startsWith('/') || href.startsWith('//') || href.startsWith(VFS_PREFIX)) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        target.location.href = `${VFS_PREFIX}${href.slice(1)}`;
+      }, true);
     } finally {
       target.MutationObserver = NativeMutationObserver;
       target.setInterval = nativeSetInterval;
@@ -524,19 +527,23 @@ export class DataBroadcastController {
   }
 
   loadApplication(path, visible, contextId = this.readyContextId) {
-    const resolved = new URL(path, location.href);
+    const requestedPath = String(path).replace(/^\/+/, '');
+    const resolved = new URL(`${VFS_PREFIX}${requestedPath}`, location.origin);
     let decodedPath = '';
     try {
       decodedPath = decodeURIComponent(resolved.pathname);
     } catch {
       // Keep the empty value so malformed URL escapes fail the check below.
     }
-    const resourcePath = decodedPath.slice(1);
+    if (!decodedPath.startsWith(VFS_PREFIX)) {
+      throw new Error(`許可されていないデータ放送 URL: ${resolved.href}`);
+    }
+    const resourcePath = decodedPath.slice(VFS_PREFIX.length);
     const resourceKey = `${contextId}:${resourcePath}`;
     if (resolved.origin !== location.origin || !this.resourceSequenceByPath.has(resourceKey)) {
       throw new Error(`許可されていないデータ放送 URL: ${resolved.href}`);
     }
-    const is8k = resolved.pathname.startsWith('/sh8/');
+    const is8k = resourcePath.startsWith('sh8/');
     this.is8k = is8k;
     this.updateProgramInfo();
     this.host.loadApplication(resolved.href);

@@ -42,6 +42,9 @@ const context = {
 vm.runInNewContext(`${source}
 this.rewrite = rewriteBroadcastObjects;
 this.defer = deferRomSounds;
+this.prefixRootAttributes = prefixRootAttributes;
+this.prefixCssRootUrls = prefixCssRootUrls;
+this.normalizePath = normalizePath;
 this.putPath = path => resources.set(path, {});
 this.uniqueBasenameMatch = uniqueBasenameMatch;
 this.hasBroadcastRoot = hasBroadcastRoot;
@@ -87,6 +90,21 @@ assert.equal(
   '<img src="https://example.test/romsound://9">',
 );
 
+assert.equal(
+  context.prefixRootAttributes('<script src="/sh4/common.js"></script><a href=/40/top.html>'),
+  '<script src="/data-broadcast/sh4/common.js"></script><a href=/data-broadcast/40/top.html>',
+);
+assert.equal(
+  context.prefixRootAttributes('<a href="/data-broadcast/sh4/top.html">'),
+  '<a href="/data-broadcast/sh4/top.html">',
+);
+assert.equal(
+  context.prefixCssRootUrls('a{background:url("/sh4/a.png")} @import "/40/base.css";'),
+  'a{background:url("/data-broadcast/sh4/a.png")} @import "/data-broadcast/40/base.css";',
+);
+assert.equal(context.normalizePath('/data-broadcast/sh4/a.html'), 'sh4/a.html');
+assert.equal(context.normalizePath('/sh4/a.html'), 'sh4/a.html');
+
 context.putPath('sh4/60/001/top/source/index4k.html');
 assert.equal(
   context.uniqueBasenameMatch('sh4/70/001/msgerase/source/index4k.html'),
@@ -126,7 +144,14 @@ const restoredIndex = await context.waitForPath('sh8/60/001/top/source/index8k.h
 assert.equal(new TextDecoder().decode(restoredIndex.resource.data), '<html>8K</html>');
 assert.equal(restoredIndex.resource.contentType, 'text/html; charset=utf-8');
 
-const controllerContext = { Date };
+const controllerContext = {
+  Date,
+  URL,
+  location: {
+    href: 'http://127.0.0.1:8000/demo/',
+    origin: 'http://127.0.0.1:8000',
+  },
+};
 vm.runInNewContext(`${controllerSource.replace(/^export /gm, '')}
 this.createDemoProgramInfo = createDemoProgramInfo;
 this.createProgramInfoFromEvents = createProgramInfoFromEvents;
@@ -135,6 +160,7 @@ this.visibleApplication = DataBroadcastController.prototype.visibleApplication;
 this.maintenanceApplication = DataBroadcastController.prototype.maintenanceApplication;
 this.ensureResourceAvailable = DataBroadcastController.prototype.ensureResourceAvailable;
 this.recoverApplicationFailure = DataBroadcastController.prototype.recoverApplicationFailure;
+this.loadApplication = DataBroadcastController.prototype.loadApplication;
 `, controllerContext);
 const now = Date.UTC(2026, 6, 31, 12, 0, 0);
 const program = controllerContext.createDemoProgramInfo(false, now);
@@ -219,6 +245,23 @@ assert.equal(controllerContext.maintenanceApplication.call({
     ['1:sh4/60/001/top/source/index4k.html', 1],
   ]),
 }), null);
+
+let loadedApplication = null;
+controllerContext.loadApplication.call({
+  readyContextId: 1,
+  resourceSequenceByPath: new Map([
+    ['1:sh4/60/001/top/maintenance/maintenance.html', 3],
+  ]),
+  host: { loadApplication(value) { loadedApplication = value; } },
+  viewport: { classList: { toggle() {} } },
+  detail: { textContent: '' },
+  updateProgramInfo() {},
+  setStatus() {},
+}, '/sh4/60/001/top/maintenance/maintenance.html', true, 1);
+assert.equal(
+  loadedApplication,
+  'http://127.0.0.1:8000/data-broadcast/sh4/60/001/top/maintenance/maintenance.html',
+);
 
 const replayed = [];
 let probeCount = 0;

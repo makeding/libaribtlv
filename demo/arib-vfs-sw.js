@@ -1,8 +1,9 @@
 const resources = new Map();
 const waiters = new Map();
-const CACHE_NAME = 'tlvdemux-arib-vfs-v1';
-const CACHE_RESOURCE_PATH = '/.tlvdemux-arib-vfs-resource';
-const CACHE_SESSION_PATH = '/.tlvdemux-arib-vfs-session';
+const VFS_PREFIX = '/data-broadcast/';
+const CACHE_NAME = 'tlvdemux-arib-vfs-v2';
+const CACHE_RESOURCE_PATH = `${VFS_PREFIX}.tlvdemux-arib-vfs-resource`;
+const CACHE_SESSION_PATH = `${VFS_PREFIX}.tlvdemux-arib-vfs-session`;
 let enabled = false;
 let restorePromise = null;
 
@@ -68,6 +69,7 @@ function normalizePath(value) {
   } catch {
     return null;
   }
+  if (pathname.startsWith(VFS_PREFIX)) pathname = pathname.slice(VFS_PREFIX.length);
   const parts = pathname.split('/').filter(Boolean);
   if (!parts.length || parts.some(part => part === '.' || part === '..')) return null;
   return parts.join('/');
@@ -184,10 +186,34 @@ function deferRomSounds(source) {
   );
 }
 
+function prefixRootAttributes(source) {
+  return source.replace(
+    /(\b(?:href|src|action|poster)\s*=\s*)(?:(["'])(\/[^/][^"']*)\2|(\/[^\s>]*))/gi,
+    (_match, name, quote, quotedPath, barePath) => {
+      const path = quotedPath || barePath;
+      if (path.startsWith(VFS_PREFIX)) return _match;
+      const value = `${VFS_PREFIX}${path.slice(1)}`;
+      return quote ? `${name}${quote}${value}${quote}` : `${name}${value}`;
+    },
+  );
+}
+
+function prefixCssRootUrls(source) {
+  return source
+    .replace(/url\(\s*(["']?)(\/[^/)][^)]*)\1\s*\)/gi,
+      (_match, quote, path) => path.startsWith(VFS_PREFIX)
+        ? _match : `url(${quote}${VFS_PREFIX}${path.slice(1)}${quote})`)
+    .replace(/(@import\s+)(["'])(\/[^/][^"']*)\2/gi,
+      (_match, keyword, quote, path) => path.startsWith(VFS_PREFIX)
+        ? _match : `${keyword}${quote}${VFS_PREFIX}${path.slice(1)}${quote}`);
+}
+
 function injectRuntime(bytes) {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
-  const source = deferRomSounds(rewriteBroadcastObjects(decoder.decode(bytes)));
+  const source = prefixRootAttributes(
+    deferRomSounds(rewriteBroadcastObjects(decoder.decode(bytes))),
+  );
   const bootstrap = '<script>parent.__ARIB_HTML5_INSTALL__?.(window)</script>';
   const match = /<head(?:\s[^>]*)?>/i.exec(source);
   if (!match) return encoder.encode(`${bootstrap}${source}`);
@@ -201,14 +227,16 @@ async function serve(request) {
   const resolved = await waitFor(path);
   if (!resolved) return new Response('Broadcast resource is not available', { status: 404 });
   if (resolved.path !== path) {
-    return Response.redirect(new URL(`/${resolved.path}`, self.location.origin), 302);
+    return Response.redirect(new URL(`${VFS_PREFIX}${resolved.path}`, self.location.origin), 302);
   }
   const resource = resolved.resource;
 
   const type = contentType(path, resource.contentType);
-  const body = /^text\/html(?:;|$)/i.test(type)
-    ? injectRuntime(resource.data)
-    : resource.data.slice(0);
+  let body = resource.data.slice(0);
+  if (/^text\/html(?:;|$)/i.test(type)) body = injectRuntime(resource.data);
+  else if (/^text\/css(?:;|$)/i.test(type)) {
+    body = new TextEncoder().encode(prefixCssRootUrls(new TextDecoder().decode(resource.data)));
+  }
   return new Response(request.method === 'HEAD' ? null : body, {
     status: 200,
     headers: {
@@ -280,6 +308,7 @@ self.addEventListener('message', event => {
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin ||
+      !url.pathname.startsWith(VFS_PREFIX) ||
       (event.request.method !== 'GET' && event.request.method !== 'HEAD')) return;
   event.respondWith((async () => {
     await restorePersistentResources();
