@@ -57,6 +57,7 @@ this.putResource = (path, resource) => {
 this.beginPersistentSession = beginPersistentSession;
 this.persistResource = persistResource;
 this.restorePersistentResources = restorePersistentResources;
+this.hasAvailableResource = hasAvailableResource;
 this.simulateWorkerRestart = () => {
   resources.clear();
   enabled = false;
@@ -143,6 +144,8 @@ assert.equal(await context.restorePersistentResources(), true);
 const restoredIndex = await context.waitForPath('sh8/60/001/top/source/index8k.html');
 assert.equal(new TextDecoder().decode(restoredIndex.resource.data), '<html>8K</html>');
 assert.equal(restoredIndex.resource.contentType, 'text/html; charset=utf-8');
+assert.equal(await context.hasAvailableResource('sh8/60/001/top/source/index8k.html'), true);
+assert.equal(await context.hasAvailableResource('sh8/does-not-exist.html'), false);
 
 const controllerContext = {
   Date,
@@ -161,7 +164,17 @@ this.maintenanceApplication = DataBroadcastController.prototype.maintenanceAppli
 this.ensureResourceAvailable = DataBroadcastController.prototype.ensureResourceAvailable;
 this.recoverApplicationFailure = DataBroadcastController.prototype.recoverApplicationFailure;
 this.loadApplication = DataBroadcastController.prototype.loadApplication;
+this.bridgeCanRead = ServiceWorkerResourceBridge.prototype.canRead;
 `, controllerContext);
+let probeMessage = null;
+assert.equal(await controllerContext.bridgeCanRead.call({
+  async request(message) {
+    probeMessage = message;
+    return { ok: true, available: true };
+  },
+}, '/sh4/40/001/startup/html/index.html'), true);
+assert.equal(probeMessage.type, 'arib-vfs-probe');
+assert.equal(probeMessage.path, 'sh4/40/001/startup/html/index.html');
 const now = Date.UTC(2026, 6, 31, 12, 0, 0);
 const program = controllerContext.createDemoProgramInfo(false, now);
 assert.equal(program.duration, 30 * 60 * 1000);

@@ -169,11 +169,11 @@ class ServiceWorkerResourceBridge {
   }
 
   async canRead(path) {
-    await this.initialize();
-    const url = new URL(`${VFS_PREFIX}${String(path).replace(/^\/+/, '')}`, location.origin);
-    url.searchParams.set('arib-vfs-probe', Date.now().toString());
-    const response = await fetch(url, { method: 'HEAD', cache: 'no-store' });
-    return response.ok;
+    const response = await this.request({
+      type: 'arib-vfs-probe',
+      path: String(path).replace(/^\/+/, ''),
+    });
+    return response.available === true;
   }
 }
 

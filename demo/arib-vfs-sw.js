@@ -62,6 +62,12 @@ async function restorePersistentResources() {
   }
 }
 
+async function hasAvailableResource(value) {
+  await restorePersistentResources();
+  const path = normalizePath(`/${value || ''}`);
+  return Boolean(enabled && path && resources.has(path));
+}
+
 function normalizePath(value) {
   let pathname;
   try {
@@ -260,6 +266,10 @@ self.addEventListener('message', event => {
   const message = event.data || {};
   const reply = value => event.ports[0]?.postMessage(value);
   const handle = async () => {
+    if (message.type === 'arib-vfs-probe') {
+      reply({ ok: true, available: await hasAvailableResource(message.path) });
+      return;
+    }
     if (message.type === 'arib-vfs-begin') {
       enabled = true;
       resources.clear();
