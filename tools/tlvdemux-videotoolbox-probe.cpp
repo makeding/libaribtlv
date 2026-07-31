@@ -76,10 +76,13 @@ std::string nal_types(const std::vector<NalUnit>& nals) {
 class Probe final : public tlvdemux::Sink {
 public:
     Probe(const std::size_t maximum_access_units, const bool skip_leading_rasl,
-          const double playback_rate)
+          const double playback_rate, const std::size_t inflight_frames,
+          const bool prepend_parameter_sets_on_irap)
         : maximum_access_units_(maximum_access_units),
           skip_leading_rasl_(skip_leading_rasl),
-          playback_rate_(playback_rate) {}
+          playback_rate_(playback_rate),
+          inflight_frames_(inflight_frames),
+          prepend_parameter_sets_on_irap_(prepend_parameter_sets_on_irap) {}
 
     ~Probe() override {
         finish();
@@ -206,6 +209,7 @@ private:
             done_ = true;
             return false;
         }
+        decoder_parameter_sets_ = parameter_sets_;
 
         const void* decoder_keys[] = {
             kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
@@ -237,14 +241,36 @@ private:
 
     OSStatus decode(const tlvdemux::AccessUnit& unit, const std::vector<NalUnit>& nals) {
         std::vector<std::uint8_t> sample;
-        for (const auto& nal : nals) {
-            if (nal.size > std::numeric_limits<std::uint32_t>::max()) return paramErr;
-            const auto size = static_cast<std::uint32_t>(nal.size);
+        const auto append_nal = [&sample](const std::uint8_t* data,
+                                          const std::size_t nal_size) -> bool {
+            if (nal_size > std::numeric_limits<std::uint32_t>::max()) return false;
+            const auto size = static_cast<std::uint32_t>(nal_size);
             sample.push_back(static_cast<std::uint8_t>(size >> 24U));
             sample.push_back(static_cast<std::uint8_t>(size >> 16U));
             sample.push_back(static_cast<std::uint8_t>(size >> 8U));
             sample.push_back(static_cast<std::uint8_t>(size));
-            sample.insert(sample.end(), nal.data, nal.data + nal.size);
+            sample.insert(sample.end(), data, data + nal_size);
+            return true;
+        };
+        const bool has_irap = std::any_of(nals.begin(), nals.end(), [](const auto& nal) {
+            return nal.type >= 16 && nal.type <= 23;
+        });
+        std::size_t first_original = 0;
+        if (prepend_parameter_sets_on_irap_ && has_irap) {
+            // Chromium inserts hvcC immediately after an initial AUD, then keeps
+            // any in-band parameter sets already present in an hev1 sample.
+            if (!nals.empty() && nals.front().type == 35) {
+                if (!append_nal(nals.front().data, nals.front().size)) return paramErr;
+                first_original = 1;
+            }
+            for (const auto& parameter_set : decoder_parameter_sets_) {
+                if (!append_nal(parameter_set.data(), parameter_set.size())) return paramErr;
+            }
+        }
+        for (std::size_t index = first_original; index < nals.size(); ++index) {
+            const auto& nal = nals[index];
+            if (nal.size > std::numeric_limits<std::uint32_t>::max()) return paramErr;
+            if (!append_nal(nal.data, nal.size)) return paramErr;
         }
 
         CMBlockBufferRef block = nullptr;
@@ -285,7 +311,11 @@ private:
             session_, buffer, kVTDecodeFrame_EnableAsynchronousDecompression, nullptr, &flags);
         CFRelease(buffer);
         if (status == noErr) {
-            status = VTDecompressionSessionWaitForAsynchronousFrames(session_);
+            ++frames_since_wait_;
+            if (frames_since_wait_ >= inflight_frames_) {
+                status = VTDecompressionSessionWaitForAsynchronousFrames(session_);
+                frames_since_wait_ = 0;
+            }
         }
         return status;
     }
@@ -302,6 +332,7 @@ private:
 
     std::optional<std::uint64_t> video_track_;
     std::array<std::vector<std::uint8_t>, 3> parameter_sets_;
+    std::array<std::vector<std::uint8_t>, 3> decoder_parameter_sets_;
     CMVideoFormatDescriptionRef format_ = nullptr;
     VTDecompressionSessionRef session_ = nullptr;
     std::atomic<OSStatus> callback_status_{noErr};
@@ -311,6 +342,9 @@ private:
     bool skip_leading_rasl_ = false;
     bool waiting_for_first_trailing_picture_ = false;
     double playback_rate_ = 0.0;
+    std::size_t inflight_frames_ = 1;
+    std::size_t frames_since_wait_ = 0;
+    bool prepend_parameter_sets_on_irap_ = false;
     std::optional<double> first_dts_seconds_;
     std::chrono::steady_clock::time_point pacing_started_{};
     bool done_ = false;
@@ -321,6 +355,8 @@ struct Options {
     std::size_t maximum_access_units = 300;
     std::uint64_t offset = 0;
     double playback_rate = 0.0;
+    std::size_t inflight_frames = 1;
+    bool prepend_parameter_sets_on_irap = false;
     bool skip_leading_rasl = false;
 };
 
@@ -338,6 +374,8 @@ Options parse_options(const int argc, char** argv) {
         };
         if (argument == "--skip-leading-rasl") {
             options.skip_leading_rasl = true;
+        } else if (argument == "--prepend-parameter-sets-on-irap") {
+            options.prepend_parameter_sets_on_irap = true;
         } else if (argument == "--max-au") {
             options.maximum_access_units = static_cast<std::size_t>(
                 std::strtoull(value("--max-au").c_str(), nullptr, 0));
@@ -345,6 +383,9 @@ Options parse_options(const int argc, char** argv) {
             options.offset = std::strtoull(value("--offset").c_str(), nullptr, 0);
         } else if (argument == "--rate") {
             options.playback_rate = std::strtod(value("--rate").c_str(), nullptr);
+        } else if (argument == "--inflight") {
+            options.inflight_frames = static_cast<std::size_t>(
+                std::strtoull(value("--inflight").c_str(), nullptr, 0));
         } else if (!argument.empty() && argument[0] == '-') {
             std::cerr << "unknown option: " << argument << '\n';
             std::exit(2);
@@ -360,10 +401,12 @@ Options parse_options(const int argc, char** argv) {
         }
     }
     if (options.path.empty() || options.maximum_access_units == 0 ||
+        options.inflight_frames == 0 ||
         options.playback_rate < 0.0) {
         std::cerr << "usage: tlvdemux-videotoolbox-probe FILE.mmts [MAX_AU] "
                      "[--max-au N] [--offset BYTES] [--rate X] "
-                     "[--skip-leading-rasl]\n";
+                     "[--inflight N] [--skip-leading-rasl] "
+                     "[--prepend-parameter-sets-on-irap]\n";
         std::exit(2);
     }
     return options;
@@ -380,7 +423,8 @@ int main(int argc, char** argv) {
     }
 
     Probe probe(options.maximum_access_units, options.skip_leading_rasl,
-                options.playback_rate);
+                options.playback_rate, options.inflight_frames,
+                options.prepend_parameter_sets_on_irap);
     auto limits = tlvdemux::Limits{};
     limits.collect_application_resources = false;
     tlvdemux::Demuxer demuxer(probe, limits);
