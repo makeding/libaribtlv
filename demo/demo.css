@@ -195,6 +195,7 @@ h2 { font-size: 15px; }
 .dpad .right { grid-area: 2 / 3; }
 .dpad .down { grid-area: 3 / 2; }
 .utility-keys { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 9px; }
+.utility-keys .maintenance-key { grid-column: 1 / -1; }
 .number-keys { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 9px; }
 .number-keys .zero { grid-column: 2; }
 

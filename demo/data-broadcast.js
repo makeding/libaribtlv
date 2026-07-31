@@ -198,6 +198,7 @@ export class DataBroadcastController {
     this.video = video;
     this.iframe = iframe;
     this.remote = remote;
+    this.maintenanceButton = remote.querySelector('[data-maintenance-page]');
     this.status = status;
     this.detail = detail;
     this.url = url;
@@ -268,6 +269,7 @@ export class DataBroadcastController {
     this.remote.querySelectorAll('[data-arib-key]').forEach(button => {
       button.addEventListener('click', () => this.dispatchKey(Number(button.dataset.aribKey)));
     });
+    this.maintenanceButton?.addEventListener('click', () => this.showMaintenance());
     this.setVisible(false);
     this.bridge.initialize().then(
       () => this.setStatus('データ放送待機中', 'WASM 仮想ファイル未生成'),
@@ -359,6 +361,7 @@ export class DataBroadcastController {
     this.readyResourceCount = 0;
     this.htmlCatalogueSignatures.clear();
     this.showRequested = false;
+    this.updateMaintenanceButton();
     this.url.textContent = '';
     this.setVisible(false);
     this.pendingWrites = this.bridge.begin();
@@ -410,6 +413,7 @@ export class DataBroadcastController {
       `${notification.contextId}:${notification.path}`,
       sequence,
     );
+    this.updateMaintenanceButton();
     const resource = {
       path: notification.path,
       contentType: notification.contentType,
@@ -492,6 +496,7 @@ export class DataBroadcastController {
     this.readyEntry = entry;
     this.readyContextId = state.contextId;
     this.readyResourceCount = state.resourceCount;
+    this.updateMaintenanceButton();
     this.logHtmlCatalogue(state.contextId, state.resourceCount);
     this.status.textContent = 'データ放送準備完了';
     if (this.showRequested) {
@@ -554,6 +559,59 @@ export class DataBroadcastController {
       path: this.readyEntry,
       sequence,
     };
+  }
+
+  maintenanceApplication() {
+    if (this.readyContextId === null) return null;
+    const prefix = `${this.readyContextId}:`;
+    const path = [...this.resourceSequenceByPath.keys()]
+      .filter(key => key.startsWith(prefix))
+      .map(key => key.slice(prefix.length))
+      .filter(candidate => /(?:^|\/)maintenance\/maintenance\.html$/i.test(candidate))
+      .sort((left, right) => left.length - right.length || left.localeCompare(right))[0];
+    if (!path) return null;
+    return {
+      contextId: this.readyContextId,
+      path,
+      sequence: this.resourceSequenceByPath.get(`${this.readyContextId}:${path}`),
+    };
+  }
+
+  updateMaintenanceButton() {
+    if (this.maintenanceButton) {
+      this.maintenanceButton.disabled = this.maintenanceApplication() === null;
+    }
+  }
+
+  showMaintenance() {
+    const application = this.maintenanceApplication();
+    if (!application) {
+      this.setStatus('メンテナンスページなし', '現在のデータ放送には収録されていません');
+      return;
+    }
+    const sessionGeneration = this.sessionGeneration;
+    if (this.applicationLoadTimer !== null) {
+      clearTimeout(this.applicationLoadTimer);
+      this.applicationLoadTimer = null;
+    }
+    this.setStatus('メンテナンスを準備中', this.detail.textContent);
+    this.waitForResources(application.sequence).then(async () => {
+      if (sessionGeneration !== this.sessionGeneration) return;
+      await this.ensureResourceAvailable(application.path, sessionGeneration);
+      if (sessionGeneration !== this.sessionGeneration) return;
+      this.loadApplication(`/${application.path}`, true, application.contextId);
+      this.loadedEntry = application.path;
+      this.showRequested = false;
+      this.armApplicationLoadTimer(`/${application.path} のランタイムを確認できません`, {
+        sessionGeneration,
+        loadedEntry: application.path,
+      });
+      this.log(`データ放送 メンテナンス /${application.path}`);
+    }).catch(error => {
+      if (sessionGeneration !== this.sessionGeneration) return;
+      this.setVisible(false);
+      this.setStatus('メンテナンス起動失敗', error.message);
+    });
   }
 
   showApplication(entry, contextId = this.readyContextId) {

@@ -132,6 +132,7 @@ this.createDemoProgramInfo = createDemoProgramInfo;
 this.createProgramInfoFromEvents = createProgramInfoFromEvents;
 this.broadcastClockChanged = DataBroadcastController.prototype.broadcastClockChanged;
 this.visibleApplication = DataBroadcastController.prototype.visibleApplication;
+this.maintenanceApplication = DataBroadcastController.prototype.maintenanceApplication;
 this.ensureResourceAvailable = DataBroadcastController.prototype.ensureResourceAvailable;
 this.recoverApplicationFailure = DataBroadcastController.prototype.recoverApplicationFailure;
 `, controllerContext);
@@ -200,6 +201,24 @@ const visibleApplication = controllerContext.visibleApplication.call({
 });
 assert.equal(visibleApplication.contextId, 1);
 assert.equal(visibleApplication.path, 'sh4/40/001/startup/html/index.html');
+
+const maintenanceApplication = controllerContext.maintenanceApplication.call({
+  readyContextId: 1,
+  resourceSequenceByPath: new Map([
+    ['2:sh8/60/001/top/maintenance/maintenance.html', 1],
+    ['1:sh4/60/001/top/source/index4k.html', 2],
+    ['1:sh4/60/001/top/maintenance/maintenance.html', 3],
+  ]),
+});
+assert.equal(maintenanceApplication.contextId, 1);
+assert.equal(maintenanceApplication.path, 'sh4/60/001/top/maintenance/maintenance.html');
+assert.equal(maintenanceApplication.sequence, 3);
+assert.equal(controllerContext.maintenanceApplication.call({
+  readyContextId: 1,
+  resourceSequenceByPath: new Map([
+    ['1:sh4/60/001/top/source/index4k.html', 1],
+  ]),
+}), null);
 
 const replayed = [];
 let probeCount = 0;
