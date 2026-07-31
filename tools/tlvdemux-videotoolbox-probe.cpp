@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -15,6 +16,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -65,9 +67,11 @@ std::string nal_types(const std::vector<NalUnit>& nals) {
 
 class Probe final : public tlvdemux::Sink {
 public:
-    Probe(const std::size_t maximum_access_units, const bool skip_leading_rasl)
+    Probe(const std::size_t maximum_access_units, const bool skip_leading_rasl,
+          const double playback_rate)
         : maximum_access_units_(maximum_access_units),
-          skip_leading_rasl_(skip_leading_rasl) {}
+          skip_leading_rasl_(skip_leading_rasl),
+          playback_rate_(playback_rate) {}
 
     ~Probe() override {
         finish();
@@ -114,6 +118,8 @@ public:
             waiting_for_first_trailing_picture_ = false;
         }
 
+        pace(unit.dts);
+
         ++access_unit_count_;
         const auto status = decode(unit, nals);
         std::cerr << "au=" << access_unit_count_
@@ -156,6 +162,22 @@ private:
             auto& target = parameter_sets_[nal.type - 32];
             target.assign(nal.data, nal.data + nal.size);
         }
+    }
+
+    void pace(const tlvdemux::Timestamp dts) {
+        if (playback_rate_ <= 0.0 || dts.timescale == 0) return;
+        const auto value = seconds(dts);
+        if (!first_dts_seconds_.has_value()) {
+            first_dts_seconds_ = value;
+            pacing_started_ = std::chrono::steady_clock::now();
+            return;
+        }
+        const auto media_seconds = value - *first_dts_seconds_;
+        if (media_seconds <= 0.0) return;
+        const auto target = pacing_started_ + std::chrono::duration_cast<
+            std::chrono::steady_clock::duration>(
+                std::chrono::duration<double>(media_seconds / playback_rate_));
+        std::this_thread::sleep_until(target);
     }
 
     bool create_session() {
@@ -280,32 +302,88 @@ private:
     std::size_t maximum_access_units_ = 300;
     bool skip_leading_rasl_ = false;
     bool waiting_for_first_trailing_picture_ = false;
+    double playback_rate_ = 0.0;
+    std::optional<double> first_dts_seconds_;
+    std::chrono::steady_clock::time_point pacing_started_{};
     bool done_ = false;
 };
+
+struct Options {
+    std::string path;
+    std::size_t maximum_access_units = 300;
+    std::uint64_t offset = 0;
+    double playback_rate = 0.0;
+    bool skip_leading_rasl = false;
+};
+
+Options parse_options(const int argc, char** argv) {
+    Options options;
+    bool legacy_maximum_seen = false;
+    for (int index = 1; index < argc; ++index) {
+        const std::string argument = argv[index];
+        const auto value = [&](const char* name) -> std::string {
+            if (++index >= argc) {
+                std::cerr << "missing value for " << name << '\n';
+                std::exit(2);
+            }
+            return argv[index];
+        };
+        if (argument == "--skip-leading-rasl") {
+            options.skip_leading_rasl = true;
+        } else if (argument == "--max-au") {
+            options.maximum_access_units = static_cast<std::size_t>(
+                std::strtoull(value("--max-au").c_str(), nullptr, 0));
+        } else if (argument == "--offset") {
+            options.offset = std::strtoull(value("--offset").c_str(), nullptr, 0);
+        } else if (argument == "--rate") {
+            options.playback_rate = std::strtod(value("--rate").c_str(), nullptr);
+        } else if (!argument.empty() && argument[0] == '-') {
+            std::cerr << "unknown option: " << argument << '\n';
+            std::exit(2);
+        } else if (options.path.empty()) {
+            options.path = argument;
+        } else if (!legacy_maximum_seen) {
+            options.maximum_access_units = static_cast<std::size_t>(
+                std::strtoull(argument.c_str(), nullptr, 0));
+            legacy_maximum_seen = true;
+        } else {
+            std::cerr << "unexpected argument: " << argument << '\n';
+            std::exit(2);
+        }
+    }
+    if (options.path.empty() || options.maximum_access_units == 0 ||
+        options.playback_rate < 0.0) {
+        std::cerr << "usage: tlvdemux-videotoolbox-probe FILE.mmts [MAX_AU] "
+                     "[--max-au N] [--offset BYTES] [--rate X] "
+                     "[--skip-leading-rasl]\n";
+        std::exit(2);
+    }
+    return options;
+}
 
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 2 || argc > 4) {
-        std::cerr << "usage: tlvdemux-videotoolbox-probe FILE.mmts [MAX_AU] "
-                     "[--skip-leading-rasl]\n";
-        return 2;
-    }
-    const auto maximum_access_units = argc == 3
-        ? static_cast<std::size_t>(std::strtoull(argv[2], nullptr, 10))
-        : 300U;
-    std::ifstream input(argv[1], std::ios::binary);
+    const auto options = parse_options(argc, argv);
+    std::ifstream input(options.path, std::ios::binary);
     if (!input) {
-        std::cerr << "cannot open " << argv[1] << '\n';
+        std::cerr << "cannot open " << options.path << '\n';
         return 2;
     }
 
-    const bool skip_leading_rasl = argc == 4 &&
-        std::string(argv[3]) == "--skip-leading-rasl";
-    Probe probe(maximum_access_units, skip_leading_rasl);
+    Probe probe(options.maximum_access_units, options.skip_leading_rasl,
+                options.playback_rate);
     auto limits = tlvdemux::Limits{};
     limits.collect_application_resources = false;
     tlvdemux::Demuxer demuxer(probe, limits);
+    if (options.offset != 0) {
+        demuxer.reposition(tlvdemux::RepositionOptions{options.offset, false});
+        input.seekg(static_cast<std::streamoff>(options.offset), std::ios::beg);
+        if (!input) {
+            std::cerr << "cannot seek to " << options.offset << '\n';
+            return 2;
+        }
+    }
     std::array<std::uint8_t, 1024 * 1024> chunk{};
     while (!probe.done() && input) {
         input.read(reinterpret_cast<char*>(chunk.data()),

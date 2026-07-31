@@ -347,6 +347,7 @@ bool run_seek_case(std::ifstream& file, tlvdemux::Demuxer& demuxer,
     std::cerr << "case=" << case_number
               << " target=" << seconds(target_us)
               << " rap=" << seconds(point.presentation_time.value)
+              << " checkpoint=" << point.signalling_offset
               << " landing=" << (sink.landed() ? seconds(sink.landingPtsUs()) : "missing")
               << " frames=" << sink.seekVideoUnits()
               << " read=" << bytes_read
