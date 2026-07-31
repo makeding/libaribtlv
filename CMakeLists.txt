@@ -92,6 +92,18 @@ if(TLVDEMUX_BUILD_TOOLS)
     target_link_libraries(tlvdemux-extract PRIVATE tlvdemux::tlvdemux)
     add_executable(tlvdemux-probe tools/tlvdemux-probe.cpp)
     target_link_libraries(tlvdemux-probe PRIVATE tlvdemux::tlvdemux)
+    if(APPLE)
+        add_executable(tlvdemux-videotoolbox-probe tools/tlvdemux-videotoolbox-probe.cpp)
+        target_link_libraries(tlvdemux-videotoolbox-probe PRIVATE
+            tlvdemux::tlvdemux
+            "-framework CoreFoundation"
+            "-framework CoreMedia"
+            "-framework CoreVideo"
+            "-framework VideoToolbox"
+        )
+        target_compile_options(tlvdemux-videotoolbox-probe PRIVATE
+            -Wall -Wextra -Wpedantic)
+    endif()
     if(MSVC)
         target_compile_options(tlvdemux-inspect PRIVATE /W4 /permissive-)
         target_compile_options(tlvdemux-cocktail PRIVATE /W4 /permissive-)
@@ -105,6 +117,10 @@ if(TLVDEMUX_BUILD_TOOLS)
     endif()
     install(TARGETS tlvdemux-inspect tlvdemux-extract tlvdemux-probe
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    if(APPLE)
+        install(TARGETS tlvdemux-videotoolbox-probe
+                RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    endif()
 endif()
 
 if(TLVDEMUX_BUILD_WASM_BINDINGS)

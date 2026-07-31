@@ -1,0 +1,321 @@
+#include <tlvdemux/demuxer.hpp>
+
+#include <CoreMedia/CoreMedia.h>
+#include <VideoToolbox/VideoToolbox.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <limits>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace {
+
+struct NalUnit {
+    const std::uint8_t* data = nullptr;
+    std::size_t size = 0;
+    std::uint8_t type = 0;
+};
+
+std::vector<NalUnit> split_annex_b(const std::vector<std::uint8_t>& bytes) {
+    std::vector<NalUnit> result;
+    const auto start_code = [&bytes](const std::size_t offset) -> std::size_t {
+        if (offset + 3 <= bytes.size() && bytes[offset] == 0 && bytes[offset + 1] == 0 &&
+            bytes[offset + 2] == 1) return 3;
+        if (offset + 4 <= bytes.size() && bytes[offset] == 0 && bytes[offset + 1] == 0 &&
+            bytes[offset + 2] == 0 && bytes[offset + 3] == 1) return 4;
+        return 0;
+    };
+
+    std::size_t cursor = 0;
+    while (cursor < bytes.size()) {
+        const auto prefix = start_code(cursor);
+        if (prefix == 0) {
+            ++cursor;
+            continue;
+        }
+        const auto nal_start = cursor + prefix;
+        auto nal_end = nal_start;
+        while (nal_end < bytes.size() && start_code(nal_end) == 0) ++nal_end;
+        if (nal_end > nal_start && nal_end - nal_start >= 2) {
+            result.push_back({bytes.data() + nal_start, nal_end - nal_start,
+                              static_cast<std::uint8_t>((bytes[nal_start] >> 1U) & 0x3fU)});
+        }
+        cursor = nal_end;
+    }
+    return result;
+}
+
+std::string nal_types(const std::vector<NalUnit>& nals) {
+    std::string result;
+    for (const auto& nal : nals) {
+        if (!result.empty()) result += ',';
+        result += std::to_string(nal.type);
+    }
+    return result;
+}
+
+class Probe final : public tlvdemux::Sink {
+public:
+    Probe(const std::size_t maximum_access_units, const bool skip_leading_rasl)
+        : maximum_access_units_(maximum_access_units),
+          skip_leading_rasl_(skip_leading_rasl) {}
+
+    ~Probe() override {
+        finish();
+        if (session_ != nullptr) CFRelease(session_);
+        if (format_ != nullptr) CFRelease(format_);
+    }
+
+    void onService(const tlvdemux::ServiceInfo&) override {}
+
+    void onTrack(const tlvdemux::TrackInfo& track) override {
+        if (!video_track_.has_value() && track.kind == tlvdemux::TrackKind::Video &&
+            track.codec == tlvdemux::Codec::Hevc) {
+            video_track_ = track.track_id;
+            std::cerr << "video track packet_id=0x" << std::hex << track.packet_id << std::dec
+                      << " timescale=" << track.timescale << '\n';
+        }
+    }
+
+    void onAccessUnit(tlvdemux::AccessUnit&& unit) override {
+        if (done_ || !video_track_.has_value() || unit.track_id != *video_track_ ||
+            unit.codec != tlvdemux::Codec::Hevc) return;
+
+        const auto nals = split_annex_b(unit.data);
+        remember_parameter_sets(nals);
+        if (session_ == nullptr && !create_session()) return;
+
+        const bool has_vcl = std::any_of(nals.begin(), nals.end(),
+                                         [](const auto& nal) { return nal.type <= 31; });
+        const bool has_irap = std::any_of(nals.begin(), nals.end(),
+                                          [](const auto& nal) {
+                                              return nal.type >= 16 && nal.type <= 23;
+                                          });
+        const bool only_rasl_vcl = has_vcl && std::all_of(
+            nals.begin(), nals.end(), [](const auto& nal) {
+                return nal.type > 31 || nal.type == 8 || nal.type == 9;
+            });
+        if (skip_leading_rasl_ && waiting_for_first_trailing_picture_ && only_rasl_vcl) {
+            std::cerr << "skip leading RASL pts=" << seconds(unit.pts)
+                      << " dts=" << seconds(unit.dts)
+                      << " nal=" << nal_types(nals) << '\n';
+            return;
+        }
+        if (waiting_for_first_trailing_picture_ && has_vcl && !has_irap) {
+            waiting_for_first_trailing_picture_ = false;
+        }
+
+        ++access_unit_count_;
+        const auto status = decode(unit, nals);
+        std::cerr << "au=" << access_unit_count_
+                  << " pts=" << seconds(unit.pts)
+                  << " dts=" << seconds(unit.dts)
+                  << " rap=" << (unit.random_access ? 1 : 0)
+                  << " nal=" << nal_types(nals)
+                  << " submit=" << status << '\n';
+        if (status != noErr || callback_status_.load() != noErr ||
+            access_unit_count_ >= maximum_access_units_) {
+            done_ = true;
+        }
+        if (access_unit_count_ == 1 && has_irap) waiting_for_first_trailing_picture_ = true;
+    }
+
+    void onError(const tlvdemux::Error& error) override {
+        if (!error.recoverable) {
+            std::cerr << "demux error @" << error.input_offset << ": " << error.message << '\n';
+            done_ = true;
+        }
+    }
+
+    bool done() const { return done_; }
+    OSStatus callback_status() const { return callback_status_.load(); }
+    std::size_t decoded_count() const { return decoded_count_.load(); }
+
+    void finish() {
+        if (session_ != nullptr) VTDecompressionSessionWaitForAsynchronousFrames(session_);
+    }
+
+private:
+    static double seconds(const tlvdemux::Timestamp timestamp) {
+        if (timestamp.timescale == 0) return 0.0;
+        return static_cast<double>(timestamp.value) / static_cast<double>(timestamp.timescale);
+    }
+
+    void remember_parameter_sets(const std::vector<NalUnit>& nals) {
+        for (const auto& nal : nals) {
+            if (nal.type < 32 || nal.type > 34) continue;
+            auto& target = parameter_sets_[nal.type - 32];
+            target.assign(nal.data, nal.data + nal.size);
+        }
+    }
+
+    bool create_session() {
+        for (const auto& parameter_set : parameter_sets_) {
+            if (parameter_set.empty()) return false;
+        }
+        std::array<const std::uint8_t*, 3> pointers{};
+        std::array<std::size_t, 3> sizes{};
+        for (std::size_t index = 0; index < parameter_sets_.size(); ++index) {
+            pointers[index] = parameter_sets_[index].data();
+            sizes[index] = parameter_sets_[index].size();
+        }
+        auto status = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+            kCFAllocatorDefault, pointers.size(), pointers.data(), sizes.data(), 4, nullptr,
+            &format_);
+        if (status != noErr) {
+            std::cerr << "CMVideoFormatDescriptionCreateFromHEVCParameterSets: " << status << '\n';
+            done_ = true;
+            return false;
+        }
+
+        const void* decoder_keys[] = {
+            kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
+        };
+        const void* decoder_values[] = {kCFBooleanTrue};
+        const auto decoder_specification = CFDictionaryCreate(
+            kCFAllocatorDefault, decoder_keys, decoder_values, 1,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        VTDecompressionOutputCallbackRecord callback{&Probe::output_callback, this};
+        status = VTDecompressionSessionCreate(kCFAllocatorDefault, format_,
+                                               decoder_specification, nullptr,
+                                               &callback, &session_);
+        CFRelease(decoder_specification);
+        if (status != noErr) {
+            std::cerr << "VTDecompressionSessionCreate: " << status << '\n';
+            done_ = true;
+            return false;
+        }
+        CFTypeRef hardware_value = nullptr;
+        const auto property_status = VTSessionCopyProperty(
+            session_, kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder,
+            kCFAllocatorDefault, &hardware_value);
+        const bool hardware = property_status == noErr && hardware_value == kCFBooleanTrue;
+        if (hardware_value != nullptr) CFRelease(hardware_value);
+        std::cerr << "VideoToolbox session created (hardware="
+                  << (hardware ? "yes" : "unknown") << ")\n";
+        return true;
+    }
+
+    OSStatus decode(const tlvdemux::AccessUnit& unit, const std::vector<NalUnit>& nals) {
+        std::vector<std::uint8_t> sample;
+        for (const auto& nal : nals) {
+            if (nal.size > std::numeric_limits<std::uint32_t>::max()) return paramErr;
+            const auto size = static_cast<std::uint32_t>(nal.size);
+            sample.push_back(static_cast<std::uint8_t>(size >> 24U));
+            sample.push_back(static_cast<std::uint8_t>(size >> 16U));
+            sample.push_back(static_cast<std::uint8_t>(size >> 8U));
+            sample.push_back(static_cast<std::uint8_t>(size));
+            sample.insert(sample.end(), nal.data, nal.data + nal.size);
+        }
+
+        CMBlockBufferRef block = nullptr;
+        auto status = CMBlockBufferCreateWithMemoryBlock(
+            kCFAllocatorDefault, nullptr, sample.size(), kCFAllocatorDefault, nullptr, 0,
+            sample.size(), 0, &block);
+        if (status != noErr) return status;
+        status = CMBlockBufferReplaceDataBytes(sample.data(), block, 0, sample.size());
+        if (status != noErr) {
+            CFRelease(block);
+            return status;
+        }
+
+        const CMSampleTimingInfo timing{
+            kCMTimeInvalid,
+            CMTimeMake(unit.pts.value, static_cast<std::int32_t>(unit.pts.timescale)),
+            CMTimeMake(unit.dts.value, static_cast<std::int32_t>(unit.dts.timescale)),
+        };
+        const auto sample_size = sample.size();
+        CMSampleBufferRef buffer = nullptr;
+        status = CMSampleBufferCreateReady(kCFAllocatorDefault, block, format_, 1, 1, &timing,
+                                           1, &sample_size, &buffer);
+        CFRelease(block);
+        if (status != noErr) return status;
+
+        if (!unit.random_access) {
+            const auto attachments = CMSampleBufferGetSampleAttachmentsArray(buffer, true);
+            if (attachments != nullptr && CFArrayGetCount(attachments) != 0) {
+                auto dictionary = reinterpret_cast<CFMutableDictionaryRef>(
+                    const_cast<void*>(CFArrayGetValueAtIndex(attachments, 0)));
+                CFDictionarySetValue(dictionary, kCMSampleAttachmentKey_NotSync,
+                                     kCFBooleanTrue);
+            }
+        }
+
+        VTDecodeInfoFlags flags = 0;
+        status = VTDecompressionSessionDecodeFrame(
+            session_, buffer, kVTDecodeFrame_EnableAsynchronousDecompression, nullptr, &flags);
+        CFRelease(buffer);
+        if (status == noErr) {
+            status = VTDecompressionSessionWaitForAsynchronousFrames(session_);
+        }
+        return status;
+    }
+
+    static void output_callback(void* context, void*, const OSStatus status,
+                                VTDecodeInfoFlags flags, CVImageBufferRef,
+                                CMTime presentation_time, CMTime) {
+        auto& probe = *static_cast<Probe*>(context);
+        if (status != noErr) probe.callback_status_.store(status);
+        if (status == noErr) ++probe.decoded_count_;
+        std::cerr << "  callback status=" << status << " flags=0x" << std::hex << flags
+                  << std::dec << " pts=" << CMTimeGetSeconds(presentation_time) << '\n';
+    }
+
+    std::optional<std::uint64_t> video_track_;
+    std::array<std::vector<std::uint8_t>, 3> parameter_sets_;
+    CMVideoFormatDescriptionRef format_ = nullptr;
+    VTDecompressionSessionRef session_ = nullptr;
+    std::atomic<OSStatus> callback_status_{noErr};
+    std::atomic<std::size_t> decoded_count_{0};
+    std::size_t access_unit_count_ = 0;
+    std::size_t maximum_access_units_ = 300;
+    bool skip_leading_rasl_ = false;
+    bool waiting_for_first_trailing_picture_ = false;
+    bool done_ = false;
+};
+
+} // namespace
+
+int main(int argc, char** argv) {
+    if (argc < 2 || argc > 4) {
+        std::cerr << "usage: tlvdemux-videotoolbox-probe FILE.mmts [MAX_AU] "
+                     "[--skip-leading-rasl]\n";
+        return 2;
+    }
+    const auto maximum_access_units = argc == 3
+        ? static_cast<std::size_t>(std::strtoull(argv[2], nullptr, 10))
+        : 300U;
+    std::ifstream input(argv[1], std::ios::binary);
+    if (!input) {
+        std::cerr << "cannot open " << argv[1] << '\n';
+        return 2;
+    }
+
+    const bool skip_leading_rasl = argc == 4 &&
+        std::string(argv[3]) == "--skip-leading-rasl";
+    Probe probe(maximum_access_units, skip_leading_rasl);
+    auto limits = tlvdemux::Limits{};
+    limits.collect_application_resources = false;
+    tlvdemux::Demuxer demuxer(probe, limits);
+    std::array<std::uint8_t, 1024 * 1024> chunk{};
+    while (!probe.done() && input) {
+        input.read(reinterpret_cast<char*>(chunk.data()),
+                   static_cast<std::streamsize>(chunk.size()));
+        const auto count = input.gcount();
+        if (count > 0) demuxer.push(chunk.data(), static_cast<std::size_t>(count));
+    }
+    if (!probe.done()) demuxer.flush();
+    probe.finish();
+    std::cerr << "decoded=" << probe.decoded_count()
+              << " final_status=" << probe.callback_status() << '\n';
+    return probe.callback_status() == noErr ? 0 : 1;
+}
