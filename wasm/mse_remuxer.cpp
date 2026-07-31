@@ -288,6 +288,11 @@ public:
         if (!enabled_ || !has("onMseVideoStart")) return; auto event = val::object(); event.set("nalType", nal_type);
         event.set("signalledRandomAccess", signalled); emit("onMseVideoStart", event);
     }
+    void leading_pictures_dropped(std::size_t count) {
+        if (!enabled_ || count == 0 || !has("onMseLeadingPicturesDropped")) return;
+        auto event = val::object(); event.set("count", count);
+        emit("onMseLeadingPicturesDropped", event);
+    }
 private:
     bool has(const char* name) const { return callbacks_[name].typeOf().as<std::string>() == "function"; }
     void emit(const char* name, const val& event) { callbacks_[name].call<void>("call", callbacks_, event); }
@@ -336,12 +341,16 @@ public:
         track_.reset();
         started_ = false;
         waiting_for_trailing_picture_ = false;
+        leading_rasl_dropped_ = 0;
+        first_output_sample_ = true;
     }
     void push(const tlvdemux::AccessUnit& unit, bool output_enabled) {
         if (unit.discontinuity) {
             reset_samples();
             started_ = false;
             waiting_for_trailing_picture_ = false;
+            leading_rasl_dropped_ = 0;
+            first_output_sample_ = true;
         }
         const auto nalus = annex_b(unit.data);
         for (const auto& nalu : nalus) if (nalu.type >= 32 && nalu.type <= 34) parameter_sets_[nalu.type] = nalu.data;
@@ -369,8 +378,12 @@ public:
             waiting_for_trailing_picture_ = irap == 21;
             output_.video_start(irap, unit.random_access);
         } else if (waiting_for_trailing_picture_) {
-            if (only_rasl_vcl) return;
+            if (only_rasl_vcl) {
+                ++leading_rasl_dropped_;
+                return;
+            }
             waiting_for_trailing_picture_ = false;
+            output_.leading_pictures_dropped(leading_rasl_dropped_);
         }
         if (!output_enabled) return;
         Bytes data;
@@ -378,8 +391,15 @@ public:
             append(data, u32(nalu.data.size())); append(data, nalu.data);
         }
         if (data.empty()) return;
+        // MSE only gets a random-access boundary at the beginning of this decode
+        // sequence.  Later CRA pictures belong to a continuous open GOP: marking
+        // each of them as a sync sample makes Chromium treat their following RASL
+        // pictures as unsupported leading samples even though the decoder already
+        // has the required reference history.
+        const bool keyframe = first_output_sample_ && irap >= 0;
         enqueue({std::move(data), scaled(unit.dts.value, unit.dts.timescale, 1000000),
-                 scaled(unit.pts.value, unit.pts.timescale, 1000000), 0, irap >= 0});
+                 scaled(unit.pts.value, unit.pts.timescale, 1000000), 0, keyframe});
+        first_output_sample_ = false;
     }
 private:
     std::uint32_t default_duration() const override { return 33367; }
@@ -387,6 +407,8 @@ private:
     std::map<int, Bytes> parameter_sets_;
     bool started_ = false;
     bool waiting_for_trailing_picture_ = false;
+    std::size_t leading_rasl_dropped_ = 0;
+    bool first_output_sample_ = true;
 };
 
 constexpr std::uint32_t sample_rates[] = {96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350};

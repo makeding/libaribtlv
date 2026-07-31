@@ -53,7 +53,8 @@ function samples(segment) {
   const result = [];
   for (let index = 0; index < count; index += 1) {
     const size = u32(segment, entry + 4);
-    result.push(segment.subarray(payload, payload + size));
+    const flags = u32(segment, entry + 8);
+    result.push({ data: segment.subarray(payload, payload + size), flags });
     entry += 16;
     payload += size;
   }
@@ -97,15 +98,23 @@ try {
 assert.ok(firstVideoSegment, 'no video media segment was emitted');
 const emittedSamples = samples(firstVideoSegment);
 assert.ok(emittedSamples.length >= 2, 'first video segment has fewer than two samples');
-const firstTypes = nalTypes(emittedSamples[0]);
-const secondTypes = nalTypes(emittedSamples[1]);
+const firstTypes = nalTypes(emittedSamples[0].data);
+const secondTypes = nalTypes(emittedSamples[1].data);
 assert.ok(firstTypes.includes(21), `first sample is not CRA: ${firstTypes}`);
 assert.ok(!secondTypes.some(value => value === 8 || value === 9),
   `leading RASL leaked into the fresh decode sequence: ${secondTypes}`);
+assert.equal(emittedSamples[0].flags, 0x02000000, 'first CRA is not a sync sample');
+const laterCra = emittedSamples.slice(1)
+  .map(sample => ({ sample, types: nalTypes(sample.data) }))
+  .find(item => item.types.includes(21));
+assert.ok(laterCra, 'first segment does not contain a later CRA');
+assert.equal(laterCra.sample.flags, 0x01010000,
+  `continuous open-GOP CRA was exposed as a sync sample: ${laterCra.sample.flags.toString(16)}`);
 
 console.log(JSON.stringify({
   bytesRead: position,
   samples: emittedSamples.length,
   firstTypes,
   secondTypes,
+  laterCraFlags: `0x${laterCra.sample.flags.toString(16)}`,
 }, null, 2));
