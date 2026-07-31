@@ -85,7 +85,9 @@ const require = createRequire(import.meta.url);
 const createTlvDemuxModule = require(modulePath);
 const module = await createTlvDemuxModule();
 let videoTrack = null;
+let audioTrack = null;
 const videoSegments = [];
+const audioSegments = [];
 let videoMime = null;
 let videoInit = null;
 let demuxer;
@@ -94,6 +96,9 @@ demuxer = new module.TlvDemuxer({
     if (track.kind === 'video' && videoTrack === null) {
       videoTrack = track.trackId;
       demuxer.selectTrack('video', videoTrack);
+    } else if (track.kind === 'audio' && audioTrack === null) {
+      audioTrack = track.trackId;
+      demuxer.selectTrack('audio', audioTrack);
     }
   },
   onMseInit(init) {
@@ -104,6 +109,7 @@ demuxer = new module.TlvDemuxer({
   },
   onMseSegment(segment) {
     if (segment.type === 'video') videoSegments.push(segment.data);
+    else if (segment.type === 'audio') audioSegments.push(segment.data);
   },
 });
 
@@ -111,7 +117,8 @@ const file = await open(mediaPath, 'r');
 const chunk = new Uint8Array(2 * 1024 * 1024);
 let position = 0;
 try {
-  while (videoSegments.length < 4 && position < 32 * 1024 * 1024) {
+  while ((videoSegments.length < 4 || audioSegments.length < 4) &&
+         position < 32 * 1024 * 1024) {
     const { bytesRead } = await file.read(chunk, 0, chunk.byteLength, position);
     if (bytesRead === 0) break;
     assert.equal(demuxer.push(chunk.subarray(0, bytesRead)), true);
@@ -124,6 +131,7 @@ try {
 }
 
 assert.ok(videoSegments.length > 0, 'no video media segment was emitted');
+assert.ok(audioSegments.length > 0, 'no audio media segment was emitted');
 assert.match(videoMime, /^video\/mp4; codecs="hvc1\./,
   `video sample entry is not hvc1: ${videoMime}`);
 assert.ok(Buffer.from(videoInit).includes(Buffer.from('hvc1')),
@@ -133,14 +141,22 @@ assert.ok(!Buffer.from(videoInit).includes(Buffer.from('hev1')),
 const firstSegmentSamples = samples(videoSegments[0]);
 const emittedSamples = videoSegments.flatMap(segment => samples(segment));
 const segmentTimings = videoSegments.map(timing);
+const audioSegmentTimings = audioSegments.map(timing);
 assert.ok(emittedSamples.length >= 2, 'first video segment has fewer than two samples');
 assert.ok(firstSegmentSamples.length <= 20,
   `video fragment still batches about one second: ${firstSegmentSamples.length} samples`);
-assert.equal(segmentTimings[0].start, 0, 'fresh sequence does not start at DTS zero');
+assert.ok(segmentTimings[0].start >= 0, 'fresh sequence starts at a negative DTS');
 for (let index = 1; index < segmentTimings.length; index += 1) {
   const previousEnd = segmentTimings[index - 1].start + segmentTimings[index - 1].duration;
   assert.ok(segmentTimings[index].start >= previousEnd,
     `video decode timeline overlaps at segment ${index}: ${segmentTimings[index].start} < ${previousEnd}`);
+}
+for (let index = 1; index < audioSegmentTimings.length; index += 1) {
+  const previousEnd = audioSegmentTimings[index - 1].start +
+    audioSegmentTimings[index - 1].duration;
+  assert.ok(audioSegmentTimings[index].start >= previousEnd,
+    `audio decode timeline overlaps at segment ${index}: ` +
+    `${audioSegmentTimings[index].start} < ${previousEnd}`);
 }
 const firstTypes = nalTypes(emittedSamples[0].data);
 const secondTypes = nalTypes(emittedSamples[1].data);

@@ -1,6 +1,65 @@
 const resources = new Map();
 const waiters = new Map();
+const CACHE_NAME = 'tlvdemux-arib-vfs-v1';
+const CACHE_RESOURCE_PATH = '/.tlvdemux-arib-vfs-resource';
+const CACHE_SESSION_PATH = '/.tlvdemux-arib-vfs-session';
 let enabled = false;
+let restorePromise = null;
+
+function cacheRequest(path) {
+  const url = new URL(CACHE_RESOURCE_PATH, self.location.origin);
+  url.searchParams.set('path', path);
+  return new Request(url.href);
+}
+
+function sessionRequest() {
+  return new Request(new URL(CACHE_SESSION_PATH, self.location.origin).href);
+}
+
+async function beginPersistentSession() {
+  await caches.delete(CACHE_NAME);
+  const cache = await caches.open(CACHE_NAME);
+  await cache.put(sessionRequest(), new Response('', {
+    headers: { 'X-Arib-VFS-Session': 'active' },
+  }));
+  restorePromise = null;
+}
+
+async function persistResource(path, resource) {
+  const cache = await caches.open(CACHE_NAME);
+  await cache.put(cacheRequest(path), new Response(resource.data.slice(), {
+    headers: {
+      'Content-Type': resource.contentType || 'application/octet-stream',
+      'X-Arib-VFS-Path': path,
+    },
+  }));
+}
+
+async function restorePersistentResources() {
+  if (enabled) return true;
+  if (restorePromise) return restorePromise;
+  restorePromise = (async () => {
+    const cache = await caches.open(CACHE_NAME);
+    if (!await cache.match(sessionRequest())) return false;
+    const requests = await cache.keys();
+    for (const request of requests) {
+      const response = await cache.match(request);
+      const path = response?.headers.get('X-Arib-VFS-Path');
+      if (!path) continue;
+      resources.set(path, {
+        data: new Uint8Array(await response.arrayBuffer()),
+        contentType: response.headers.get('Content-Type') || '',
+      });
+    }
+    enabled = true;
+    return true;
+  })();
+  try {
+    return await restorePromise;
+  } finally {
+    restorePromise = null;
+  }
+}
 
 function normalizePath(value) {
   let pathname;
@@ -25,6 +84,12 @@ function hasBroadcastRoot(value) {
   return false;
 }
 
+function hasResourceCandidate(value) {
+  const path = normalizePath(value);
+  if (!path) return false;
+  return resources.has(path) || hasBroadcastRoot(path) || uniqueBasenameMatch(path) !== null;
+}
+
 function contentType(path, supplied) {
   if (supplied) return supplied;
   const extension = path.slice(path.lastIndexOf('.')).toLowerCase();
@@ -46,15 +111,32 @@ function contentType(path, supplied) {
 }
 
 function wake(path, resource) {
-  const pending = waiters.get(path);
-  if (!pending) return;
-  waiters.delete(path);
-  for (const resolve of pending) resolve(resource);
+  const exact = waiters.get(path);
+  if (exact) {
+    waiters.delete(path);
+    for (const resolve of exact) resolve({ path, resource });
+  }
+
+  // A broadcaster page may refer to a carousel file by basename before its
+  // directory table has reached the VFS. Re-check all pending requests after
+  // every put so a later unique path can satisfy the original navigation.
+  for (const [requestedPath, pending] of [...waiters]) {
+    const fallback = uniqueBasenameMatch(requestedPath);
+    if (!fallback) continue;
+    const fallbackResource = resources.get(fallback);
+    if (!fallbackResource) continue;
+    waiters.delete(requestedPath);
+    for (const resolve of pending) resolve({ path: fallback, resource: fallbackResource });
+  }
 }
 
-function waitFor(path, timeout = 10000) {
+function waitFor(path, timeout = 30000) {
   const current = resources.get(path);
-  if (current) return Promise.resolve(current);
+  if (current) return Promise.resolve({ path, resource: current });
+  const fallback = uniqueBasenameMatch(path);
+  if (fallback) {
+    return Promise.resolve({ path: fallback, resource: resources.get(fallback) });
+  }
   return new Promise(resolve => {
     const pending = waiters.get(path) || new Set();
     pending.add(resolve);
@@ -116,14 +198,12 @@ function injectRuntime(bytes) {
 async function serve(request) {
   const path = normalizePath(request.url);
   if (!path) return new Response('Bad broadcast path', { status: 400 });
-  if (!resources.has(path)) {
-    const fallback = uniqueBasenameMatch(path);
-    if (fallback && fallback !== path) {
-      return Response.redirect(new URL(`/${fallback}`, self.location.origin), 302);
-    }
+  const resolved = await waitFor(path);
+  if (!resolved) return new Response('Broadcast resource is not available', { status: 404 });
+  if (resolved.path !== path) {
+    return Response.redirect(new URL(`/${resolved.path}`, self.location.origin), 302);
   }
-  const resource = await waitFor(path);
-  if (!resource) return new Response('Broadcast resource is not available', { status: 404 });
+  const resource = resolved.resource;
 
   const type = contentType(path, resource.contentType);
   const body = /^text\/html(?:;|$)/i.test(type)
@@ -152,46 +232,59 @@ self.addEventListener('activate', event => {
 self.addEventListener('message', event => {
   const message = event.data || {};
   const reply = value => event.ports[0]?.postMessage(value);
-  if (message.type === 'arib-vfs-begin') {
-    enabled = true;
-    resources.clear();
-    for (const pending of waiters.values()) {
-      for (const resolve of pending) resolve(null);
-    }
-    waiters.clear();
-    reply({ ok: true });
-    return;
-  }
-  if (message.type === 'arib-vfs-put') {
-    const path = normalizePath(`/${message.path || ''}`);
-    if (!path || !(message.data instanceof ArrayBuffer)) {
-      reply({ ok: false, error: 'invalid resource' });
+  const handle = async () => {
+    if (message.type === 'arib-vfs-begin') {
+      enabled = true;
+      resources.clear();
+      for (const pending of waiters.values()) {
+        for (const resolve of pending) resolve(null);
+      }
+      waiters.clear();
+      await beginPersistentSession();
+      reply({ ok: true });
       return;
     }
-    const resource = {
-      data: new Uint8Array(message.data),
-      contentType: String(message.contentType || ''),
-    };
-    resources.set(path, resource);
-    wake(path, resource);
-    reply({ ok: true });
-    return;
-  }
-  if (message.type === 'arib-vfs-reset') {
-    enabled = false;
-    resources.clear();
-    for (const pending of waiters.values()) {
-      for (const resolve of pending) resolve(null);
+    if (message.type === 'arib-vfs-put') {
+      const path = normalizePath(`/${message.path || ''}`);
+      if (!path || !(message.data instanceof ArrayBuffer)) {
+        reply({ ok: false, error: 'invalid resource' });
+        return;
+      }
+      const resource = {
+        data: new Uint8Array(message.data),
+        contentType: String(message.contentType || ''),
+      };
+      enabled = true;
+      resources.set(path, resource);
+      await persistResource(path, resource);
+      wake(path, resource);
+      reply({ ok: true });
+      return;
     }
-    waiters.clear();
-    reply({ ok: true });
-  }
+    if (message.type === 'arib-vfs-reset') {
+      enabled = false;
+      resources.clear();
+      restorePromise = null;
+      for (const pending of waiters.values()) {
+        for (const resolve of pending) resolve(null);
+      }
+      waiters.clear();
+      await caches.delete(CACHE_NAME);
+      reply({ ok: true });
+    }
+  };
+  event.waitUntil(handle().catch(error => {
+    reply({ ok: false, error: error?.message || String(error) });
+  }));
 });
 
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
-  if (!enabled || url.origin !== self.location.origin ||
-      !hasBroadcastRoot(url.pathname) ||
+  if (url.origin !== self.location.origin ||
       (event.request.method !== 'GET' && event.request.method !== 'HEAD')) return;
-  event.respondWith(serve(event.request));
+  event.respondWith((async () => {
+    await restorePersistentResources();
+    if (!enabled || !hasResourceCandidate(url.pathname)) return fetch(event.request);
+    return serve(event.request);
+  })());
 });

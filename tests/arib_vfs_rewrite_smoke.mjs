@@ -2,13 +2,36 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
+const persistentCacheEntries = new Map();
+const cacheKey = request => typeof request === 'string' ? request : request.url;
+const fakeCache = {
+  async put(request, response) {
+    persistentCacheEntries.set(cacheKey(request), response.clone());
+  },
+  async match(request) {
+    return persistentCacheEntries.get(cacheKey(request))?.clone();
+  },
+  async keys() {
+    return [...persistentCacheEntries.keys()].map(url => new Request(url));
+  },
+};
+const fakeCaches = {
+  async open() { return fakeCache; },
+  async delete() {
+    const existed = persistentCacheEntries.size > 0;
+    persistentCacheEntries.clear();
+    return existed;
+  },
+};
+
 const source = await readFile(new URL('../demo/arib-vfs-sw.js', import.meta.url), 'utf8');
 const controllerSource = await readFile(
   new URL('../demo/data-broadcast.js', import.meta.url),
   'utf8',
 );
 const context = {
-  Map, Response, TextDecoder, TextEncoder, URL, Uint8Array, setTimeout,
+  Map, Request, Response, TextDecoder, TextEncoder, URL, Uint8Array, setTimeout,
+  caches: fakeCaches,
   self: {
     location: { origin: 'http://127.0.0.1:8000' },
     clients: { claim() {} },
@@ -22,6 +45,20 @@ this.defer = deferRomSounds;
 this.putPath = path => resources.set(path, {});
 this.uniqueBasenameMatch = uniqueBasenameMatch;
 this.hasBroadcastRoot = hasBroadcastRoot;
+this.hasResourceCandidate = hasResourceCandidate;
+this.waitForPath = waitFor;
+this.putResource = (path, resource) => {
+  resources.set(path, resource);
+  wake(path, resource);
+};
+this.beginPersistentSession = beginPersistentSession;
+this.persistResource = persistResource;
+this.restorePersistentResources = restorePersistentResources;
+this.simulateWorkerRestart = () => {
+  resources.clear();
+  enabled = false;
+  restorePromise = null;
+};
 `, context);
 
 for (const html of [
@@ -64,12 +101,39 @@ assert.equal(context.hasBroadcastRoot('/bsfuji4k/40/0000/html/index.html'), true
 assert.equal(context.hasBroadcastRoot('/bsfuji4k/40/0000/css/main.css'), true);
 assert.equal(context.hasBroadcastRoot('/demo/demo.js'), false);
 
+const pendingElimination = context.waitForPath(
+  'sh8/60/001/top/source/elimination.html',
+  1000,
+);
+context.putResource('sh8/70/001/msgerase/source/elimination.html', { marker: 1 });
+const resolvedElimination = await pendingElimination;
+assert.equal(resolvedElimination.path, 'sh8/70/001/msgerase/source/elimination.html');
+assert.equal(resolvedElimination.resource.marker, 1);
+assert.equal(
+  context.hasResourceCandidate('/sh4/70/001/msgerase/source/elimination.html'),
+  true,
+);
+assert.equal(context.hasResourceCandidate('/demo/demo.js'), false);
+
+await context.beginPersistentSession();
+await context.persistResource('sh8/60/001/top/source/index8k.html', {
+  data: new Uint8Array(new TextEncoder().encode('<html>8K</html>')),
+  contentType: 'text/html; charset=utf-8',
+});
+context.simulateWorkerRestart();
+assert.equal(await context.restorePersistentResources(), true);
+const restoredIndex = await context.waitForPath('sh8/60/001/top/source/index8k.html');
+assert.equal(new TextDecoder().decode(restoredIndex.resource.data), '<html>8K</html>');
+assert.equal(restoredIndex.resource.contentType, 'text/html; charset=utf-8');
+
 const controllerContext = { Date };
 vm.runInNewContext(`${controllerSource.replace(/^export /gm, '')}
 this.createDemoProgramInfo = createDemoProgramInfo;
 this.createProgramInfoFromEvents = createProgramInfoFromEvents;
 this.broadcastClockChanged = DataBroadcastController.prototype.broadcastClockChanged;
 this.visibleApplication = DataBroadcastController.prototype.visibleApplication;
+this.ensureResourceAvailable = DataBroadcastController.prototype.ensureResourceAvailable;
+this.recoverApplicationFailure = DataBroadcastController.prototype.recoverApplicationFailure;
 `, controllerContext);
 const now = Date.UTC(2026, 6, 31, 12, 0, 0);
 const program = controllerContext.createDemoProgramInfo(false, now);
@@ -126,6 +190,7 @@ assert.equal(projectedClock.currentMediaTimeSeconds(), 12);
 
 const visibleApplication = controllerContext.visibleApplication.call({
   readyEntry: 'sh4/40/001/startup/html/index.html',
+  readyContextId: 1,
   resourceSequenceByPath: new Map([
     ['1:sh4/40/001/startup/html/index.html', 1],
     ['1:sh8/60/001/top/source/index8k.html', 2],
@@ -134,6 +199,38 @@ const visibleApplication = controllerContext.visibleApplication.call({
   ]),
 });
 assert.equal(visibleApplication.contextId, 1);
-assert.equal(visibleApplication.path, 'sh4/60/001/top/source/index4k.html');
+assert.equal(visibleApplication.path, 'sh4/40/001/startup/html/index.html');
+
+const replayed = [];
+let probeCount = 0;
+const resourceMirror = new Map([
+  ['sh8/index8k.html', { path: 'sh8/index8k.html', data: new Uint8Array([1]) }],
+  ['sh8/top.js', { path: 'sh8/top.js', data: new Uint8Array([2]) }],
+]);
+const recoveryContext = {
+  sessionGeneration: 3,
+  pendingWrites: Promise.resolve(),
+  resourceMirror,
+  bridge: {
+    async canRead() { return ++probeCount > 1; },
+    async begin() { replayed.push('begin'); },
+    async put(resource) { replayed.push(resource.path); },
+  },
+};
+await controllerContext.ensureResourceAvailable.call(recoveryContext, 'sh8/index8k.html', 3);
+assert.deepEqual(replayed, ['begin', 'sh8/index8k.html', 'sh8/top.js']);
+
+let recoveredVisibility = null;
+let recoveredStatus = null;
+controllerContext.recoverApplicationFailure.call({
+  applicationLoadTimer: null,
+  showRequested: true,
+  loadedEntry: 'sh8/index8k.html',
+  setVisible(value) { recoveredVisibility = value; },
+  setStatus(status, detail) { recoveredStatus = { status, detail }; },
+}, 'VFS missing');
+assert.equal(recoveredVisibility, false);
+assert.equal(recoveredStatus.status, 'アプリケーション起動失敗');
+assert.match(recoveredStatus.detail, /dデータで再試行できます/);
 
 console.log('ARIB VFS HTML rewrite smoke test passed');

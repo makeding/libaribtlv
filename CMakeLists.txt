@@ -20,6 +20,7 @@ add_library(tlvdemux
     src/demuxer.cpp
     src/duration_probe.cpp
     src/mmtp_parser.cpp
+    wasm/mse_remuxer.cpp
     src/playback.cpp
     src/recording.cpp
     src/tlv_parser.cpp
@@ -128,7 +129,7 @@ if(TLVDEMUX_BUILD_WASM_BINDINGS)
         message(FATAL_ERROR "TLVDEMUX_BUILD_WASM_BINDINGS requires the Emscripten toolchain")
     endif()
 
-    add_executable(tlvdemux-wasm wasm/bindings.cpp wasm/mse_remuxer.cpp)
+    add_executable(tlvdemux-wasm wasm/bindings.cpp)
     target_link_libraries(tlvdemux-wasm PRIVATE tlvdemux::tlvdemux)
     target_link_options(tlvdemux-wasm PRIVATE
         --bind

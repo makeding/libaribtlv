@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 
-const [debugBase = 'http://127.0.0.1:9335', targetSecondsText = '70'] = process.argv.slice(2);
+const [debugBase = 'http://127.0.0.1:9335', targetSecondsText = '70', sourceUrl,
+  playbackRateText] = process.argv.slice(2);
 const targetSeconds = Number(targetSecondsText);
 assert.ok(Number.isFinite(targetSeconds) && targetSeconds > 0, 'invalid target seconds');
+const requestedPlaybackRate = playbackRateText === undefined ? null : Number(playbackRateText);
+assert.ok(requestedPlaybackRate === null ||
+  (Number.isFinite(requestedPlaybackRate) && requestedPlaybackRate > 0), 'invalid playback rate');
 
 const targets = await (await fetch(`${debugBase}/json`)).json();
 const target = targets.find(item => item.type === 'page' && item.url.includes('/demo/'));
@@ -38,6 +42,9 @@ const evaluate = async (expression, awaitPromise = false) => {
   return result.result.value;
 };
 
+if (sourceUrl) {
+  await evaluate(`localStorage.setItem('tlvdemux.demo.httpUrl', ${JSON.stringify(sourceUrl)})`);
+}
 await call('Page.reload', { ignoreCache: true });
 await new Promise(resolve => setTimeout(resolve, 500));
 await evaluate(`new Promise((resolve, reject) => {
@@ -50,6 +57,9 @@ await evaluate(`new Promise((resolve, reject) => {
   };
   start();
 })`, true);
+if (requestedPlaybackRate !== null) {
+  await evaluate(`document.getElementById('video').playbackRate = ${requestedPlaybackRate}`);
+}
 
 const deadline = Date.now() + Math.max(90000, targetSeconds * 2000);
 let state;
@@ -57,6 +67,7 @@ while (Date.now() < deadline) {
   await new Promise(resolve => setTimeout(resolve, 1000));
   state = await evaluate(`(() => {
     const video = document.getElementById('video');
+    ${requestedPlaybackRate === null ? '' : `video.playbackRate = ${requestedPlaybackRate};`}
     const error = video.error;
     const ranges = [];
     for (let i = 0; i < video.buffered.length; i++) ranges.push([video.buffered.start(i), video.buffered.end(i)]);

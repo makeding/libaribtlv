@@ -1,4 +1,4 @@
-#include "mse_remuxer.hpp"
+#include <tlvdemux/mse_remuxer.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -11,12 +11,17 @@
 #include <utility>
 #include <vector>
 
+#ifdef __EMSCRIPTEN__
+#include "mse_remuxer.hpp"
 #include <emscripten/bind.h>
+#endif
 
 namespace {
 
 using Bytes = std::vector<std::uint8_t>;
+#ifdef __EMSCRIPTEN__
 using emscripten::val;
+#endif
 
 constexpr std::uint32_t kFragmentDurationDivisor = 4;
 
@@ -268,34 +273,43 @@ std::vector<Nalu> annex_b(const Bytes& data) {
 std::int64_t scaled(std::int64_t value, std::uint32_t from, std::uint32_t to) {
     return std::int64_t(std::llround(double(value) * double(to) / double(from)));
 }
+#ifdef __EMSCRIPTEN__
 val copy_bytes(const Bytes& bytes) {
     auto out = val::global("Uint8Array").new_(bytes.size());
     if (!bytes.empty()) out.call<void>("set", val(emscripten::typed_memory_view(bytes.size(), bytes.data())));
     return out;
 }
+#endif
 
 class Output {
 public:
-    explicit Output(val callbacks) : callbacks_(std::move(callbacks)) {}
+    explicit Output(tlvdemux::MseSink& sink) : sink_(sink) {}
     void set_enabled(bool enabled) noexcept { enabled_ = enabled; }
     void init(const std::string& type, const Mp4Track& track) {
-        if (!enabled_ || !has("onMseInit")) return; auto event = val::object(); event.set("type", type);
-        event.set("mime", std::string(track.video ? "video/mp4; codecs=\"" : "audio/mp4; codecs=\"") + track.codec + "\"");
-        event.set("data", copy_bytes(init_segment(track))); event.set("width", track.width); event.set("height", track.height);
-        event.set("sampleRate", track.sample_rate); event.set("channels", track.channels); emit("onMseInit", event);
+        if (!enabled_) return;
+        tlvdemux::MseTrackInit event;
+        event.type = type;
+        event.mime = std::string(track.video ? "video/mp4; codecs=\"" :
+                                              "audio/mp4; codecs=\"") +
+                     track.codec + "\"";
+        event.data = init_segment(track);
+        event.width = track.width;
+        event.height = track.height;
+        event.sample_rate = track.sample_rate;
+        event.channels = track.channels;
+        sink_.onMseInit(std::move(event));
     }
     void segment(const std::string& type, const Bytes& data) {
-        if (!enabled_ || !has("onMseSegment")) return; auto event = val::object(); event.set("type", type);
-        event.set("data", copy_bytes(data)); emit("onMseSegment", event);
+        if (!enabled_) return;
+        sink_.onMseSegment(tlvdemux::MseMediaSegment{type, data});
     }
     void video_start(int nal_type, bool signalled) {
-        if (!enabled_ || !has("onMseVideoStart")) return; auto event = val::object(); event.set("nalType", nal_type);
-        event.set("signalledRandomAccess", signalled); emit("onMseVideoStart", event);
+        if (!enabled_) return;
+        sink_.onMseVideoStart(tlvdemux::MseVideoStart{nal_type, signalled});
     }
 private:
-    bool has(const char* name) const { return callbacks_[name].typeOf().as<std::string>() == "function"; }
-    void emit(const char* name, const val& event) { callbacks_[name].call<void>("call", callbacks_, event); }
-    val callbacks_; bool enabled_ = true;
+    tlvdemux::MseSink& sink_;
+    bool enabled_ = true;
 };
 
 class BaseMuxer {
@@ -470,9 +484,9 @@ private:
 
 } // namespace
 
-class WasmMseRemuxer::Impl {
+class tlvdemux::MseRemuxer::Impl {
 public:
-    explicit Impl(val callbacks) : output(std::move(callbacks)), video(output) {}
+    explicit Impl(MseSink& sink) : output(sink), video(output) {}
     void select(tlvdemux::TrackKind kind, std::optional<std::uint64_t> id) {
         if (kind == tlvdemux::TrackKind::Video) { video_id = id; return; }
         if (kind != tlvdemux::TrackKind::Audio) return;
@@ -498,14 +512,77 @@ public:
     std::optional<std::uint64_t> video_id, audio_id; bool enabled = true;
 };
 
-WasmMseRemuxer::WasmMseRemuxer(val callbacks) : impl_(std::make_unique<Impl>(std::move(callbacks))) {}
-WasmMseRemuxer::~WasmMseRemuxer() = default;
-void WasmMseRemuxer::selectTrack(tlvdemux::TrackKind kind, std::optional<std::uint64_t> id) { impl_->select(kind, id); }
-void WasmMseRemuxer::setOutputEnabled(bool enabled) noexcept {
+tlvdemux::MseRemuxer::MseRemuxer(MseSink& sink) : impl_(std::make_unique<Impl>(sink)) {}
+tlvdemux::MseRemuxer::~MseRemuxer() = default;
+void tlvdemux::MseRemuxer::selectTrack(TrackKind kind, std::optional<std::uint64_t> id) {
+    impl_->select(kind, id);
+}
+void tlvdemux::MseRemuxer::setOutputEnabled(bool enabled) noexcept {
     impl_->enabled = enabled;
     impl_->output.set_enabled(enabled);
 }
-void WasmMseRemuxer::push(const tlvdemux::AccessUnit& unit) { impl_->push(unit); }
-void WasmMseRemuxer::flush() { impl_->flush(); }
-void WasmMseRemuxer::reset() { impl_->reset(); }
-void WasmMseRemuxer::reposition() { impl_->reposition(); }
+void tlvdemux::MseRemuxer::push(const AccessUnit& unit) { impl_->push(unit); }
+void tlvdemux::MseRemuxer::flush() { impl_->flush(); }
+void tlvdemux::MseRemuxer::reset() { impl_->reset(); }
+void tlvdemux::MseRemuxer::reposition() { impl_->reposition(); }
+
+#ifdef __EMSCRIPTEN__
+class WasmMseRemuxer::Impl final : public tlvdemux::MseSink {
+public:
+    explicit Impl(val callbacks) : callbacks_(std::move(callbacks)), remuxer_(*this) {}
+
+    void onMseInit(tlvdemux::MseTrackInit&& init) override {
+        if (!has("onMseInit")) return;
+        auto event = val::object();
+        event.set("type", init.type);
+        event.set("mime", init.mime);
+        event.set("data", copy_bytes(init.data));
+        event.set("width", init.width);
+        event.set("height", init.height);
+        event.set("sampleRate", init.sample_rate);
+        event.set("channels", init.channels);
+        emit("onMseInit", event);
+    }
+    void onMseSegment(tlvdemux::MseMediaSegment&& segment) override {
+        if (!has("onMseSegment")) return;
+        auto event = val::object();
+        event.set("type", segment.type);
+        event.set("data", copy_bytes(segment.data));
+        emit("onMseSegment", event);
+    }
+    void onMseVideoStart(const tlvdemux::MseVideoStart& start) override {
+        if (!has("onMseVideoStart")) return;
+        auto event = val::object();
+        event.set("nalType", start.nal_type);
+        event.set("signalledRandomAccess", start.signalled_random_access);
+        emit("onMseVideoStart", event);
+    }
+
+    tlvdemux::MseRemuxer& remuxer() noexcept { return remuxer_; }
+
+private:
+    bool has(const char* name) const {
+        return callbacks_[name].typeOf().as<std::string>() == "function";
+    }
+    void emit(const char* name, const val& event) {
+        callbacks_[name].call<void>("call", callbacks_, event);
+    }
+    val callbacks_;
+    tlvdemux::MseRemuxer remuxer_;
+};
+
+WasmMseRemuxer::WasmMseRemuxer(val callbacks)
+    : impl_(std::make_unique<Impl>(std::move(callbacks))) {}
+WasmMseRemuxer::~WasmMseRemuxer() = default;
+void WasmMseRemuxer::selectTrack(tlvdemux::TrackKind kind,
+                                 std::optional<std::uint64_t> id) {
+    impl_->remuxer().selectTrack(kind, id);
+}
+void WasmMseRemuxer::setOutputEnabled(bool enabled) noexcept {
+    impl_->remuxer().setOutputEnabled(enabled);
+}
+void WasmMseRemuxer::push(const tlvdemux::AccessUnit& unit) { impl_->remuxer().push(unit); }
+void WasmMseRemuxer::flush() { impl_->remuxer().flush(); }
+void WasmMseRemuxer::reset() { impl_->remuxer().reset(); }
+void WasmMseRemuxer::reposition() { impl_->remuxer().reposition(); }
+#endif

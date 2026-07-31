@@ -106,6 +106,24 @@ class ServiceWorkerResourceBridge {
         });
       }
       await navigator.serviceWorker.ready;
+      if (!navigator.serviceWorker.controller) {
+        await new Promise((resolve, reject) => {
+          const finish = () => {
+            if (!navigator.serviceWorker.controller) return;
+            clearTimeout(timeout);
+            navigator.serviceWorker.removeEventListener('controllerchange', finish);
+            resolve();
+          };
+          const timeout = setTimeout(() => {
+            navigator.serviceWorker.removeEventListener('controllerchange', finish);
+            reject(new Error('VFS worker がページを制御できません'));
+          }, 5000);
+          navigator.serviceWorker.addEventListener('controllerchange', finish);
+          // clients.claim() may have completed between the check above and
+          // installing the listener.
+          finish();
+        });
+      }
       return this.registration;
     })();
     return this.ready;
@@ -113,7 +131,14 @@ class ServiceWorkerResourceBridge {
 
   async request(message, transfer = []) {
     const registration = await this.initialize();
-    const worker = registration.active || registration.waiting || registration.installing;
+    // Messages must go to the worker which actually controls this page.  During
+    // a service-worker update registration.active can already point at the new
+    // worker while fetches from the current page still go through the previous
+    // controller.  Splitting VFS writes and fetches across those workers leaves
+    // the UI reporting collected files while every broadcast URL falls through
+    // to the development server with a 404.
+    const worker = navigator.serviceWorker.controller ||
+      registration.active || registration.waiting || registration.installing;
     if (!worker) throw new Error('データ放送 VFS worker を開始できません');
     return new Promise((resolve, reject) => {
       const channel = new MessageChannel();
@@ -135,8 +160,9 @@ class ServiceWorkerResourceBridge {
     const bytes = resource.data instanceof Uint8Array
       ? resource.data
       : new Uint8Array(resource.data);
-    const owned = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
-      ? bytes : bytes.slice();
+    // Keep the controller-side copy intact so an in-memory VFS can be rebuilt
+    // after the browser restarts or replaces the service worker.
+    const owned = bytes.slice();
     return this.request({
       type: 'arib-vfs-put',
       path: resource.path,
@@ -147,6 +173,14 @@ class ServiceWorkerResourceBridge {
 
   reset() {
     return this.request({ type: 'arib-vfs-reset' });
+  }
+
+  async canRead(path) {
+    await this.initialize();
+    const url = new URL(`/${String(path).replace(/^\/+/, '')}`, location.origin);
+    url.searchParams.set('arib-vfs-probe', Date.now().toString());
+    const response = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+    return response.ok;
   }
 }
 
@@ -166,11 +200,13 @@ export class DataBroadcastController {
     this.resourceDrainScheduled = false;
     this.resourceSequence = 0;
     this.resourceSequenceByPath = new Map();
+    this.resourceMirror = new Map();
     this.completedResourceSequence = 0;
     this.resourceWaiters = [];
     this.sessionGeneration = 0;
     this.applicationLoadTimer = null;
     this.readyResourceCount = 0;
+    this.htmlCatalogueSignatures = new Map();
     this.visible = false;
     this.readyEntry = null;
     this.readyContextId = null;
@@ -203,6 +239,12 @@ export class DataBroadcastController {
       viewport,
       mediaPlaneAdapter: this.mediaPlaneAdapter,
       onStatus: value => {
+        if (value === 'ランタイム導入済み' && this.applicationLoadTimer !== null) {
+          clearTimeout(this.applicationLoadTimer);
+          this.applicationLoadTimer = null;
+        } else if (value === 'ページ遷移中') {
+          this.armApplicationLoadTimer('ページ遷移先のランタイムを確認できません');
+        }
         this.setStatus(value);
         if (value === 'アプリケーション終了') this.setVisible(false);
       },
@@ -298,6 +340,7 @@ export class DataBroadcastController {
     this.applicationLoadTimer = null;
     this.resourceQueue = [];
     this.resourceSequenceByPath.clear();
+    this.resourceMirror.clear();
     this.resourceDrainScheduled = false;
     this.completedResourceSequence = this.resourceSequence;
     this.resolveResourceWaiters();
@@ -307,6 +350,7 @@ export class DataBroadcastController {
     this.host.clearBroadcastClock();
     this.programEvents.clear();
     this.readyResourceCount = 0;
+    this.htmlCatalogueSignatures.clear();
     this.showRequested = false;
     this.url.textContent = '';
     this.setVisible(false);
@@ -359,15 +403,20 @@ export class DataBroadcastController {
       `${notification.contextId}:${notification.path}`,
       sequence,
     );
+    const resource = {
+      path: notification.path,
+      contentType: notification.contentType,
+      data,
+    };
+    this.resourceMirror.set(notification.path, resource);
     this.resourceQueue.push({
       sequence,
       sessionGeneration: this.sessionGeneration,
-      resource: {
-        path: notification.path,
-        contentType: notification.contentType,
-        data,
-      },
+      resource,
     });
+    if (notification.contextId === this.readyContextId && /\.html?$/i.test(notification.path)) {
+      this.logHtmlCatalogue(notification.contextId, this.readyResourceCount);
+    }
     this.scheduleResourceDrain();
     if (this.showRequested) {
       const application = this.visibleApplication();
@@ -436,6 +485,7 @@ export class DataBroadcastController {
     this.readyEntry = entry;
     this.readyContextId = state.contextId;
     this.readyResourceCount = state.resourceCount;
+    this.logHtmlCatalogue(state.contextId, state.resourceCount);
     this.status.textContent = 'データ放送準備完了';
     if (this.showRequested) {
       const application = this.visibleApplication();
@@ -445,6 +495,20 @@ export class DataBroadcastController {
 
   resourcesReset() {
     this.beginSession();
+  }
+
+  logHtmlCatalogue(contextId, resourceCount) {
+    const prefix = `${contextId}:`;
+    const paths = [...this.resourceSequenceByPath.keys()]
+      .filter(key => key.startsWith(prefix))
+      .map(key => key.slice(prefix.length))
+      .filter(path => /\.html?$/i.test(path))
+      .sort();
+    const signature = paths.join('\n');
+    if (this.htmlCatalogueSignatures.get(contextId) === signature) return;
+    this.htmlCatalogueSignatures.set(contextId, signature);
+    this.log(`VFS HTML context ${contextId}: ${paths.length} 件 / 全 ${resourceCount} ファイル`);
+    for (const path of paths) this.log(`  /${path}`);
   }
 
   loadApplication(path, visible, contextId = this.readyContextId) {
@@ -470,23 +534,19 @@ export class DataBroadcastController {
   }
 
   visibleApplication() {
-    if (!this.readyEntry) return null;
-    const serviceRoot = this.readyEntry.split('/', 1)[0];
-    const candidates = [];
-    for (const [key, sequence] of this.resourceSequenceByPath) {
-      const separator = key.indexOf(':');
-      const contextId = Number(key.slice(0, separator));
-      const path = key.slice(separator + 1);
-      if (!Number.isInteger(contextId) || !path.startsWith(`${serviceRoot}/`)) continue;
-      if (!/\/top\/source\/index[^/]*\.html$/i.test(path)) continue;
-      candidates.push({ contextId, path, sequence });
-    }
-    candidates.sort((left, right) => {
-      const leftPreferred = /\/60\/[^/]+\/top\/source\//.test(left.path) ? 0 : 1;
-      const rightPreferred = /\/60\/[^/]+\/top\/source\//.test(right.path) ? 0 : 1;
-      return leftPreferred - rightPreferred || left.sequence - right.sequence;
-    });
-    return candidates[0] || null;
+    if (!this.readyEntry || this.readyContextId === null) return null;
+    const sequence = this.resourceSequenceByPath.get(
+      `${this.readyContextId}:${this.readyEntry}`,
+    );
+    if (sequence === undefined) return null;
+    // Start from the MH-AIT entry. Broadcaster startup code owns receiver-state
+    // initialization (for example NHK's ureg63 sh4/sh8 media selection) and
+    // then performs the transition to its visible top page.
+    return {
+      contextId: this.readyContextId,
+      path: this.readyEntry,
+      sequence,
+    };
   }
 
   showApplication(entry, contextId = this.readyContextId) {
@@ -501,13 +561,62 @@ export class DataBroadcastController {
       this.applicationLoadTimer = null;
     }
     const sessionGeneration = this.sessionGeneration;
-    this.waitForResources(barrier).then(() => {
+    this.waitForResources(barrier).then(async () => {
+      if (!this.showRequested || sessionGeneration !== this.sessionGeneration) return;
+      await this.ensureResourceAvailable(entry, sessionGeneration);
       if (!this.showRequested || sessionGeneration !== this.sessionGeneration) return;
       this.loadApplication(`/${entry}`, true, contextId);
       this.loadedEntry = entry;
       this.showRequested = false;
+      this.armApplicationLoadTimer(`/${entry} のランタイムを確認できません`, {
+        sessionGeneration,
+        loadedEntry: entry,
+      });
       this.log(`データ放送 表示ページ /${entry}`);
-    }).catch(error => this.setStatus('アプリケーション起動失敗', error.message));
+    }).catch(error => this.recoverApplicationFailure(error.message));
+  }
+
+  async ensureResourceAvailable(entry, sessionGeneration) {
+    this.pendingWrites = this.pendingWrites
+      .catch(() => undefined)
+      .then(async () => {
+        if (sessionGeneration !== this.sessionGeneration) return;
+        if (await this.bridge.canRead(entry)) return;
+
+        // A Service Worker VFS is memory-backed and may disappear when its
+        // worker is replaced or reclaimed.  Rehydrate the current session from
+        // the page-owned mirror before allowing the iframe to navigate.
+        await this.bridge.begin();
+        for (const resource of this.resourceMirror.values()) {
+          if (sessionGeneration !== this.sessionGeneration) return;
+          await this.bridge.put(resource);
+        }
+        if (sessionGeneration !== this.sessionGeneration) return;
+        if (!await this.bridge.canRead(entry)) {
+          throw new Error(`VFS に /${entry} がありません`);
+        }
+      });
+    await this.pendingWrites;
+  }
+
+  recoverApplicationFailure(message) {
+    if (this.applicationLoadTimer !== null) clearTimeout(this.applicationLoadTimer);
+    this.applicationLoadTimer = null;
+    this.showRequested = false;
+    this.loadedEntry = null;
+    this.setVisible(false);
+    this.setStatus('アプリケーション起動失敗', `${message} · dデータで再試行できます`);
+  }
+
+  armApplicationLoadTimer(message, expected = {}) {
+    if (this.applicationLoadTimer !== null) clearTimeout(this.applicationLoadTimer);
+    const sessionGeneration = expected.sessionGeneration ?? this.sessionGeneration;
+    const loadedEntry = expected.loadedEntry ?? this.loadedEntry;
+    this.applicationLoadTimer = setTimeout(() => {
+      this.applicationLoadTimer = null;
+      if (sessionGeneration !== this.sessionGeneration || loadedEntry !== this.loadedEntry) return;
+      this.recoverApplicationFailure(message);
+    }, 5000);
   }
 
   setVisible(visible) {

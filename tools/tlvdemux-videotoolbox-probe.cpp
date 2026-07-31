@@ -1,4 +1,5 @@
 #include <tlvdemux/demuxer.hpp>
+#include <tlvdemux/mse_remuxer.hpp>
 
 #include <CoreMedia/CoreMedia.h>
 #include <VideoToolbox/VideoToolbox.h>
@@ -14,9 +15,11 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <optional>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -27,6 +30,86 @@ struct NalUnit {
     std::uint8_t type = 0;
     std::uint8_t layer_id = 0;
 };
+
+struct Mp4Box {
+    std::size_t offset = 0;
+    std::size_t size = 0;
+    std::size_t payload = 0;
+    std::string type;
+};
+
+std::uint32_t be32(const std::uint8_t* data) {
+    return (std::uint32_t(data[0]) << 24U) | (std::uint32_t(data[1]) << 16U) |
+           (std::uint32_t(data[2]) << 8U) | std::uint32_t(data[3]);
+}
+
+std::uint64_t be64(const std::uint8_t* data) {
+    return (std::uint64_t(be32(data)) << 32U) | be32(data + 4);
+}
+
+std::vector<Mp4Box> child_boxes(const std::vector<std::uint8_t>& data,
+                                std::size_t begin, std::size_t end) {
+    std::vector<Mp4Box> result;
+    while (begin + 8 <= end) {
+        std::uint64_t size = be32(data.data() + begin);
+        std::size_t header = 8;
+        if (size == 1) {
+            if (begin + 16 > end) return {};
+            size = be64(data.data() + begin + 8);
+            header = 16;
+        } else if (size == 0) {
+            size = end - begin;
+        }
+        if (size < header || size > end - begin) return {};
+        result.push_back({begin, static_cast<std::size_t>(size), begin + header,
+                          std::string(reinterpret_cast<const char*>(data.data() + begin + 4), 4)});
+        begin += static_cast<std::size_t>(size);
+    }
+    return begin == end ? result : std::vector<Mp4Box>{};
+}
+
+std::optional<Mp4Box> box_of_type(const std::vector<Mp4Box>& boxes,
+                                  const std::string& type) {
+    const auto found = std::find_if(boxes.begin(), boxes.end(), [&](const auto& box) {
+        return box.type == type;
+    });
+    if (found == boxes.end()) return std::nullopt;
+    return *found;
+}
+
+std::optional<Mp4Box> find_box_signature(const std::vector<std::uint8_t>& data,
+                                         const std::string& type) {
+    if (type.size() != 4) return std::nullopt;
+    for (std::size_t offset = 4; offset + 4 <= data.size(); ++offset) {
+        if (!std::equal(type.begin(), type.end(), data.begin() +
+                        static_cast<std::ptrdiff_t>(offset))) continue;
+        const auto size = be32(data.data() + offset - 4);
+        if (size >= 8 && offset - 4 + size <= data.size()) {
+            return Mp4Box{offset - 4, size, offset + 4, type};
+        }
+    }
+    return std::nullopt;
+}
+
+std::vector<NalUnit> split_length_prefixed(const std::uint8_t* data, std::size_t size,
+                                           std::uint8_t length_size) {
+    std::vector<NalUnit> result;
+    std::size_t offset = 0;
+    while (offset < size) {
+        if (length_size == 0 || length_size > 4 || offset + length_size > size) return {};
+        std::uint32_t nal_size = 0;
+        for (std::uint8_t index = 0; index < length_size; ++index) {
+            nal_size = (nal_size << 8U) | data[offset++];
+        }
+        if (nal_size < 2 || nal_size > size - offset) return {};
+        result.push_back({data + offset, nal_size,
+                          static_cast<std::uint8_t>((data[offset] >> 1U) & 0x3fU),
+                          static_cast<std::uint8_t>(((data[offset] & 1U) << 5U) |
+                                                    (data[offset + 1] >> 3U))});
+        offset += nal_size;
+    }
+    return result;
+}
 
 std::vector<NalUnit> split_annex_b(const std::vector<std::uint8_t>& bytes) {
     std::vector<NalUnit> result;
@@ -73,16 +156,17 @@ std::string nal_types(const std::vector<NalUnit>& nals) {
     return result;
 }
 
-class Probe final : public tlvdemux::Sink {
+class Probe final : public tlvdemux::Sink, public tlvdemux::MseSink {
 public:
     Probe(const std::size_t maximum_access_units, const bool skip_leading_rasl,
           const double playback_rate, const std::size_t inflight_frames,
-          const bool prepend_parameter_sets_on_irap)
+          const bool prepend_parameter_sets_on_irap, const bool mse_pipeline)
         : maximum_access_units_(maximum_access_units),
           skip_leading_rasl_(skip_leading_rasl),
           playback_rate_(playback_rate),
           inflight_frames_(inflight_frames),
-          prepend_parameter_sets_on_irap_(prepend_parameter_sets_on_irap) {}
+          prepend_parameter_sets_on_irap_(prepend_parameter_sets_on_irap),
+          mse_pipeline_(mse_pipeline), mse_remuxer_(*this) {}
 
     ~Probe() override {
         finish();
@@ -96,6 +180,8 @@ public:
         if (!video_track_.has_value() && track.kind == tlvdemux::TrackKind::Video &&
             track.codec == tlvdemux::Codec::Hevc) {
             video_track_ = track.track_id;
+            if (mse_pipeline_) mse_remuxer_.selectTrack(tlvdemux::TrackKind::Video,
+                                                        track.track_id);
             std::cerr << "video track packet_id=0x" << std::hex << track.packet_id << std::dec
                       << " timescale=" << track.timescale << '\n';
         }
@@ -104,6 +190,11 @@ public:
     void onAccessUnit(tlvdemux::AccessUnit&& unit) override {
         if (done_ || !video_track_.has_value() || unit.track_id != *video_track_ ||
             unit.codec != tlvdemux::Codec::Hevc) return;
+
+        if (mse_pipeline_) {
+            mse_remuxer_.push(unit);
+            return;
+        }
 
         const auto nals = split_annex_b(unit.data);
         remember_parameter_sets(nals);
@@ -149,15 +240,89 @@ public:
     void onError(const tlvdemux::Error& error) override {
         if (!error.recoverable) {
             std::cerr << "demux error @" << error.input_offset << ": " << error.message << '\n';
+            pipeline_ok_ = false;
             done_ = true;
         }
     }
 
+    void onMseInit(tlvdemux::MseTrackInit&& init) override {
+        if (init.type != "video") return;
+        const auto hvcc = find_box_signature(init.data, "hvcC");
+        if (!hvcc || hvcc->payload + 23 > hvcc->offset + hvcc->size) {
+            fail_pipeline("video init segment has no valid hvcC");
+            return;
+        }
+        const auto* payload = init.data.data() + hvcc->payload;
+        const auto payload_size = hvcc->size - (hvcc->payload - hvcc->offset);
+        mse_nal_length_size_ = static_cast<std::uint8_t>((payload[21] & 3U) + 1U);
+        const auto array_count = payload[22];
+        std::size_t offset = 23;
+        std::array<std::vector<std::uint8_t>, 3> parsed_parameter_sets;
+        for (std::uint8_t array_index = 0; array_index < array_count; ++array_index) {
+            if (offset + 3 > payload_size) {
+                fail_pipeline("truncated hvcC array header");
+                return;
+            }
+            const auto type = static_cast<std::uint8_t>(payload[offset++] & 0x3fU);
+            const auto count = static_cast<std::uint16_t>(
+                (std::uint16_t(payload[offset]) << 8U) | payload[offset + 1]);
+            offset += 2;
+            for (std::uint16_t index = 0; index < count; ++index) {
+                if (offset + 2 > payload_size) {
+                    fail_pipeline("truncated hvcC NAL length");
+                    return;
+                }
+                const auto size = static_cast<std::uint16_t>(
+                    (std::uint16_t(payload[offset]) << 8U) | payload[offset + 1]);
+                offset += 2;
+                if (size < 2 || offset + size > payload_size) {
+                    fail_pipeline("invalid hvcC NAL payload");
+                    return;
+                }
+                if (type >= 32 && type <= 34 && parsed_parameter_sets[type - 32].empty()) {
+                    parsed_parameter_sets[type - 32].assign(payload + offset,
+                                                             payload + offset + size);
+                }
+                offset += size;
+            }
+        }
+        if (std::any_of(parsed_parameter_sets.begin(), parsed_parameter_sets.end(),
+                        [](const auto& value) { return value.empty(); })) {
+            fail_pipeline("hvcC does not contain VPS/SPS/PPS");
+            return;
+        }
+        reset_decoder();
+        parameter_sets_ = parsed_parameter_sets;
+        mse_config_parameter_sets_ = std::move(parsed_parameter_sets);
+        std::cerr << "mse init " << init.mime << " length_size="
+                  << unsigned(mse_nal_length_size_) << " size=" << init.width << 'x'
+                  << init.height << '\n';
+    }
+
+    void onMseSegment(tlvdemux::MseMediaSegment&& segment) override {
+        if (segment.type != "video" || done_) return;
+        try {
+            decode_mse_segment(segment.data);
+        } catch (const std::exception& error) {
+            fail_pipeline(error.what());
+        }
+    }
+
+    void onMseVideoStart(const tlvdemux::MseVideoStart& start) override {
+        std::cerr << "mse video start nal=" << start.nal_type
+                  << " signalled_rap=" << (start.signalled_random_access ? 1 : 0) << '\n';
+    }
+
     bool done() const { return done_; }
+    bool ok() const { return pipeline_ok_ && callback_status_.load() == noErr; }
     OSStatus callback_status() const { return callback_status_.load(); }
     std::size_t decoded_count() const { return decoded_count_.load(); }
 
     void finish() {
+        if (mse_pipeline_ && !mse_flushed_) {
+            mse_flushed_ = true;
+            mse_remuxer_.flush();
+        }
         if (session_ != nullptr) VTDecompressionSessionWaitForAsynchronousFrames(session_);
     }
 
@@ -177,7 +342,11 @@ private:
 
     void pace(const tlvdemux::Timestamp dts) {
         if (playback_rate_ <= 0.0 || dts.timescale == 0) return;
-        const auto value = seconds(dts);
+        pace_seconds(seconds(dts));
+    }
+
+    void pace_seconds(const double value) {
+        if (playback_rate_ <= 0.0) return;
         if (!first_dts_seconds_.has_value()) {
             first_dts_seconds_ = value;
             pacing_started_ = std::chrono::steady_clock::now();
@@ -189,6 +358,27 @@ private:
             std::chrono::steady_clock::duration>(
                 std::chrono::duration<double>(media_seconds / playback_rate_));
         std::this_thread::sleep_until(target);
+    }
+
+    void fail_pipeline(const std::string& message) {
+        pipeline_ok_ = false;
+        done_ = true;
+        std::cerr << "mse pipeline error: " << message << '\n';
+    }
+
+    void reset_decoder() {
+        if (session_ != nullptr) {
+            VTDecompressionSessionWaitForAsynchronousFrames(session_);
+            VTDecompressionSessionInvalidate(session_);
+            CFRelease(session_);
+            session_ = nullptr;
+        }
+        if (format_ != nullptr) {
+            CFRelease(format_);
+            format_ = nullptr;
+        }
+        frames_since_wait_ = 0;
+        decoder_parameter_sets_ = {};
     }
 
     bool create_session() {
@@ -239,40 +429,21 @@ private:
         return true;
     }
 
-    OSStatus decode(const tlvdemux::AccessUnit& unit, const std::vector<NalUnit>& nals) {
-        std::vector<std::uint8_t> sample;
-        const auto append_nal = [&sample](const std::uint8_t* data,
-                                          const std::size_t nal_size) -> bool {
-            if (nal_size > std::numeric_limits<std::uint32_t>::max()) return false;
-            const auto size = static_cast<std::uint32_t>(nal_size);
-            sample.push_back(static_cast<std::uint8_t>(size >> 24U));
-            sample.push_back(static_cast<std::uint8_t>(size >> 16U));
-            sample.push_back(static_cast<std::uint8_t>(size >> 8U));
-            sample.push_back(static_cast<std::uint8_t>(size));
-            sample.insert(sample.end(), data, data + nal_size);
-            return true;
-        };
-        const bool has_irap = std::any_of(nals.begin(), nals.end(), [](const auto& nal) {
-            return nal.type >= 16 && nal.type <= 23;
-        });
-        std::size_t first_original = 0;
-        if (prepend_parameter_sets_on_irap_ && has_irap) {
-            // Chromium inserts hvcC immediately after an initial AUD, then keeps
-            // any in-band parameter sets already present in an hev1 sample.
-            if (!nals.empty() && nals.front().type == 35) {
-                if (!append_nal(nals.front().data, nals.front().size)) return paramErr;
-                first_original = 1;
-            }
-            for (const auto& parameter_set : decoder_parameter_sets_) {
-                if (!append_nal(parameter_set.data(), parameter_set.size())) return paramErr;
-            }
-        }
-        for (std::size_t index = first_original; index < nals.size(); ++index) {
-            const auto& nal = nals[index];
-            if (nal.size > std::numeric_limits<std::uint32_t>::max()) return paramErr;
-            if (!append_nal(nal.data, nal.size)) return paramErr;
-        }
+    static bool append_nal(std::vector<std::uint8_t>& sample, const std::uint8_t* data,
+                           const std::size_t nal_size) {
+        if (nal_size > std::numeric_limits<std::uint32_t>::max()) return false;
+        const auto size = static_cast<std::uint32_t>(nal_size);
+        sample.push_back(static_cast<std::uint8_t>(size >> 24U));
+        sample.push_back(static_cast<std::uint8_t>(size >> 16U));
+        sample.push_back(static_cast<std::uint8_t>(size >> 8U));
+        sample.push_back(static_cast<std::uint8_t>(size));
+        sample.insert(sample.end(), data, data + nal_size);
+        return true;
+    }
 
+    OSStatus submit_sample(const std::vector<std::uint8_t>& sample, const CMTime pts,
+                           const CMTime dts, const bool random_access) {
+        if (sample.empty() || session_ == nullptr || format_ == nullptr) return paramErr;
         CMBlockBufferRef block = nullptr;
         auto status = CMBlockBufferCreateWithMemoryBlock(
             kCFAllocatorDefault, nullptr, sample.size(), kCFAllocatorDefault, nullptr, 0,
@@ -284,11 +455,7 @@ private:
             return status;
         }
 
-        const CMSampleTimingInfo timing{
-            kCMTimeInvalid,
-            CMTimeMake(unit.pts.value, static_cast<std::int32_t>(unit.pts.timescale)),
-            CMTimeMake(unit.dts.value, static_cast<std::int32_t>(unit.dts.timescale)),
-        };
+        const CMSampleTimingInfo timing{kCMTimeInvalid, pts, dts};
         const auto sample_size = sample.size();
         CMSampleBufferRef buffer = nullptr;
         status = CMSampleBufferCreateReady(kCFAllocatorDefault, block, format_, 1, 1, &timing,
@@ -296,7 +463,7 @@ private:
         CFRelease(block);
         if (status != noErr) return status;
 
-        if (!unit.random_access) {
+        if (!random_access) {
             const auto attachments = CMSampleBufferGetSampleAttachmentsArray(buffer, true);
             if (attachments != nullptr && CFArrayGetCount(attachments) != 0) {
                 auto dictionary = reinterpret_cast<CFMutableDictionaryRef>(
@@ -318,6 +485,187 @@ private:
             }
         }
         return status;
+    }
+
+    OSStatus decode(const tlvdemux::AccessUnit& unit, const std::vector<NalUnit>& nals) {
+        std::vector<std::uint8_t> sample;
+        const bool has_irap = std::any_of(nals.begin(), nals.end(), [](const auto& nal) {
+            return nal.type >= 16 && nal.type <= 23;
+        });
+        std::size_t first_original = 0;
+        if (prepend_parameter_sets_on_irap_ && has_irap) {
+            // Chromium inserts hvcC immediately after an initial AUD, then keeps
+            // any in-band parameter sets already present in an hev1 sample.
+            if (!nals.empty() && nals.front().type == 35) {
+                if (!append_nal(sample, nals.front().data, nals.front().size)) return paramErr;
+                first_original = 1;
+            }
+            for (const auto& parameter_set : decoder_parameter_sets_) {
+                if (!append_nal(sample, parameter_set.data(), parameter_set.size())) return paramErr;
+            }
+        }
+        for (std::size_t index = first_original; index < nals.size(); ++index) {
+            const auto& nal = nals[index];
+            if (nal.size > std::numeric_limits<std::uint32_t>::max()) return paramErr;
+            if (!append_nal(sample, nal.data, nal.size)) return paramErr;
+        }
+        return submit_sample(
+            sample,
+            CMTimeMake(unit.pts.value, static_cast<std::int32_t>(unit.pts.timescale)),
+            CMTimeMake(unit.dts.value, static_cast<std::int32_t>(unit.dts.timescale)),
+            unit.random_access);
+    }
+
+    void decode_mse_segment(const std::vector<std::uint8_t>& data) {
+        const auto top = child_boxes(data, 0, data.size());
+        const auto moof = box_of_type(top, "moof");
+        const auto mdat = box_of_type(top, "mdat");
+        if (!moof || !mdat) throw std::runtime_error("media segment requires moof and mdat");
+        const auto moof_children = child_boxes(data, moof->payload,
+                                               moof->offset + moof->size);
+        const auto traf = box_of_type(moof_children, "traf");
+        if (!traf) throw std::runtime_error("moof has no traf");
+        const auto traf_children = child_boxes(data, traf->payload,
+                                               traf->offset + traf->size);
+        const auto tfdt = box_of_type(traf_children, "tfdt");
+        const auto trun = box_of_type(traf_children, "trun");
+        if (!tfdt || !trun) throw std::runtime_error("traf requires tfdt and trun");
+        if (tfdt->payload + 8 > tfdt->offset + tfdt->size ||
+            trun->payload + 12 > trun->offset + trun->size) {
+            throw std::runtime_error("truncated tfdt/trun");
+        }
+
+        const auto tfdt_version = data[tfdt->payload];
+        const auto tfdt_data = tfdt->payload + 4;
+        std::uint64_t decode_time = 0;
+        if (tfdt_version == 1) {
+            if (tfdt_data + 8 > tfdt->offset + tfdt->size)
+                throw std::runtime_error("truncated 64-bit tfdt");
+            decode_time = be64(data.data() + tfdt_data);
+        } else if (tfdt_version == 0) {
+            if (tfdt_data + 4 > tfdt->offset + tfdt->size)
+                throw std::runtime_error("truncated 32-bit tfdt");
+            decode_time = be32(data.data() + tfdt_data);
+        } else {
+            throw std::runtime_error("unsupported tfdt version");
+        }
+
+        const auto trun_version = data[trun->payload];
+        const auto trun_flags = (std::uint32_t(data[trun->payload + 1]) << 16U) |
+                                (std::uint32_t(data[trun->payload + 2]) << 8U) |
+                                std::uint32_t(data[trun->payload + 3]);
+        constexpr std::uint32_t required_flags = 0x000f01;
+        if ((trun_flags & required_flags) != required_flags)
+            throw std::runtime_error("trun lacks per-sample duration/size/flags/cto");
+        const auto sample_count = be32(data.data() + trun->payload + 4);
+        const auto signed_data_offset = static_cast<std::int32_t>(
+            be32(data.data() + trun->payload + 8));
+        const auto payload_position_signed = static_cast<std::int64_t>(moof->offset) +
+                                             signed_data_offset;
+        if (payload_position_signed < 0)
+            throw std::runtime_error("negative trun data offset");
+        auto payload_position = static_cast<std::size_t>(payload_position_signed);
+        if (payload_position < mdat->payload || payload_position > mdat->offset + mdat->size)
+            throw std::runtime_error("trun data offset does not point into mdat");
+
+        auto entry = trun->payload + 12;
+        std::uint64_t dts = decode_time;
+        if (previous_mse_decode_end_.has_value() && dts < *previous_mse_decode_end_) {
+            throw std::runtime_error(
+                "MSE decode timeline overlap: tfdt=" + std::to_string(dts) +
+                " previous_end=" + std::to_string(*previous_mse_decode_end_));
+        }
+        ++mse_fragment_count_;
+        for (std::uint32_t sample_index = 0; sample_index < sample_count; ++sample_index) {
+            if (entry + 16 > trun->offset + trun->size)
+                throw std::runtime_error("truncated trun sample table");
+            const auto duration = be32(data.data() + entry);
+            const auto size = be32(data.data() + entry + 4);
+            const auto flags = be32(data.data() + entry + 8);
+            const auto cto_bits = be32(data.data() + entry + 12);
+            const auto composition_offset = trun_version == 1
+                ? static_cast<std::int64_t>(static_cast<std::int32_t>(cto_bits))
+                : static_cast<std::int64_t>(cto_bits);
+            entry += 16;
+            if (duration == 0) throw std::runtime_error("zero-duration video sample");
+            if (size == 0 || size > data.size() - payload_position)
+                throw std::runtime_error("invalid mdat sample size");
+            const auto nals = split_length_prefixed(data.data() + payload_position, size,
+                                                     mse_nal_length_size_);
+            if (nals.empty()) throw std::runtime_error("invalid length-prefixed HEVC sample");
+
+            const bool metadata_sync = (flags & 0x00010000U) == 0;
+            const auto depends_on = static_cast<std::uint8_t>((flags >> 24U) & 3U);
+            const bool metadata_keyframe = metadata_sync && depends_on != 1;
+            const bool bitstream_keyframe = std::any_of(nals.begin(), nals.end(),
+                [](const auto& nal) { return nal.type >= 16 && nal.type <= 23; });
+            if (metadata_keyframe != bitstream_keyframe) {
+                std::cerr << "mse keyframe mismatch fragment=" << mse_fragment_count_
+                          << " sample=" << sample_index
+                          << " metadata=" << (metadata_keyframe ? 1 : 0)
+                          << " bitstream=" << (bitstream_keyframe ? 1 : 0) << '\n';
+            }
+
+            // Chromium's HEVCBitstreamConverter injects hvcC parameter sets at
+            // coded keyframes (after an initial AUD). Its VT accelerator then
+            // consumes those parameter sets and submits only VCL NAL units.
+            std::vector<std::vector<std::uint8_t>> injected;
+            std::vector<NalUnit> converted;
+            std::size_t first_original = 0;
+            if (bitstream_keyframe && !nals.empty() && nals.front().type == 35) {
+                converted.push_back(nals.front());
+                first_original = 1;
+            }
+            if (bitstream_keyframe) {
+                for (std::size_t index = 0; index < mse_config_parameter_sets_.size(); ++index) {
+                    injected.push_back(mse_config_parameter_sets_[index]);
+                    const auto& bytes = injected.back();
+                    converted.push_back({bytes.data(), bytes.size(),
+                                         static_cast<std::uint8_t>(32 + index), 0});
+                }
+            }
+            converted.insert(converted.end(), nals.begin() +
+                             static_cast<std::ptrdiff_t>(first_original), nals.end());
+            remember_parameter_sets(converted);
+            if (session_ == nullptr && !create_session()) {
+                if (done_) return;
+                throw std::runtime_error("cannot create VideoToolbox session without parameter sets");
+            }
+            std::vector<std::uint8_t> vt_sample;
+            for (const auto& nal : converted) {
+                if (nal.type <= 31 && !append_nal(vt_sample, nal.data, nal.size))
+                    throw std::runtime_error("HEVC NAL is too large");
+            }
+            if (vt_sample.empty()) throw std::runtime_error("HEVC sample has no VCL NAL");
+
+            const auto pts_signed = static_cast<std::int64_t>(dts) + composition_offset;
+            if (pts_signed < 0) throw std::runtime_error("negative MSE presentation timestamp");
+            pace_seconds(static_cast<double>(dts) / 1000000.0);
+            ++access_unit_count_;
+            const auto status = submit_sample(
+                vt_sample, CMTimeMake(pts_signed, 1000000), CMTimeMake(dts, 1000000),
+                bitstream_keyframe);
+            std::cerr << "mse au=" << access_unit_count_
+                      << " fragment=" << mse_fragment_count_
+                      << " dts=" << (static_cast<double>(dts) / 1000000.0)
+                      << " pts=" << (static_cast<double>(pts_signed) / 1000000.0)
+                      << " metadata_key=" << (metadata_keyframe ? 1 : 0)
+                      << " bitstream_key=" << (bitstream_keyframe ? 1 : 0)
+                      << " nal=" << nal_types(nals) << " submit=" << status << '\n';
+            if (status != noErr || callback_status_.load() != noErr) {
+                pipeline_ok_ = false;
+                done_ = true;
+                return;
+            }
+            payload_position += size;
+            dts += duration;
+            if (access_unit_count_ >= maximum_access_units_) {
+                done_ = true;
+                previous_mse_decode_end_ = dts;
+                return;
+            }
+        }
+        previous_mse_decode_end_ = dts;
     }
 
     static void output_callback(void* context, void*, const OSStatus status,
@@ -347,6 +695,14 @@ private:
     bool prepend_parameter_sets_on_irap_ = false;
     std::optional<double> first_dts_seconds_;
     std::chrono::steady_clock::time_point pacing_started_{};
+    bool mse_pipeline_ = false;
+    bool mse_flushed_ = false;
+    bool pipeline_ok_ = true;
+    std::uint8_t mse_nal_length_size_ = 4;
+    std::array<std::vector<std::uint8_t>, 3> mse_config_parameter_sets_;
+    std::optional<std::uint64_t> previous_mse_decode_end_;
+    std::size_t mse_fragment_count_ = 0;
+    tlvdemux::MseRemuxer mse_remuxer_;
     bool done_ = false;
 };
 
@@ -358,6 +714,7 @@ struct Options {
     std::size_t inflight_frames = 1;
     bool prepend_parameter_sets_on_irap = false;
     bool skip_leading_rasl = false;
+    bool mse_pipeline = false;
 };
 
 Options parse_options(const int argc, char** argv) {
@@ -374,6 +731,8 @@ Options parse_options(const int argc, char** argv) {
         };
         if (argument == "--skip-leading-rasl") {
             options.skip_leading_rasl = true;
+        } else if (argument == "--mse") {
+            options.mse_pipeline = true;
         } else if (argument == "--prepend-parameter-sets-on-irap") {
             options.prepend_parameter_sets_on_irap = true;
         } else if (argument == "--max-au") {
@@ -406,7 +765,7 @@ Options parse_options(const int argc, char** argv) {
         std::cerr << "usage: tlvdemux-videotoolbox-probe FILE.mmts [MAX_AU] "
                      "[--max-au N] [--offset BYTES] [--rate X] "
                      "[--inflight N] [--skip-leading-rasl] "
-                     "[--prepend-parameter-sets-on-irap]\n";
+                     "[--prepend-parameter-sets-on-irap] [--mse]\n";
         std::exit(2);
     }
     return options;
@@ -424,7 +783,7 @@ int main(int argc, char** argv) {
 
     Probe probe(options.maximum_access_units, options.skip_leading_rasl,
                 options.playback_rate, options.inflight_frames,
-                options.prepend_parameter_sets_on_irap);
+                options.prepend_parameter_sets_on_irap, options.mse_pipeline);
     auto limits = tlvdemux::Limits{};
     limits.collect_application_resources = false;
     tlvdemux::Demuxer demuxer(probe, limits);
@@ -447,5 +806,5 @@ int main(int argc, char** argv) {
     probe.finish();
     std::cerr << "decoded=" << probe.decoded_count()
               << " final_status=" << probe.callback_status() << '\n';
-    return probe.callback_status() == noErr ? 0 : 1;
+    return probe.ok() ? 0 : 1;
 }
