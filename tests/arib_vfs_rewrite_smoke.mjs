@@ -126,24 +126,15 @@ assert.equal(
   'http://127.0.0.1:8000/data-broadcast/sh4/60/001/top/maintenance/maintenance.html',
 );
 
-const replayed = [];
-let probeCount = 0;
-const resourceMirror = new Map([
-  ['sh8/index8k.html', { path: 'sh8/index8k.html', data: new Uint8Array([1]) }],
-  ['sh8/top.js', { path: 'sh8/top.js', data: new Uint8Array([2]) }],
-]);
+let ensuredPath = null;
 const recoveryContext = {
   sessionGeneration: 3,
-  pendingWrites: Promise.resolve(),
-  resourceMirror,
-  bridge: {
-    async canRead() { return ++probeCount > 1; },
-    async begin() { replayed.push('begin'); },
-    async put(resource) { replayed.push(resource.path); },
+  vfsSession: {
+    async ensure(path) { ensuredPath = path; },
   },
 };
 await controllerContext.ensureResourceAvailable.call(recoveryContext, 'sh8/index8k.html', 3);
-assert.deepEqual(replayed, ['begin', 'sh8/index8k.html', 'sh8/top.js']);
+assert.equal(ensuredPath, 'sh8/index8k.html');
 
 let recoveredVisibility = null;
 let recoveredStatus = null;

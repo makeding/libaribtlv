@@ -85,22 +85,18 @@ export class DataBroadcastController {
     this.status = status;
     this.detail = detail;
     this.url = url;
-    if (!window.ARIBHTML5?.ServiceWorkerBroadcastVfs) {
+    if (!window.ARIBHTML5?.ServiceWorkerBroadcastVfs ||
+        !window.ARIBHTML5?.BroadcastVfsSession) {
       throw new Error('libaribhtml5 Service Worker VFS が読み込まれていません');
     }
     this.bridge = new window.ARIBHTML5.ServiceWorkerBroadcastVfs({
       workerUrl: '/libaribhtml5/arib-vfs-sw.js',
       baseUrl: VFS_PREFIX,
-      uniqueBasenameFallback: true,
     });
-    this.pendingWrites = Promise.resolve();
-    this.resourceQueue = [];
-    this.resourceDrainScheduled = false;
-    this.resourceSequence = 0;
+    this.vfsSession = new window.ARIBHTML5.BroadcastVfsSession(this.bridge, {
+      onError: error => this.setStatus('VFS 書き込み失敗', String(error?.message ?? error)),
+    });
     this.resourceSequenceByPath = new Map();
-    this.resourceMirror = new Map();
-    this.completedResourceSequence = 0;
-    this.resourceWaiters = [];
     this.sessionGeneration = 0;
     this.applicationLoadTimer = null;
     this.readyResourceCount = 0;
@@ -135,15 +131,16 @@ export class DataBroadcastController {
       iframe,
       viewport,
       mediaPlaneAdapter: this.mediaPlaneAdapter,
-      onStatus: value => {
-        if (value === 'ランタイム導入済み' && this.applicationLoadTimer !== null) {
+      onStatus: value => this.setStatus(value),
+      onLifecycle: event => {
+        if (event.type === 'installed' && this.applicationLoadTimer !== null) {
           clearTimeout(this.applicationLoadTimer);
           this.applicationLoadTimer = null;
-        } else if (value === 'ページ遷移中') {
+        } else if (event.type === 'navigating') {
           this.armApplicationLoadTimer('ページ遷移先のランタイムを確認できません');
+        } else if (event.type === 'exited') {
+          this.setVisible(false);
         }
-        this.setStatus(value);
-        if (value === 'アプリケーション終了') this.setVisible(false);
       },
       onUrlChange: value => this.applicationUrlChanged(value),
       onMediaPlane: plane => {
@@ -189,12 +186,7 @@ export class DataBroadcastController {
     this.sessionGeneration += 1;
     if (this.applicationLoadTimer !== null) clearTimeout(this.applicationLoadTimer);
     this.applicationLoadTimer = null;
-    this.resourceQueue = [];
     this.resourceSequenceByPath.clear();
-    this.resourceMirror.clear();
-    this.resourceDrainScheduled = false;
-    this.completedResourceSequence = this.resourceSequence;
-    this.resolveResourceWaiters();
     this.readyEntry = null;
     this.readyContextId = null;
     this.loadedEntry = null;
@@ -207,8 +199,8 @@ export class DataBroadcastController {
     this.updateMaintenanceButton();
     this.url.textContent = '';
     this.setVisible(false);
-    this.pendingWrites = this.bridge.begin();
-    this.pendingWrites.catch(error => this.setStatus('VFS エラー', error.message));
+    this.vfsSession.beginSession()
+      .catch(error => this.setStatus('VFS エラー', error.message));
     this.setStatus('データ放送を収集中', '0 ファイル');
   }
 
@@ -247,83 +239,24 @@ export class DataBroadcastController {
   }
 
   resourceChanged(notification) {
-    const sequence = ++this.resourceSequence;
-    // onApplicationResourceView is callback-lifetime data. Copy it before the
-    // callback returns; never retain or call back into the WASM demuxer from
-    // the asynchronous VFS drain.
-    const data = Uint8Array.from(notification.data);
-    this.resourceSequenceByPath.set(
-      `${notification.contextId}:${notification.path}`,
-      sequence,
-    );
-    this.updateMaintenanceButton();
-    const resource = {
+    // enqueue() copies callback-lifetime WASM data synchronously and returns a
+    // revision which can be used as an application launch barrier.
+    const revision = this.vfsSession.enqueue({
       path: notification.path,
       contentType: notification.contentType,
-      data,
-    };
-    this.resourceMirror.set(notification.path, resource);
-    this.resourceQueue.push({
-      sequence,
-      sessionGeneration: this.sessionGeneration,
-      resource,
+      data: notification.data,
     });
+    this.resourceSequenceByPath.set(
+      `${notification.contextId}:${notification.path}`,
+      revision,
+    );
+    this.updateMaintenanceButton();
     if (notification.contextId === this.readyContextId && /\.html?$/i.test(notification.path)) {
       this.logHtmlCatalogue(notification.contextId, this.readyResourceCount);
     }
-    this.scheduleResourceDrain();
     if (this.showRequested) {
       const application = this.visibleApplication();
       if (application) this.showApplication(application.path, application.contextId);
-    }
-  }
-
-  scheduleResourceDrain() {
-    if (this.resourceDrainScheduled || !this.resourceQueue.length) return;
-    this.resourceDrainScheduled = true;
-    const run = () => {
-      this.resourceDrainScheduled = false;
-      return this.drainOneResource();
-    };
-    if (globalThis.scheduler?.postTask) {
-      globalThis.scheduler.postTask(run, { priority: 'background' }).catch(error => {
-        this.setStatus('VFS タスク失敗', error.message);
-      });
-    } else {
-      setTimeout(run, 0);
-    }
-  }
-
-  async drainOneResource() {
-    const item = this.resourceQueue.shift();
-    if (!item) return;
-    try {
-      if (item.sessionGeneration === this.sessionGeneration) {
-        this.pendingWrites = this.pendingWrites
-          .catch(() => undefined)
-          .then(() => this.bridge.put(item.resource));
-        await this.pendingWrites;
-      }
-    } catch (error) {
-      this.setStatus('VFS 書き込み失敗', error.message);
-    } finally {
-      this.completedResourceSequence = Math.max(this.completedResourceSequence, item.sequence);
-      this.resolveResourceWaiters();
-      this.scheduleResourceDrain();
-    }
-  }
-
-  waitForResources(sequence) {
-    if (this.completedResourceSequence >= sequence) return Promise.resolve();
-    return new Promise(resolve => this.resourceWaiters.push({ sequence, resolve }));
-  }
-
-  resolveResourceWaiters() {
-    const pending = this.resourceWaiters;
-    this.resourceWaiters = [];
-    for (const waiter of pending) {
-      if (this.completedResourceSequence >= waiter.sequence) waiter.resolve();
-      else this.resourceWaiters.push(waiter);
     }
   }
 
@@ -440,7 +373,7 @@ export class DataBroadcastController {
       this.applicationLoadTimer = null;
     }
     this.setStatus('メンテナンスを準備中', this.detail.textContent);
-    this.waitForResources(application.sequence).then(async () => {
+    this.vfsSession.waitFor(application.sequence).then(async () => {
       if (sessionGeneration !== this.sessionGeneration) return;
       await this.ensureResourceAvailable(application.path, sessionGeneration);
       if (sessionGeneration !== this.sessionGeneration) return;
@@ -471,7 +404,7 @@ export class DataBroadcastController {
       this.applicationLoadTimer = null;
     }
     const sessionGeneration = this.sessionGeneration;
-    this.waitForResources(barrier).then(async () => {
+    this.vfsSession.waitFor(barrier).then(async () => {
       if (!this.showRequested || sessionGeneration !== this.sessionGeneration) return;
       await this.ensureResourceAvailable(entry, sessionGeneration);
       if (!this.showRequested || sessionGeneration !== this.sessionGeneration) return;
@@ -487,26 +420,8 @@ export class DataBroadcastController {
   }
 
   async ensureResourceAvailable(entry, sessionGeneration) {
-    this.pendingWrites = this.pendingWrites
-      .catch(() => undefined)
-      .then(async () => {
-        if (sessionGeneration !== this.sessionGeneration) return;
-        if (await this.bridge.canRead(entry)) return;
-
-        // A Service Worker VFS is memory-backed and may disappear when its
-        // worker is replaced or reclaimed.  Rehydrate the current session from
-        // the page-owned mirror before allowing the iframe to navigate.
-        await this.bridge.begin();
-        for (const resource of this.resourceMirror.values()) {
-          if (sessionGeneration !== this.sessionGeneration) return;
-          await this.bridge.put(resource);
-        }
-        if (sessionGeneration !== this.sessionGeneration) return;
-        if (!await this.bridge.canRead(entry)) {
-          throw new Error(`VFS に /${entry} がありません`);
-        }
-      });
-    await this.pendingWrites;
+    if (sessionGeneration !== this.sessionGeneration) return;
+    await this.vfsSession.ensure(entry);
   }
 
   recoverApplicationFailure(message) {
