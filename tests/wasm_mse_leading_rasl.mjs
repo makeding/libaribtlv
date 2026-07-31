@@ -113,12 +113,12 @@ assert.ok(emittedSamples.length >= 2, 'first video segment has fewer than two sa
 const firstTypes = nalTypes(emittedSamples[0].data);
 const secondTypes = nalTypes(emittedSamples[1].data);
 assert.ok(firstTypes.includes(21), `first sample is not CRA: ${firstTypes}`);
-assert.ok(secondTypes.some(value => value === 8 || value === 9),
-  `open-GOP leading RASL was not preserved: ${secondTypes}`);
+assert.ok(!secondTypes.some(value => value === 8 || value === 9),
+  `NoRaslOutputFlag leading picture leaked into the fresh sequence: ${secondTypes}`);
 assert.ok(firstTypes.includes(34) && secondTypes.includes(34),
   `in-band PPS is missing: first=${firstTypes} second=${secondTypes}`);
-assert.notEqual(ppsPayload(emittedSamples[0].data), ppsPayload(emittedSamples[1].data),
-  'temporal-layer PPS update was lost');
+assert.ok(new Set(emittedSamples.map(sample => ppsPayload(sample.data)).filter(Boolean)).size > 1,
+  'temporal-layer PPS updates were lost');
 assert.equal(emittedSamples[0].flags, 0x02000000, 'first CRA is not a sync sample');
 const laterCra = emittedSamples.slice(1)
   .map(sample => ({ sample, types: nalTypes(sample.data) }))

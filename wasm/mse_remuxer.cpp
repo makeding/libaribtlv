@@ -338,11 +338,13 @@ public:
         parameter_sets_.clear();
         track_.reset();
         started_ = false;
+        no_rasl_output_ = false;
     }
     void push(const tlvdemux::AccessUnit& unit, bool output_enabled) {
         if (unit.discontinuity) {
             reset_samples();
             started_ = false;
+            no_rasl_output_ = false;
         }
         const auto nalus = annex_b(unit.data);
         for (const auto& nalu : nalus) if (nalu.type >= 32 && nalu.type <= 34) parameter_sets_[nalu.type] = nalu.data;
@@ -352,16 +354,26 @@ public:
             track.config = make_hvcc(parameter_sets_[32], parameter_sets_[33], parameter_sets_[34], d); set_track(std::move(track));
         }
         if (!track_) return;
-        bool has_vcl = false; int irap = -1;
+        bool has_vcl = false, only_rasl_vcl = true; int irap = -1;
         for (const auto& nalu : nalus) if (nalu.type >= 0 && nalu.type <= 31) {
             has_vcl = true;
+            only_rasl_vcl = only_rasl_vcl && (nalu.type == 8 || nalu.type == 9);
             if (nalu.type >= 16 && nalu.type <= 21 && irap < 0) irap = nalu.type;
         }
         if (!has_vcl) return;
         if (!started_) {
             if (irap < 0) return;
             started_ = true;
+            // HEVC 8.1.3 derives NoRaslOutputFlag=true for the first IRAP of a
+            // fresh decode sequence.  RASL pictures following an initial CRA
+            // therefore cannot be decoded because their pre-CRA references are
+            // absent.  Chromium's VideoToolbox accelerator performs the same
+            // drop, but doing it here also covers versions that submit them.
+            no_rasl_output_ = irap == 21;
             output_.video_start(irap, unit.random_access);
+        } else if (no_rasl_output_) {
+            if (only_rasl_vcl) return;
+            no_rasl_output_ = false;
         }
         if (!output_enabled) return;
         Bytes data;
@@ -381,6 +393,7 @@ private:
     Output& output_;
     std::map<int, Bytes> parameter_sets_;
     bool started_ = false;
+    bool no_rasl_output_ = false;
 };
 
 constexpr std::uint32_t sample_rates[] = {96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350};
