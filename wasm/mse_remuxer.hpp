@@ -10,7 +10,8 @@
 
 class WasmMseRemuxer {
 public:
-    explicit WasmMseRemuxer(emscripten::val callbacks);
+    explicit WasmMseRemuxer(emscripten::val callbacks,
+                            std::uint32_t max_audio_channels = 0);
     ~WasmMseRemuxer();
     WasmMseRemuxer(const WasmMseRemuxer&) = delete;
     WasmMseRemuxer& operator=(const WasmMseRemuxer&) = delete;

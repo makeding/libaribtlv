@@ -182,6 +182,12 @@ const demuxer = new module.TlvDemuxer({
 });
 ```
 
+For MSE players, `mseMaxAudioChannels` can reject layouts above the browser's
+chosen limit without rewriting the AAC configuration. For example, a value of
+`6` keeps mono through 5.1 tracks and suppresses a 22.2-channel AAC init
+segment. Use `track.audio.channels` in `onTrack` to select a compatible
+alternative track; omitted or zero leaves the remuxer unlimited.
+
 TypeScript declarations for the module, callbacks, events, duration probe and
 recording index are included. The npm package contains the generated wrapper
 with its WebAssembly binary embedded, so consumers do not need Emscripten and

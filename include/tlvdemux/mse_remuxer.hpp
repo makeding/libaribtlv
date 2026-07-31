@@ -30,6 +30,12 @@ struct MseVideoStart {
     bool signalled_random_access = false;
 };
 
+struct MseOptions {
+    // Zero preserves all audio configurations. A non-zero value prevents the
+    // remuxer from emitting an init segment for AAC layouts above this limit.
+    std::uint32_t max_audio_channels = 0;
+};
+
 class MseSink {
 public:
     virtual ~MseSink() = default;
@@ -40,7 +46,7 @@ public:
 
 class MseRemuxer {
 public:
-    explicit MseRemuxer(MseSink& sink);
+    explicit MseRemuxer(MseSink& sink, MseOptions options = {});
     ~MseRemuxer();
     MseRemuxer(const MseRemuxer&) = delete;
     MseRemuxer& operator=(const MseRemuxer&) = delete;

@@ -428,7 +428,25 @@ private:
 };
 
 constexpr std::uint32_t sample_rates[] = {96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350};
-struct AacFrame { Bytes data, asc; std::uint32_t object = 0, sample_rate = 0, channels = 0; };
+std::uint32_t aac_channel_count(const std::uint32_t configuration) {
+    switch (configuration) {
+    case 1: return 1;
+    case 2: return 2;
+    case 3: return 3;
+    case 4: return 4;
+    case 5: return 5;
+    case 6: return 6;
+    case 7: return 8;
+    case 11: return 7;
+    case 12: return 8;
+    case 13: return 24;
+    default: return 0;
+    }
+}
+struct AacFrame {
+    Bytes data, asc;
+    std::uint32_t object = 0, sample_rate = 0, channels = 0;
+};
 class LatmParser {
 public:
     AacFrame parse(const Bytes& data) {
@@ -443,14 +461,18 @@ public:
             const auto asc_length = version ? latm_value(r) : 0; const auto asc_start = r.offset();
             auto object = r.bits(5); if (object == 31) object = 32 + r.bits(6);
             const auto rate_index = r.bits(4); const auto rate = rate_index == 15 ? r.bits(24) : (rate_index < 13 ? sample_rates[rate_index] : 0);
-            const auto channels = r.bits(4); r.bits(1); if (r.boolean()) r.bits(14); r.bits(1);
+            const auto channel_configuration = r.bits(4);
+            const auto channels = aac_channel_count(channel_configuration);
+            r.bits(1); if (r.boolean()) r.bits(14); r.bits(1);
             if (version && asc_length > r.offset() - asc_start) r.bits(unsigned(asc_length - (r.offset() - asc_start)));
             if (r.bits(3) != 0) throw std::runtime_error("unsupported LATM frame length"); r.bits(8);
             if (r.boolean()) { bool more; do { more = r.boolean(); r.bits(version ? latm_value(r) : 8); } while (more); }
             if (r.boolean()) r.bits(8);
             if (!rate || !channels || object >= 32 || rate_index >= 15) throw std::runtime_error("unsupported AAC config");
             config_ = AacFrame{{}, Bytes{std::uint8_t((object << 3) | (rate_index >> 1)),
-                                        std::uint8_t(((rate_index & 1) << 7) | (channels << 3))}, object, rate, channels};
+                                        std::uint8_t(((rate_index & 1) << 7) |
+                                                     (channel_configuration << 3))},
+                               object, rate, channels};
         }
         if (!config_) throw std::runtime_error("LATM config is missing");
         std::size_t payload_length = 0; std::uint32_t part;
@@ -463,11 +485,13 @@ private:
 };
 class AacMuxer final : public BaseMuxer {
 public:
-    explicit AacMuxer(Output& output) : BaseMuxer("audio", output) {}
+    explicit AacMuxer(Output& output, const std::uint32_t max_channels)
+        : BaseMuxer("audio", output), max_channels_(max_channels) {}
     void discontinuity() { reset_samples(); }
     void push(const tlvdemux::AccessUnit& unit, bool enabled,
               std::optional<std::int64_t> timeline_offset_us) {
         if (unit.discontinuity) reset_samples(); const auto frame = parser_.parse(unit.data);
+        if (max_channels_ != 0 && frame.channels > max_channels_) return;
         if (!track_) { Mp4Track track; track.timescale = frame.sample_rate; track.sample_rate = frame.sample_rate;
             track.channels = frame.channels; track.codec = "mp4a.40." + std::to_string(frame.object); track.config = frame.asc; set_track(std::move(track)); }
         if (!enabled || !timeline_offset_us.has_value()) return;
@@ -480,20 +504,23 @@ public:
 private:
     std::uint32_t default_duration() const override { return track_ ? std::uint32_t(std::llround(1024.0 * track_->timescale / track_->sample_rate)) : 21333; }
     LatmParser parser_;
+    std::uint32_t max_channels_ = 0;
 };
 
 } // namespace
 
 class tlvdemux::MseRemuxer::Impl {
 public:
-    explicit Impl(MseSink& sink) : output(sink), video(output) {}
+    explicit Impl(MseSink& sink, const MseOptions options)
+        : output(sink), video(output), options(options) {}
     void select(tlvdemux::TrackKind kind, std::optional<std::uint64_t> id) {
         if (kind == tlvdemux::TrackKind::Video) { video_id = id; return; }
         if (kind != tlvdemux::TrackKind::Audio) return;
         if (audio_id == id && active_audio != nullptr) return;
         audio_id = id;
         if (!id) { active_audio = nullptr; return; }
-        auto [it, inserted] = audio.try_emplace(*id, output); active_audio = &it->second;
+        auto [it, inserted] = audio.try_emplace(*id, output, options.max_audio_channels);
+        active_audio = &it->second;
         if (!inserted) active_audio->activate();
     }
     void push(const tlvdemux::AccessUnit& unit) {
@@ -509,10 +536,12 @@ public:
         for (auto& entry : audio) entry.second.discontinuity();
     }
     Output output; HevcMuxer video; std::map<std::uint64_t, AacMuxer> audio; AacMuxer* active_audio = nullptr;
+    MseOptions options;
     std::optional<std::uint64_t> video_id, audio_id; bool enabled = true;
 };
 
-tlvdemux::MseRemuxer::MseRemuxer(MseSink& sink) : impl_(std::make_unique<Impl>(sink)) {}
+tlvdemux::MseRemuxer::MseRemuxer(MseSink& sink, const MseOptions options)
+    : impl_(std::make_unique<Impl>(sink, options)) {}
 tlvdemux::MseRemuxer::~MseRemuxer() = default;
 void tlvdemux::MseRemuxer::selectTrack(TrackKind kind, std::optional<std::uint64_t> id) {
     impl_->select(kind, id);
@@ -529,7 +558,9 @@ void tlvdemux::MseRemuxer::reposition() { impl_->reposition(); }
 #ifdef __EMSCRIPTEN__
 class WasmMseRemuxer::Impl final : public tlvdemux::MseSink {
 public:
-    explicit Impl(val callbacks) : callbacks_(std::move(callbacks)), remuxer_(*this) {}
+    explicit Impl(val callbacks, const std::uint32_t max_audio_channels)
+        : callbacks_(std::move(callbacks)),
+          remuxer_(*this, tlvdemux::MseOptions{max_audio_channels}) {}
 
     void onMseInit(tlvdemux::MseTrackInit&& init) override {
         if (!has("onMseInit")) return;
@@ -571,8 +602,9 @@ private:
     tlvdemux::MseRemuxer remuxer_;
 };
 
-WasmMseRemuxer::WasmMseRemuxer(val callbacks)
-    : impl_(std::make_unique<Impl>(std::move(callbacks))) {}
+WasmMseRemuxer::WasmMseRemuxer(val callbacks,
+                               const std::uint32_t max_audio_channels)
+    : impl_(std::make_unique<Impl>(std::move(callbacks), max_audio_channels)) {}
 WasmMseRemuxer::~WasmMseRemuxer() = default;
 void WasmMseRemuxer::selectTrack(tlvdemux::TrackKind kind,
                                  std::optional<std::uint64_t> id) {

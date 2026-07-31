@@ -186,6 +186,16 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME tlvdemux-recording-tests COMMAND tlvdemux-recording-tests)
 
+    add_executable(tlvdemux-mse-remuxer-tests tests/mse_remuxer_tests.cpp)
+    target_link_libraries(tlvdemux-mse-remuxer-tests PRIVATE tlvdemux::tlvdemux)
+    if(MSVC)
+        target_compile_options(tlvdemux-mse-remuxer-tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(tlvdemux-mse-remuxer-tests PRIVATE
+            -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME tlvdemux-mse-remuxer-tests COMMAND tlvdemux-mse-remuxer-tests)
+
     if(TLVDEMUX_BUILD_WASM_BINDINGS)
         find_program(NODE_EXECUTABLE node)
         if(NODE_EXECUTABLE)

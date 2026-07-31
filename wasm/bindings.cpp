@@ -4,6 +4,7 @@
 
 #include "mse_remuxer.hpp"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -257,7 +258,8 @@ class WasmDemuxer final : public tlvdemux::Sink,
 public:
     explicit WasmDemuxer(val callbacks)
         : callbacks_(std::move(callbacks)), application_assembler_(*this),
-          demuxer_(*this, media_limits()), mse_remuxer_(callbacks_) {
+          demuxer_(*this, media_limits()),
+          mse_remuxer_(callbacks_, mse_max_audio_channels(callbacks_)) {
         mse_enabled_ = has_callback("onMseInit") || has_callback("onMseSegment");
     }
 
@@ -452,6 +454,7 @@ public:
             audio.set("componentType", info.audio->component_type);
             audio.set("componentTag", info.audio->component_tag);
             audio.set("channelLayout", static_cast<unsigned>(info.audio->channel_layout));
+            audio.set("channels", tlvdemux::audio_channel_count(info.audio->channel_layout));
             audio.set("streamType", info.audio->stream_type);
             audio.set("simulcastGroupTag", info.audio->simulcast_group_tag);
             audio.set("multilingual", info.audio->es_multi_lingual);
@@ -543,6 +546,15 @@ public:
     }
 
 private:
+    static std::uint32_t mse_max_audio_channels(const val& options) {
+        if (options.isNull() || options.isUndefined()) return 0;
+        const auto value = options["mseMaxAudioChannels"];
+        if (value.typeOf().as<std::string>() != "number") return 0;
+        const auto channels = value.as<double>();
+        if (!std::isfinite(channels) || channels <= 0 || channels > 24) return 0;
+        return static_cast<std::uint32_t>(channels);
+    }
+
     using ApplicationEvent = std::variant<tlvdemux::ApplicationInfo,
                                           tlvdemux::DataDirectoryTable,
                                           tlvdemux::DataAssetManagementTable,

@@ -90,6 +90,12 @@ const AUDIO_LAYOUTS = [
   '不明', 'モノラル', 'デュアルモノ', 'ステレオ', '2.1ch', '3.0ch', '2.2ch',
   '4.0ch', '5.0ch', '5.1ch', '3.3.1ch', '6.1ch', '7.1ch', '10.2ch', '22.2ch',
 ];
+const MSE_MAX_AUDIO_CHANNELS = 6;
+
+function mseAudioTrackSupported(track) {
+  const channels = track.audio?.channels ?? 0;
+  return channels === 0 || channels <= MSE_MAX_AUDIO_CHANNELS;
+}
 
 function audioTrackLabel(track) {
   const parts = [`0x${track.packetId.toString(16)}`];
@@ -100,6 +106,7 @@ function audioTrackLabel(track) {
     if (track.audio.mainComponent) parts.push('メイン');
     if (track.audio.multilingual) parts.push('二か国語');
   }
+  if (!mseAudioTrackSupported(track)) parts.push('MSE 非対応');
   return parts.join(' · ');
 }
 
@@ -113,10 +120,13 @@ function renderAudioTracks() {
     const option = document.createElement('option');
     option.value = String(track.packetId);
     option.textContent = audioTrackLabel(track);
+    option.disabled = !mseAudioTrackSupported(track);
     elements.audioTrack.append(option);
   }
   const desired = preferredAudioPacketId ?? selectedAudioPacketId;
-  elements.audioTrack.value = desired !== null && knownAudioTracks.has(desired) ? String(desired) : '';
+  const desiredTrack = desired === null ? undefined : knownAudioTracks.get(desired);
+  elements.audioTrack.value = desiredTrack && mseAudioTrackSupported(desiredTrack)
+    ? String(desired) : '';
   elements.audioTrack.disabled = knownAudioTracks.size === 0;
 }
 
@@ -872,6 +882,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
 
   let demuxer;
   demuxer = new wasmModule.TlvDemuxer({
+    mseMaxAudioChannels: MSE_MAX_AUDIO_CHANNELS,
     onMseVideoStart(detail) {
       appendLog(`映像開始 HEVC NAL=${detail.nalType} シグナルRAP=${detail.signalledRandomAccess}`);
     },
@@ -890,6 +901,16 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       } else if (track.kind === 'audio') {
         knownAudioTracks.set(track.packetId, track);
         renderAudioTracks();
+        if (!mseAudioTrackSupported(track)) {
+          appendLog(`音声 packet_id=0x${track.packetId.toString(16)} ` +
+            `${track.audio?.channels ?? '?'}ch は MSE 上限 ` +
+            `${MSE_MAX_AUDIO_CHANNELS}ch を超えるため除外します`);
+          if (selectedAudio === track.trackId) {
+            selectedAudio = null;
+            demuxer.selectTrack('audio', undefined);
+          }
+          return;
+        }
         const desired = preferredAudioPacketId ?? selectedAudioPacketId;
         if (selectedAudio === null || track.packetId === desired) selectAudioTrack(track);
       } else if (track.kind === 'subtitle' && track.codec === 'ttml') {
@@ -1004,6 +1025,10 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   activeAudioSwitch = async packetId => {
     const track = [...tracks.values()].find(item => item.kind === 'audio' && item.packetId === packetId);
     if (!track) throw new Error(`音声 packet_id=0x${packetId.toString(16)} は利用できません`);
+    if (!mseAudioTrackSupported(track)) {
+      throw new Error(`音声 packet_id=0x${packetId.toString(16)} の ` +
+        `${track.audio?.channels ?? '?'}ch は MSE 非対応です`);
+    }
     if (track.trackId === selectedAudio) return;
     if (generation !== runGeneration) return;
     const restartTime = liveMode ? 0 : Math.max(0, elements.video.currentTime);
@@ -1237,7 +1262,9 @@ elements.audioTrack.addEventListener('change', () => {
     else localStorage.setItem(AUDIO_STORAGE_KEY, String(preferredAudioPacketId));
   } catch (_) { /* Keep track switching available without storage. */ }
   const target = preferredAudioPacketId === null
-    ? [...knownAudioTracks.values()].find(track => track.audio?.mainComponent) || knownAudioTracks.values().next().value
+    ? [...knownAudioTracks.values()].find(
+        track => mseAudioTrackSupported(track) && track.audio?.mainComponent,
+      ) || [...knownAudioTracks.values()].find(mseAudioTrackSupported)
     : knownAudioTracks.get(preferredAudioPacketId);
   if (target && activeAudioSwitch) {
     activeAudioSwitch(target.packetId).catch(error => {

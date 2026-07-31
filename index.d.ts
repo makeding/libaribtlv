@@ -88,6 +88,8 @@ declare namespace createTlvDemuxModule {
     componentType: number;
     componentTag: number;
     channelLayout: number;
+    /** Actual speaker-channel count; zero when the signalled layout is unknown. */
+    channels: number;
     streamType: number;
     simulcastGroupTag: number;
     multilingual: boolean;
@@ -240,6 +242,11 @@ declare namespace createTlvDemuxModule {
     onMseVideoStart?: (start: MseVideoStart) => void;
   }
 
+  interface TlvDemuxOptions extends TlvDemuxCallbacks {
+    /** Suppress MSE AAC output above this channel count. Zero or omitted is unlimited. */
+    mseMaxAudioChannels?: number;
+  }
+
   interface TlvDemuxer extends Deletable {
     push(bytes: ArrayBufferView): boolean;
     pushFromHeap(address: number, size: number): boolean;
@@ -311,7 +318,7 @@ declare namespace createTlvDemuxModule {
     HEAPU8: Uint8Array;
     _malloc(size: number): number;
     _free(address: number): void;
-    TlvDemuxer: new (callbacks: TlvDemuxCallbacks) => TlvDemuxer;
+    TlvDemuxer: new (options: TlvDemuxOptions) => TlvDemuxer;
     DurationProbe: new () => DurationProbe;
   }
 }

@@ -29,6 +29,27 @@ enum class AudioChannelLayout {
     Channels22_2,
 };
 
+constexpr std::uint32_t audio_channel_count(const AudioChannelLayout layout) noexcept {
+    switch (layout) {
+    case AudioChannelLayout::Mono: return 1;
+    case AudioChannelLayout::DualMono:
+    case AudioChannelLayout::Stereo: return 2;
+    case AudioChannelLayout::Channels2_1:
+    case AudioChannelLayout::Channels3_0: return 3;
+    case AudioChannelLayout::Channels2_2:
+    case AudioChannelLayout::Channels4_0: return 4;
+    case AudioChannelLayout::Channels5_0: return 5;
+    case AudioChannelLayout::Channels5_1: return 6;
+    case AudioChannelLayout::Channels3_3_1:
+    case AudioChannelLayout::Channels6_1: return 7;
+    case AudioChannelLayout::Channels7_1: return 8;
+    case AudioChannelLayout::Channels10_2: return 12;
+    case AudioChannelLayout::Channels22_2: return 24;
+    case AudioChannelLayout::Unknown: return 0;
+    }
+    return 0;
+}
+
 struct AudioInfo {
     std::uint8_t stream_content = 0;
     std::uint8_t component_type = 0;
