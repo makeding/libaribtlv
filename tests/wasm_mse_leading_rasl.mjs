@@ -36,11 +36,6 @@ function nalUnits(sample) {
 }
 
 const nalTypes = sample => nalUnits(sample).map(nalu => (nalu[0] >> 1) & 0x3f);
-const ppsPayload = sample => {
-  const pps = nalUnits(sample).find(nalu => ((nalu[0] >> 1) & 0x3f) === 34);
-  return pps === undefined ? null : Buffer.from(pps.subarray(2)).toString('hex');
-};
-
 function samples(segment) {
   const top = childBoxes(segment, 0, segment.byteLength);
   const moof = top.find(box => box.type === 'moof');
@@ -106,8 +101,8 @@ try {
 }
 
 assert.ok(firstVideoSegment, 'no video media segment was emitted');
-assert.match(videoMime, /^video\/mp4; codecs="hev1\./,
-  `video sample entry does not permit in-band parameter sets: ${videoMime}`);
+assert.match(videoMime, /^video\/mp4; codecs="hvc1\./,
+  `video sample entry is not hvc1: ${videoMime}`);
 const emittedSamples = samples(firstVideoSegment);
 assert.ok(emittedSamples.length >= 2, 'first video segment has fewer than two samples');
 const firstTypes = nalTypes(emittedSamples[0].data);
@@ -115,10 +110,11 @@ const secondTypes = nalTypes(emittedSamples[1].data);
 assert.ok(firstTypes.includes(21), `first sample is not CRA: ${firstTypes}`);
 assert.ok(!secondTypes.some(value => value === 8 || value === 9),
   `NoRaslOutputFlag leading picture leaked into the fresh sequence: ${secondTypes}`);
-assert.ok(firstTypes.includes(34) && secondTypes.includes(34),
-  `in-band PPS is missing: first=${firstTypes} second=${secondTypes}`);
-assert.ok(new Set(emittedSamples.map(sample => ppsPayload(sample.data)).filter(Boolean)).size > 1,
-  'temporal-layer PPS updates were lost');
+for (const [index, sample] of emittedSamples.entries()) {
+  const types = nalTypes(sample.data);
+  assert.ok(!types.some(value => value >= 32 && value <= 35),
+    `hvc1 sample ${index} contains parameter set or AUD: ${types}`);
+}
 assert.equal(emittedSamples[0].flags, 0x02000000, 'first CRA is not a sync sample');
 const laterCra = emittedSamples.slice(1)
   .map(sample => ({ sample, types: nalTypes(sample.data) }))

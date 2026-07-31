@@ -224,10 +224,7 @@ SpsInfo parse_sps(const Bytes& nalu) {
     out.height = coded_height - sub_height * (top + bottom);
     for (std::size_t i = 0; i < 4; ++i) out.compatibility |= std::uint32_t(reverse_byte(out.compatibility_bytes[i])) << (i * 8);
     const char prefixes[] = {'\0', 'A', 'B', 'C'};
-    // MMT HEVC carries parameter sets in-band.  In particular, some ARIB 8K
-    // streams update the same PPS id between temporal layers, so hvc1 (which
-    // requires all parameter sets to live in hvcC) cannot represent the input.
-    out.codec = "hev1.";
+    out.codec = "hvc1.";
     if (prefixes[out.profile_space]) out.codec += prefixes[out.profile_space];
     out.codec += std::to_string(out.profile) + ".";
     char buffer[32]; std::snprintf(buffer, sizeof(buffer), "%X.%c%u", out.compatibility, out.tier ? 'H' : 'L', out.level);
@@ -310,7 +307,15 @@ public:
 protected:
     virtual std::uint32_t default_duration() const = 0;
     void set_track(Mp4Track track) { if (track_) return; track_ = std::move(track); output_.init(type_, *track_); }
+    void discontinuity() {
+        reset_samples();
+        reinitialize_pending_ = track_.has_value();
+    }
     void enqueue(Sample sample) {
+        if (reinitialize_pending_ && track_) {
+            output_.init(type_, *track_);
+            reinitialize_pending_ = false;
+        }
         if (pending_) {
             const auto delta = sample.dts - pending_->dts;
             pending_->duration = delta > 0 ? std::uint32_t(delta) : (last_duration_ ? last_duration_ : default_duration());
@@ -327,6 +332,7 @@ protected:
 private:
     std::string type_; Output& output_; std::optional<Sample> pending_; std::vector<Sample> ready_;
     std::uint64_t ready_duration_ = 0; std::uint32_t sequence_ = 1, last_duration_ = 0;
+    bool reinitialize_pending_ = false;
 };
 
 class HevcMuxer final : public BaseMuxer {
@@ -342,7 +348,7 @@ public:
     }
     void push(const tlvdemux::AccessUnit& unit, bool output_enabled) {
         if (unit.discontinuity) {
-            reset_samples();
+            discontinuity();
             started_ = false;
             no_rasl_output_ = false;
         }
@@ -377,10 +383,11 @@ public:
         }
         if (!output_enabled) return;
         Bytes data;
-        // Keep VPS/SPS/PPS in every sample exactly as signalled.  The hev1 sample
-        // entry permits in-band parameter sets and Chromium's H.265 parser then
-        // applies each PPS before decoding the following slices.
-        for (const auto& nalu : nalus) if (nalu.type != 35) {
+        // hvc1 carries decoder parameter sets in hvcC. Chromium reinjects that
+        // configuration at every IRAP before handing Annex B to VideoToolbox.
+        for (const auto& nalu : nalus)
+            if (nalu.type != 32 && nalu.type != 33 && nalu.type != 34 &&
+                nalu.type != 35) {
             append(data, u32(nalu.data.size())); append(data, nalu.data);
         }
         if (data.empty()) return;
@@ -433,9 +440,9 @@ private:
 class AacMuxer final : public BaseMuxer {
 public:
     explicit AacMuxer(Output& output) : BaseMuxer("audio", output) {}
-    void discontinuity() { reset_samples(); }
+    void discontinuity() { BaseMuxer::discontinuity(); }
     void push(const tlvdemux::AccessUnit& unit, bool enabled) {
-        if (unit.discontinuity) reset_samples(); const auto frame = parser_.parse(unit.data);
+        if (unit.discontinuity) discontinuity(); const auto frame = parser_.parse(unit.data);
         if (!track_) { Mp4Track track; track.timescale = frame.sample_rate; track.sample_rate = frame.sample_rate;
             track.channels = frame.channels; track.codec = "mp4a.40." + std::to_string(frame.object); track.config = frame.asc; set_track(std::move(track)); }
         if (!enabled) return; const auto timestamp = scaled(unit.pts.value, unit.pts.timescale, track_->timescale);

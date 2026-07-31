@@ -735,6 +735,8 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   let selectedAudio = null;
   let selectedSubtitle = null;
   let subtitleEventCount = 0;
+  let videoDiscontinuityCount = 0;
+  let audioDiscontinuityCount = 0;
   let callbackError = null;
   let recoverableErrors = 0;
   let played = reuseMedia && !elements.video.paused;
@@ -917,12 +919,24 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     onAccessUnitView(unit) {
       try {
         if (unit.trackId === selectedVideo) {
+          if (unit.discontinuity) {
+            videoDiscontinuityCount += 1;
+            appendLog(`video discontinuity #${videoDiscontinuityCount} ` +
+              `PTS=${(Number(unit.ptsValue) / unit.ptsTimescale).toFixed(6)}s ` +
+              `RAP=${unit.randomAccess}`);
+          }
           if (unit.randomAccess) headVideoSeen = true;
           if (seekProbeActive && unit.randomAccess && seekProbeRap === null) {
             seekProbeRap = {
               seconds: Number(unit.ptsValue) / unit.ptsTimescale,
               restartOffset: BigInt(unit.restartOffset),
             };
+          }
+        } else if (unit.trackId === selectedAudio) {
+          if (unit.discontinuity) {
+            audioDiscontinuityCount += 1;
+            appendLog(`audio discontinuity #${audioDiscontinuityCount} ` +
+              `PTS=${(Number(unit.ptsValue) / unit.ptsTimescale).toFixed(6)}s`);
           }
         } else if (unit.trackId === selectedSubtitle && !suppressOutput) {
           const track = tracks.get(unit.trackId);
