@@ -9,6 +9,7 @@ assert.ok(modulePath && mediaPath,
 const u32 = (data, offset) =>
   ((data[offset] * 0x1000000) + (data[offset + 1] << 16) +
    (data[offset + 2] << 8) + data[offset + 3]) >>> 0;
+const u64 = (data, offset) => u32(data, offset) * 0x100000000 + u32(data, offset + 4);
 const type = (data, offset) =>
   String.fromCharCode(data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]);
 
@@ -62,12 +63,31 @@ function samples(segment) {
   return result;
 }
 
+function timing(segment) {
+  const top = childBoxes(segment, 0, segment.byteLength);
+  const moof = top.find(box => box.type === 'moof');
+  assert.ok(moof, 'media segment lacks moof');
+  const traf = childBoxes(segment, moof.offset + 8, moof.offset + moof.size)
+    .find(box => box.type === 'traf');
+  const children = childBoxes(segment, traf.offset + 8, traf.offset + traf.size);
+  const tfdt = children.find(box => box.type === 'tfdt');
+  const trun = children.find(box => box.type === 'trun');
+  assert.ok(tfdt && trun, 'traf lacks tfdt or trun');
+  const count = u32(segment, trun.offset + 12);
+  let duration = 0;
+  for (let index = 0, entry = trun.offset + 20; index < count; index += 1, entry += 16) {
+    duration += u32(segment, entry);
+  }
+  return { start: u64(segment, tfdt.offset + 12), duration };
+}
+
 const require = createRequire(import.meta.url);
 const createTlvDemuxModule = require(modulePath);
 const module = await createTlvDemuxModule();
 let videoTrack = null;
-let firstVideoSegment = null;
+const videoSegments = [];
 let videoMime = null;
+let videoInit = null;
 let demuxer;
 demuxer = new module.TlvDemuxer({
   onTrack(track) {
@@ -77,10 +97,13 @@ demuxer = new module.TlvDemuxer({
     }
   },
   onMseInit(init) {
-    if (init.type === 'video') videoMime = init.mime;
+    if (init.type === 'video') {
+      videoMime = init.mime;
+      videoInit = init.data;
+    }
   },
   onMseSegment(segment) {
-    if (segment.type === 'video' && firstVideoSegment === null) firstVideoSegment = segment.data;
+    if (segment.type === 'video') videoSegments.push(segment.data);
   },
 });
 
@@ -88,7 +111,7 @@ const file = await open(mediaPath, 'r');
 const chunk = new Uint8Array(2 * 1024 * 1024);
 let position = 0;
 try {
-  while (firstVideoSegment === null && position < 32 * 1024 * 1024) {
+  while (videoSegments.length < 4 && position < 32 * 1024 * 1024) {
     const { bytesRead } = await file.read(chunk, 0, chunk.byteLength, position);
     if (bytesRead === 0) break;
     assert.equal(demuxer.push(chunk.subarray(0, bytesRead)), true);
@@ -100,11 +123,25 @@ try {
   demuxer.delete();
 }
 
-assert.ok(firstVideoSegment, 'no video media segment was emitted');
+assert.ok(videoSegments.length > 0, 'no video media segment was emitted');
 assert.match(videoMime, /^video\/mp4; codecs="hvc1\./,
   `video sample entry is not hvc1: ${videoMime}`);
-const emittedSamples = samples(firstVideoSegment);
+assert.ok(Buffer.from(videoInit).includes(Buffer.from('hvc1')),
+  'video init segment does not contain an hvc1 sample entry');
+assert.ok(!Buffer.from(videoInit).includes(Buffer.from('hev1')),
+  'video init segment still contains an hev1 sample entry');
+const firstSegmentSamples = samples(videoSegments[0]);
+const emittedSamples = videoSegments.flatMap(segment => samples(segment));
+const segmentTimings = videoSegments.map(timing);
 assert.ok(emittedSamples.length >= 2, 'first video segment has fewer than two samples');
+assert.ok(firstSegmentSamples.length <= 20,
+  `video fragment still batches about one second: ${firstSegmentSamples.length} samples`);
+assert.equal(segmentTimings[0].start, 0, 'fresh sequence does not start at DTS zero');
+for (let index = 1; index < segmentTimings.length; index += 1) {
+  const previousEnd = segmentTimings[index - 1].start + segmentTimings[index - 1].duration;
+  assert.ok(segmentTimings[index].start >= previousEnd,
+    `video decode timeline overlaps at segment ${index}: ${segmentTimings[index].start} < ${previousEnd}`);
+}
 const firstTypes = nalTypes(emittedSamples[0].data);
 const secondTypes = nalTypes(emittedSamples[1].data);
 assert.ok(firstTypes.includes(21), `first sample is not CRA: ${firstTypes}`);

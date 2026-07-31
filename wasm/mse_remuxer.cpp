@@ -18,6 +18,8 @@ namespace {
 using Bytes = std::vector<std::uint8_t>;
 using emscripten::val;
 
+constexpr std::uint32_t kFragmentDurationDivisor = 4;
+
 void append(Bytes& out, const Bytes& value) { out.insert(out.end(), value.begin(), value.end()); }
 void append(Bytes& out, std::initializer_list<std::uint8_t> value) {
     out.insert(out.end(), value.begin(), value.end());
@@ -100,7 +102,8 @@ Bytes video_entry(const Mp4Track& track) {
     std::copy(label.begin(), label.end(), compressor.begin() + 1);
     auto header = join(zeros(6), u16(1), zeros(16), u16(track.width), u16(track.height),
                        fixed16(72), fixed16(72), u32(0), u16(1), compressor, u16(24), u16(0xffff));
-    return box("hev1", header, box("hvcC", track.config));
+    const auto sample_entry = track.codec.rfind("hvc1.", 0) == 0 ? "hvc1" : "hev1";
+    return box(sample_entry, header, box("hvcC", track.config));
 }
 Bytes descriptor(std::uint8_t tag, const Bytes& payload) {
     if (payload.size() >= 128) throw std::runtime_error("MP4 descriptor is too large");
@@ -149,7 +152,8 @@ Bytes media_segment(const Mp4Track& track, const std::vector<Sample>& samples,
         append(entries, u32(std::uint32_t(sample.pts - sample.dts)));
     }
     auto tfhd = full_box("tfhd", 0, 0x020000, u32(track.id));
-    auto tfdt = full_box("tfdt", 1, 0, u64(std::uint64_t(std::max<std::int64_t>(0, samples.front().dts))));
+    if (samples.front().dts < 0) throw std::runtime_error("negative MSE decode timestamp");
+    auto tfdt = full_box("tfdt", 1, 0, u64(std::uint64_t(samples.front().dts)));
     const auto trun_payload_size = 12 + samples.size() * 16;
     const auto data_offset = 8 + 16 + 8 + tfhd.size() + tfdt.size() + 8 + trun_payload_size + 8;
     auto trun = full_box("trun", 1, 0x000f01, u32(samples.size()), u32(data_offset), entries);
@@ -307,22 +311,18 @@ public:
 protected:
     virtual std::uint32_t default_duration() const = 0;
     void set_track(Mp4Track track) { if (track_) return; track_ = std::move(track); output_.init(type_, *track_); }
-    void discontinuity() {
-        reset_samples();
-        reinitialize_pending_ = track_.has_value();
-    }
     void enqueue(Sample sample) {
-        if (reinitialize_pending_ && track_) {
-            output_.init(type_, *track_);
-            reinitialize_pending_ = false;
-        }
         if (pending_) {
             const auto delta = sample.dts - pending_->dts;
             pending_->duration = delta > 0 ? std::uint32_t(delta) : (last_duration_ ? last_duration_ : default_duration());
             last_duration_ = pending_->duration; ready_duration_ += pending_->duration;
             ready_.push_back(std::move(*pending_));
         }
-        pending_ = std::move(sample); if (track_ && ready_duration_ >= track_->timescale) emit();
+        pending_ = std::move(sample);
+        if (track_ && ready_duration_ >=
+                std::max<std::uint32_t>(1, track_->timescale / kFragmentDurationDivisor)) {
+            emit();
+        }
     }
     void emit() {
         if (!track_ || ready_.empty()) return;
@@ -332,25 +332,29 @@ protected:
 private:
     std::string type_; Output& output_; std::optional<Sample> pending_; std::vector<Sample> ready_;
     std::uint64_t ready_duration_ = 0; std::uint32_t sequence_ = 1, last_duration_ = 0;
-    bool reinitialize_pending_ = false;
 };
 
 class HevcMuxer final : public BaseMuxer {
 public:
     explicit HevcMuxer(Output& output) : BaseMuxer("video", output), output_(output) {}
     bool started() const noexcept { return started_; }
+    std::optional<std::int64_t> timeline_offset_us() const noexcept {
+        return timeline_offset_us_;
+    }
     void reset() {
         reset_samples();
         parameter_sets_.clear();
         track_.reset();
         started_ = false;
         no_rasl_output_ = false;
+        timeline_offset_us_.reset();
     }
     void push(const tlvdemux::AccessUnit& unit, bool output_enabled) {
         if (unit.discontinuity) {
-            discontinuity();
+            reset_samples();
             started_ = false;
             no_rasl_output_ = false;
+            timeline_offset_us_.reset();
         }
         const auto nalus = annex_b(unit.data);
         for (const auto& nalu : nalus) if (nalu.type >= 32 && nalu.type <= 34) parameter_sets_[nalu.type] = nalu.data;
@@ -370,6 +374,8 @@ public:
         if (!started_) {
             if (irap < 0) return;
             started_ = true;
+            const auto first_dts_us = scaled(unit.dts.value, unit.dts.timescale, 1000000);
+            timeline_offset_us_ = std::max<std::int64_t>(0, -first_dts_us);
             // HEVC 8.1.3 derives NoRaslOutputFlag=true for the first IRAP of a
             // fresh decode sequence.  RASL pictures following an initial CRA
             // therefore cannot be decoded because their pre-CRA references are
@@ -392,8 +398,11 @@ public:
         }
         if (data.empty()) return;
         const bool keyframe = irap >= 0;
-        enqueue({std::move(data), scaled(unit.dts.value, unit.dts.timescale, 1000000),
-                 scaled(unit.pts.value, unit.pts.timescale, 1000000), 0, keyframe});
+        const auto offset = timeline_offset_us_.value_or(0);
+        const auto dts = scaled(unit.dts.value, unit.dts.timescale, 1000000) + offset;
+        const auto pts = scaled(unit.pts.value, unit.pts.timescale, 1000000) + offset;
+        if (dts < 0) return;
+        enqueue({std::move(data), dts, pts, 0, keyframe});
     }
 private:
     std::uint32_t default_duration() const override { return 33367; }
@@ -401,6 +410,7 @@ private:
     std::map<int, Bytes> parameter_sets_;
     bool started_ = false;
     bool no_rasl_output_ = false;
+    std::optional<std::int64_t> timeline_offset_us_;
 };
 
 constexpr std::uint32_t sample_rates[] = {96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350};
@@ -440,12 +450,17 @@ private:
 class AacMuxer final : public BaseMuxer {
 public:
     explicit AacMuxer(Output& output) : BaseMuxer("audio", output) {}
-    void discontinuity() { BaseMuxer::discontinuity(); }
-    void push(const tlvdemux::AccessUnit& unit, bool enabled) {
-        if (unit.discontinuity) discontinuity(); const auto frame = parser_.parse(unit.data);
+    void discontinuity() { reset_samples(); }
+    void push(const tlvdemux::AccessUnit& unit, bool enabled,
+              std::optional<std::int64_t> timeline_offset_us) {
+        if (unit.discontinuity) reset_samples(); const auto frame = parser_.parse(unit.data);
         if (!track_) { Mp4Track track; track.timescale = frame.sample_rate; track.sample_rate = frame.sample_rate;
             track.channels = frame.channels; track.codec = "mp4a.40." + std::to_string(frame.object); track.config = frame.asc; set_track(std::move(track)); }
-        if (!enabled) return; const auto timestamp = scaled(unit.pts.value, unit.pts.timescale, track_->timescale);
+        if (!enabled || !timeline_offset_us.has_value()) return;
+        const auto shifted_us = scaled(unit.pts.value, unit.pts.timescale, 1000000) +
+                                *timeline_offset_us;
+        if (shifted_us < 0) return;
+        const auto timestamp = scaled(shifted_us, 1000000, track_->timescale);
         enqueue({frame.data, timestamp, timestamp, 0, true});
     }
 private:
@@ -469,7 +484,9 @@ public:
     }
     void push(const tlvdemux::AccessUnit& unit) {
         if (video_id && unit.track_id == *video_id) { if (unit.discontinuity && active_audio) active_audio->discontinuity(); video.push(unit, enabled); }
-        else if (audio_id && unit.track_id == *audio_id && active_audio) active_audio->push(unit, enabled && video.started());
+        else if (audio_id && unit.track_id == *audio_id && active_audio) {
+            active_audio->push(unit, enabled && video.started(), video.timeline_offset_us());
+        }
     }
     void flush() { video.flush(); if (active_audio) active_audio->flush(); }
     void reset() { video.reset(); audio.clear(); active_audio = nullptr; }

@@ -5,6 +5,7 @@ const MiB = 1024n * 1024n;
 const PLAYBACK_CHUNK = 2n * MiB;
 const FORWARD_BUFFER_HIGH_SECONDS = 15;
 const FORWARD_BUFFER_LOW_SECONDS = 8;
+const LIVE_STARTUP_BUFFER_SECONDS = 0.5;
 const BACK_BUFFER_SECONDS = 8;
 const SOURCE_QUEUE_HIGH_BYTES = 4 * 1024 * 1024;
 const MIN_SEEK_PREROLL_BYTES = 16n * MiB;
@@ -764,6 +765,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     const range = commonRanges.find(item => item.end > currentTime + 0.001);
     if (!range) return;
     const commonAhead = range.end - Math.max(currentTime, range.start);
+    if (liveMode && commonAhead < LIVE_STARTUP_BUFFER_SECONDS) return;
     if (currentTime < range.start - 0.001) {
       internalSeekTarget = range.start;
       elements.video.currentTime = range.start;
