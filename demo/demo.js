@@ -5,8 +5,6 @@ const MiB = 1024n * 1024n;
 const PLAYBACK_CHUNK = 2n * MiB;
 const FORWARD_BUFFER_HIGH_SECONDS = 15;
 const FORWARD_BUFFER_LOW_SECONDS = 8;
-const MSE_STARTUP_PRIME_SECONDS = 0.8;
-const LIVE_EDGE_LAG_SECONDS = 0.4;
 const BACK_BUFFER_SECONDS = 8;
 const SOURCE_QUEUE_HIGH_BYTES = 4 * 1024 * 1024;
 const MIN_SEEK_PREROLL_BYTES = 16n * MiB;
@@ -337,7 +335,6 @@ class AppendQueue {
     this.error = null;
     this.retryTimer = null;
     this.trimBeforeTime = null;
-    this.appendHeld = false;
     this.state = 'running';
     this.onUpdateEnd = onUpdateEnd;
     this.sourceBuffer.addEventListener('updateend', () => {
@@ -345,8 +342,8 @@ class AppendQueue {
       this.currentBytes = 0;
       try {
         if (this.state === 'quiescing') this.state = 'idle';
+        else this.pump();
         this.onUpdateEnd?.();
-        if (this.state !== 'quiescing') this.pump();
       } catch (error) {
         this.error = error;
       } finally {
@@ -368,7 +365,7 @@ class AppendQueue {
     this.pump();
   }
   pump() {
-    if (this.error || this.state !== 'running' || this.appendHeld || this.sourceBuffer.updating) return;
+    if (this.error || this.state !== 'running' || this.sourceBuffer.updating) return;
     const mediaFailure = mediaErrorMessage(this.mediaElement.error);
     if (mediaFailure) {
       this.error = new Error(mediaFailure);
@@ -452,13 +449,6 @@ class AppendQueue {
     if (this.isIdle()) return Promise.resolve();
     return new Promise((resolve, reject) => this.waiters.push({ idle: true, resolve, reject }));
   }
-  holdAppending() {
-    this.appendHeld = true;
-  }
-  releaseAppending() {
-    this.appendHeld = false;
-    this.pump();
-  }
   async quiesce() {
     if (this.error) throw this.error;
     this.state = 'quiescing';
@@ -478,7 +468,6 @@ class AppendQueue {
   resume() {
     if (this.error || this.state === 'destroyed') return;
     this.state = 'running';
-    this.appendHeld = false;
     this.pump();
   }
   destroy() {
@@ -749,7 +738,6 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   let callbackError = null;
   let recoverableErrors = 0;
   let played = reuseMedia && !elements.video.paused;
-  let startupState = played ? 'playing' : 'priming';
   let suppressOutput = startTimeSeconds > 0;
   let headVideoSeen = false;
   let seekProbeActive = false;
@@ -760,65 +748,32 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const externalDurationUs = liveMode ? null : BigInt(Math.round(
     durationSeconds(probeResult.duration) * 1000000));
 
-  const commonBufferedRange = () => {
-    if (generation !== runGeneration || queues.size < 2) return null;
+  const maybeStartPlayback = () => {
+    if (played || generation !== runGeneration || queues.size < 2) return;
     let commonRanges = null;
     for (const queue of queues.values()) {
       const ranges = queue.bufferedRanges();
-      if (!ranges.length) return null;
+      if (!ranges.length) return;
       commonRanges = commonRanges === null
         ? ranges : intersectBufferedRanges(commonRanges, ranges);
-      if (!commonRanges.length) return null;
+      if (!commonRanges.length) return;
     }
     const currentTime = elements.video.currentTime;
-    return commonRanges.find(item => item.end > currentTime + 0.001) ?? commonRanges[0];
-  };
-
-  const finishStartup = async () => {
-    if (startupState !== 'settling' || generation !== runGeneration) return;
-    if ([...queues.values()].some(queue => queue.sourceBuffer.updating)) return;
-    startupState = 'seeking';
-    const range = commonBufferedRange();
-    if (!range) {
-      startupState = 'priming';
-      for (const queue of queues.values()) queue.releaseAppending();
-      return;
+    const range = commonRanges.find(item => item.end > currentTime + 0.001);
+    if (!range) return;
+    const commonAhead = range.end - Math.max(currentTime, range.start);
+    if (currentTime < range.start - 0.001) {
+      internalSeekTarget = range.start;
+      elements.video.currentTime = range.start;
+      appendLog(`再生開始を共通バッファ先頭 ${range.start.toFixed(6)}s に合わせます`);
     }
-    const target = liveMode
-      ? Math.max(range.start, range.end - LIVE_EDGE_LAG_SECONDS)
-      : Math.max(range.start, Math.min(elements.video.currentTime, range.end - 0.001));
-    if (Math.abs(elements.video.currentTime - target) > 0.001) {
-      const seeked = once(elements.video, 'seeked');
-      internalSeekTarget = target;
-      elements.video.currentTime = target;
-      appendLog(`MSE 予備完了、共通範囲先頭 ${target.toFixed(6)}s に合わせます`);
-      await seeked;
-    }
-    if (generation !== runGeneration) return;
     played = true;
-    startupState = 'playing';
-    for (const queue of queues.values()) queue.releaseAppending();
     monitorPlaybackQuality(generation);
     elements.probeState.textContent = liveMode ? 'Live 再生中' : '再生中';
-    const commonAhead = range.end - target;
-    appendLog(`MSE 予備 ${commonAhead.toFixed(1)}s で再生開始 (${playbackRate}×)`);
+    if (liveMode) appendLog(`Live 共通バッファ ${commonAhead.toFixed(1)}s で再生開始 (1×)`);
     elements.video.play().catch(() => {
       appendLog('自動再生がブロックされました。再生ボタンを押してください');
     });
-  };
-
-  const maybeStartPlayback = () => {
-    if (played || generation !== runGeneration || queues.size < 2) return;
-    if (startupState === 'settling') {
-      finishStartup().catch(error => { callbackError = error; });
-      return;
-    }
-    if (startupState !== 'priming') return;
-    const range = commonBufferedRange();
-    if (!range || range.end - range.start < MSE_STARTUP_PRIME_SECONDS) return;
-    startupState = 'settling';
-    for (const queue of queues.values()) queue.holdAppending();
-    finishStartup().catch(error => { callbackError = error; });
   };
   for (const queue of activeQueues) queue.onUpdateEnd = maybeStartPlayback;
 

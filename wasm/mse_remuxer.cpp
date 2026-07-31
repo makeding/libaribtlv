@@ -137,7 +137,6 @@ struct Sample {
     std::int64_t pts = 0;
     std::uint32_t duration = 0;
     bool keyframe = false;
-    bool leading = false;
 };
 
 Bytes media_segment(const Mp4Track& track, const std::vector<Sample>& samples,
@@ -146,9 +145,7 @@ Bytes media_segment(const Mp4Track& track, const std::vector<Sample>& samples,
     for (const auto& sample : samples) {
         append(payload, sample.data);
         append(entries, u32(sample.duration)); append(entries, u32(sample.data.size()));
-        const auto sample_flags = (sample.leading ? 0x04000000U : 0U) |
-            (sample.keyframe ? 0x02000000U : 0x01010000U);
-        append(entries, u32(sample_flags));
+        append(entries, u32(sample.keyframe ? 0x02000000 : 0x01010000));
         append(entries, u32(std::uint32_t(sample.pts - sample.dts)));
     }
     auto tfhd = full_box("tfhd", 0, 0x020000, u32(track.id));
@@ -310,20 +307,14 @@ public:
 protected:
     virtual std::uint32_t default_duration() const = 0;
     void set_track(Mp4Track track) { if (track_) return; track_ = std::move(track); output_.init(type_, *track_); }
-    void enqueue(Sample sample, const bool segment_boundary = false) {
+    void enqueue(Sample sample) {
         if (pending_) {
             const auto delta = sample.dts - pending_->dts;
             pending_->duration = delta > 0 ? std::uint32_t(delta) : (last_duration_ ? last_duration_ : default_duration());
             last_duration_ = pending_->duration; ready_duration_ += pending_->duration;
             ready_.push_back(std::move(*pending_));
         }
-        pending_.reset();
-        // Close the previous fragment before a new HEVC random-access group.
-        // This keeps the CRA and the RASL pictures decoded after it in the same
-        // ISO-BMFF fragment, matching the working mmts.js remux path.
-        if (segment_boundary) emit();
-        pending_ = std::move(sample);
-        if (!segment_boundary && track_ && ready_duration_ >= track_->timescale) emit();
+        pending_ = std::move(sample); if (track_ && ready_duration_ >= track_->timescale) emit();
     }
     void emit() {
         if (!track_ || ready_.empty()) return;
@@ -339,9 +330,9 @@ class HevcMuxer final : public BaseMuxer {
 public:
     explicit HevcMuxer(Output& output) : BaseMuxer("video", output), output_(output) {}
     bool started() const noexcept { return started_; }
-    void reset() { reset_samples(); parameter_sets_.clear(); track_.reset(); started_ = false; drop_rasl_ = false; }
+    void reset() { reset_samples(); parameter_sets_.clear(); track_.reset(); started_ = false; }
     void push(const tlvdemux::AccessUnit& unit, bool output_enabled) {
-        if (unit.discontinuity) { reset_samples(); started_ = false; drop_rasl_ = false; }
+        if (unit.discontinuity) { reset_samples(); started_ = false; }
         const auto nalus = annex_b(unit.data);
         for (const auto& nalu : nalus) if (nalu.type >= 32 && nalu.type <= 34) parameter_sets_[nalu.type] = nalu.data;
         if (!track_ && parameter_sets_.count(32) && parameter_sets_.count(33) && parameter_sets_.count(34)) {
@@ -350,22 +341,15 @@ public:
             track.config = make_hvcc(parameter_sets_[32], parameter_sets_[33], parameter_sets_[34], d); set_track(std::move(track));
         }
         if (!track_) return;
-        bool has_vcl = false; int irap = -1; bool rasl = false;
+        bool has_vcl = false; int irap = -1;
         for (const auto& nalu : nalus) if (nalu.type >= 0 && nalu.type <= 31) {
             has_vcl = true; if (nalu.type >= 16 && nalu.type <= 21 && irap < 0) irap = nalu.type;
-            if (nalu.type == 8 || nalu.type == 9) rasl = true;
         }
         if (!has_vcl) return;
         if (!started_) {
             if (irap < 0) return;
             started_ = true;
-            // Only a real decoder bootstrap lacks the pictures preceding a
-            // CRA. Continuous CRA pictures retain their RASL output.
-            drop_rasl_ = irap == 21;
             output_.video_start(irap, unit.random_access);
-        } else if (drop_rasl_) {
-            if (rasl) return;
-            drop_rasl_ = false;
         }
         if (!output_enabled) return;
         Bytes data;
@@ -374,12 +358,11 @@ public:
         }
         if (data.empty()) return;
         enqueue({std::move(data), scaled(unit.dts.value, unit.dts.timescale, 1000000),
-                 scaled(unit.pts.value, unit.pts.timescale, 1000000), 0, irap >= 0, rasl},
-                irap >= 0);
+                 scaled(unit.pts.value, unit.pts.timescale, 1000000), 0, irap >= 0});
     }
 private:
     std::uint32_t default_duration() const override { return 33367; }
-    Output& output_; std::map<int, Bytes> parameter_sets_; bool started_ = false, drop_rasl_ = false;
+    Output& output_; std::map<int, Bytes> parameter_sets_; bool started_ = false;
 };
 
 constexpr std::uint32_t sample_rates[] = {96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350};

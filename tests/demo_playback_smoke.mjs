@@ -52,91 +52,6 @@ function boxType(data, offset = 0) {
   return String.fromCharCode(data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]);
 }
 
-function uint32(data, offset) {
-  return new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(offset);
-}
-
-function int32(data, offset) {
-  return new DataView(data.buffer, data.byteOffset, data.byteLength).getInt32(offset);
-}
-
-function childBox(data, start, end, wanted) {
-  for (let offset = start; offset + 8 <= end;) {
-    const size = uint32(data, offset);
-    assert.ok(size >= 8 && offset + size <= end, `invalid MP4 box at ${offset}`);
-    if (boxType(data, offset) === wanted) return { start: offset, end: offset + size };
-    offset += size;
-  }
-  return null;
-}
-
-function assertLeadingPicturesDeclared(segments) {
-  let latestRapPts = null;
-  let rapCount = 0;
-  let leadingCount = 0;
-  const presentationPts = [];
-  const sampleDurations = [];
-  for (const data of segments) {
-    const moof = childBox(data, 0, data.byteLength, 'moof');
-    const traf = moof && childBox(data, moof.start + 8, moof.end, 'traf');
-    const tfdt = traf && childBox(data, traf.start + 8, traf.end, 'tfdt');
-    const trun = traf && childBox(data, traf.start + 8, traf.end, 'trun');
-    assert.ok(tfdt && trun, 'video fragment is missing tfdt/trun');
-    const tfdtVersion = data[tfdt.start + 8];
-    const baseDts = tfdtVersion === 1
-      ? uint32(data, tfdt.start + 12) * 0x100000000 + uint32(data, tfdt.start + 16)
-      : uint32(data, tfdt.start + 12);
-    const trunVersion = data[trun.start + 8];
-    const flags = (data[trun.start + 9] << 16) | (data[trun.start + 10] << 8) |
-      data[trun.start + 11];
-    const sampleCount = uint32(data, trun.start + 12);
-    let cursor = trun.start + 16;
-    if (flags & 0x000001) cursor += 4;
-    if (flags & 0x000004) cursor += 4;
-    let dts = baseDts;
-    for (let index = 0; index < sampleCount; index += 1) {
-      const duration = flags & 0x000100 ? uint32(data, cursor) : 0;
-      if (flags & 0x000100) cursor += 4;
-      if (flags & 0x000200) cursor += 4;
-      const sampleFlags = flags & 0x000400 ? uint32(data, cursor) : 0;
-      if (flags & 0x000400) cursor += 4;
-      const compositionOffset = flags & 0x000800
-        ? (trunVersion === 1 ? int32(data, cursor) : uint32(data, cursor)) : 0;
-      if (flags & 0x000800) cursor += 4;
-      const pts = dts + compositionOffset;
-      presentationPts.push(pts);
-      if (duration > 0) sampleDurations.push(duration);
-      const keyframe = (sampleFlags & 0x00010000) === 0;
-      const isLeading = (sampleFlags >>> 26) & 0x03;
-      if (keyframe) {
-        latestRapPts = pts;
-        rapCount += 1;
-      } else if (latestRapPts !== null) {
-        if (pts < latestRapPts) {
-          assert.equal(isLeading, 1,
-            `leading picture PTS ${pts} lacks ISO-BMFF is_leading metadata`);
-          leadingCount += 1;
-        } else {
-          assert.equal(isLeading, 0,
-            `ordinary picture PTS ${pts} is incorrectly marked as leading`);
-        }
-      }
-      dts += duration;
-    }
-  }
-  assert.ok(rapCount >= 1, 'sample did not contain an initial HEVC RAP');
-  assert.ok(leadingCount >= 1, 'sample did not retain continuous CRA leading pictures');
-  presentationPts.sort((left, right) => left - right);
-  sampleDurations.sort((left, right) => left - right);
-  const nominalDuration = sampleDurations[Math.floor(sampleDurations.length / 2)];
-  for (let index = 1; index < presentationPts.length; index += 1) {
-    const gap = presentationPts[index] - presentationPts[index - 1];
-    assert.ok(gap <= nominalDuration * 2 + 1,
-      `video presentation gap ${gap} at ${presentationPts[index - 1]} -> ` +
-      `${presentationPts[index]} exceeds two frame intervals (${nominalDuration * 2})`);
-  }
-}
-
 assert.deepEqual(fatalErrors, []);
 for (const type of ['video', 'audio']) {
   const init = initSegments.get(type);
@@ -147,8 +62,6 @@ for (const type of ['video', 'audio']) {
   assert.ok(mediaSegments.get(type).length > 0, `missing ${type} media segment`);
   assert.equal(boxType(mediaSegments.get(type)[0]), 'moof');
 }
-assertLeadingPicturesDeclared(mediaSegments.get('video'));
-
 if (outputDirectory) {
   await mkdir(outputDirectory, { recursive: true });
   for (const type of ['video', 'audio']) {
