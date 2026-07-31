@@ -25,7 +25,7 @@ this.recoverApplicationFailure = DataBroadcastController.prototype.recoverApplic
 this.loadApplication = DataBroadcastController.prototype.loadApplication;
 `, controllerContext);
 const now = Date.UTC(2026, 6, 31, 12, 0, 0);
-const program = controllerContext.createDemoProgramInfo(false, now);
+const program = controllerContext.createDemoProgramInfo(now);
 assert.equal(program.duration, 30 * 60 * 1000);
 assert.equal(program.f_duration, program.duration);
 assert.equal(program.start_time.getTime(), now - 60 * 1000);
@@ -33,8 +33,9 @@ assert.equal(
   program.f_start_time.getTime(),
   program.start_time.getTime() + program.duration,
 );
-assert.equal(program.name, 'BS4K');
-assert.equal(program.f_name, 'BS4K NEXT');
+assert.equal(program.name, 'データ放送デモ');
+assert.equal(program.f_name, 'データ放送デモ NEXT');
+assert.equal(program.service_id, 0);
 
 const actualProgram = controllerContext.createProgramInfoFromEvents({
   originalNetworkId: 4,

@@ -8,18 +8,18 @@ const KEYBOARD_KEYS = {
 };
 const VFS_PREFIX = '/data-broadcast/';
 
-export function createDemoProgramInfo(is8k, now = Date.now()) {
+export function createDemoProgramInfo(now = Date.now()) {
   const startTime = new Date(now - 60 * 1000);
-  // MH-EIT is not decoded yet. Keep this clearly synthetic, but anchor it to
-  // the recording clock and avoid the misleading same-time 24-hour range.
+  // Keep the no-EIT fallback explicitly receiver/demo-owned. A carousel path
+  // is not a service identity and must not be interpreted as 4K/8K metadata.
   const duration = 30 * 60 * 1000;
   const followingStartTime = new Date(startTime.getTime() + duration);
-  const eventName = is8k ? 'BS8K' : 'BS4K';
+  const eventName = 'データ放送デモ';
   return {
-    original_network_id: 4,
-    transport_stream_id: 11,
-    service_id: is8k ? 102 : 101,
-    event_id: 1,
+    original_network_id: 0,
+    transport_stream_id: 0,
+    service_id: 0,
+    event_id: 0,
     name: eventName,
     event_name: eventName,
     start_time: startTime,
@@ -27,7 +27,7 @@ export function createDemoProgramInfo(is8k, now = Date.now()) {
     desc: '',
     event_text: '',
     event_extended_text: '',
-    f_event_id: 2,
+    f_event_id: 1,
     f_name: `${eventName} NEXT`,
     f_start_time: followingStartTime,
     f_duration: duration,
@@ -109,7 +109,6 @@ export class DataBroadcastController {
     this.readyEntry = null;
     this.readyContextId = null;
     this.loadedEntry = null;
-    this.is8k = false;
     this.programEvents = new Map();
     this.showRequested = false;
     this.log = () => {};
@@ -200,6 +199,7 @@ export class DataBroadcastController {
     this.readyContextId = null;
     this.loadedEntry = null;
     this.host.clearBroadcastClock();
+    this.host.clearProgramInfo();
     this.programEvents.clear();
     this.readyResourceCount = 0;
     this.htmlCatalogueSignatures.clear();
@@ -242,7 +242,7 @@ export class DataBroadcastController {
       this.programEvents.get(1),
     );
     this.host.setProgramInfo(
-      actual ?? createDemoProgramInfo(this.is8k, this.host.getBroadcastTime()),
+      actual ?? createDemoProgramInfo(this.host.getBroadcastTime()),
     );
   }
 
@@ -383,8 +383,6 @@ export class DataBroadcastController {
     if (resolved.origin !== location.origin || !this.resourceSequenceByPath.has(resourceKey)) {
       throw new Error(`許可されていないデータ放送 URL: ${resolved.href}`);
     }
-    const is8k = resourcePath.startsWith('sh8/');
-    this.is8k = is8k;
     this.updateProgramInfo();
     this.host.loadApplication(resolved.href);
     this.visible = visible;
