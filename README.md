@@ -162,6 +162,33 @@ cryptographic verification itself remains the caller's responsibility.
 
 ## WebAssembly
 
+Install the prebuilt single-file WebAssembly package from npm:
+
+```sh
+npm install tlvdemux
+```
+
+The package works with CommonJS directly and with the usual default-import
+interop in ESM-aware bundlers:
+
+```js
+import createTlvDemuxModule from "tlvdemux";
+
+const module = await createTlvDemuxModule();
+const demuxer = new module.TlvDemuxer({
+  onTrack: track => console.log(track),
+  onAccessUnitView: unit => consumeSynchronously(unit),
+  onError: error => console.warn(error),
+});
+```
+
+TypeScript declarations for the module, callbacks, events, duration probe and
+recording index are included. The npm package contains the generated wrapper
+with its WebAssembly binary embedded, so consumers do not need Emscripten and
+do not make a separate `.wasm` request.
+
+### Build the npm package
+
 Build the browser/worker wrapper with Emscripten:
 
 ```sh
@@ -170,6 +197,10 @@ emcmake cmake -S . -B build-wasm -G Ninja \
   -DBUILD_SHARED_LIBS=OFF -DTLVDEMUX_BUILD_TOOLS=OFF
 cmake --build build-wasm --target tlvdemux-wasm
 ```
+
+From `nix-shell`, `npm run build` performs the same release build and copies the
+result to `dist/tlvdemux.js`. `npm pack --dry-run` runs the release build and
+WASM smoke test before showing the exact files that would be published.
 
 The result is a single self-contained `build-wasm/tlvdemux.js`; the WebAssembly
 binary is embedded and no separate `.wasm` request is made. Load it as a normal

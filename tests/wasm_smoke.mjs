@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
 
-const modulePath = process.argv[2];
-assert.ok(modulePath, 'missing generated tlvdemux-wasm module path');
+const modulePathArgument = process.argv[2];
+assert.ok(modulePathArgument, 'missing generated tlvdemux-wasm module path');
+const modulePath = resolve(modulePathArgument);
 
 const require = createRequire(import.meta.url);
 const createTlvDemuxModule = require(modulePath);
