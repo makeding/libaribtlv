@@ -522,6 +522,8 @@ export class DataBroadcastController {
   }
 
   handleKeyboard = event => {
+    const active = document.activeElement;
+    if (active !== this.viewport && !this.viewport.contains(active)) return;
     if (event.target instanceof HTMLInputElement ||
         event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) return;
     const code = KEYBOARD_KEYS[event.key];
