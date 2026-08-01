@@ -18,6 +18,7 @@ struct TestSink final : tlvdemux::Sink {
     std::vector<tlvdemux::DataAssetInfo> data_assets;
     std::vector<tlvdemux::SignallingMessage> signalling_messages;
     std::vector<tlvdemux::EventInfo> events;
+    std::vector<tlvdemux::StreamEvent> stream_events;
     std::vector<tlvdemux::ApplicationInfo> applications;
     std::vector<tlvdemux::DataTransmissionTable> data_transmission_tables;
     std::vector<tlvdemux::Error> errors;
@@ -36,6 +37,9 @@ struct TestSink final : tlvdemux::Sink {
         signalling_messages.push_back(std::move(value));
     }
     void onEventInfo(const tlvdemux::EventInfo& value) override { events.push_back(value); }
+    void onStreamEvent(const tlvdemux::StreamEvent& value) override {
+        stream_events.push_back(value);
+    }
     void onApplication(const tlvdemux::ApplicationInfo& value) override {
         applications.push_back(value);
     }
@@ -270,7 +274,8 @@ void asset(std::vector<std::uint8_t>& body, const std::uint16_t packet_id,
 std::vector<std::uint8_t> discovery_message() {
     std::vector<std::uint8_t> program_descriptors;
     descriptor(program_descriptors, 0x8034,
-               {0x1f, 0x1f, 0xf0, 0x00, 0xff, 0x02, 0x00, 0xff, 0x03});
+               {0x1f, 0x1f, 0xf1, 0x00, 0xff, 0x02, 0x00, 0xff, 0x03,
+                40, 0x00, 0xff, 0x04});
 
     std::vector<std::uint8_t> video_descriptors;
     descriptor(video_descriptors, 0x8011, {0x00, 0x00});
@@ -424,8 +429,9 @@ std::vector<std::uint8_t> data_transmission_message() {
 
 std::vector<std::uint8_t> signalling_mmtp(const std::uint32_t sequence,
                                           const std::uint8_t flags,
-                                          const std::vector<std::uint8_t>& body) {
-    auto mmtp = mmtp_signalling(0xff02, 1);
+                                          const std::vector<std::uint8_t>& body,
+                                          const std::uint16_t packet_id = 0xff02) {
+    auto mmtp = mmtp_signalling(packet_id, 1);
     mmtp.resize(12);
     mmtp[8] = static_cast<std::uint8_t>(sequence >> 24U);
     mmtp[9] = static_cast<std::uint8_t>(sequence >> 16U);
@@ -450,8 +456,9 @@ std::vector<std::uint8_t> discovery_stream() {
 
 std::vector<std::uint8_t> signalling_tlv(const std::uint32_t sequence,
                                          const std::uint8_t flags,
-                                         const std::vector<std::uint8_t>& body) {
-    const auto mmtp = signalling_mmtp(sequence, flags, body);
+                                         const std::vector<std::uint8_t>& body,
+                                         const std::uint16_t packet_id = 0xff02) {
+    const auto mmtp = signalling_mmtp(sequence, flags, body, packet_id);
     std::vector<std::uint8_t> compressed_payload{0x00, 0x10, 0x61};
     compressed_payload.insert(compressed_payload.end(), mmtp.begin(), mmtp.end());
     return tlv(0x03, compressed_payload);
@@ -519,6 +526,71 @@ void test_mh_eit_program_events() {
     check(event.running_status == 4 && !event.free_ca_mode && event.language == "jpn" &&
               event.title == "録画された番組" && event.description == "番組概要",
           "MH short-event descriptor was not parsed");
+}
+
+std::vector<std::uint8_t> emt_message(const std::uint8_t version,
+                                      const std::uint16_t message_id) {
+    std::vector<std::uint8_t> descriptors;
+    append_u16(descriptors, 0x8021);
+    descriptors.push_back(17);
+    append_u64(descriptors, 200ULL << 32U);
+    append_u64(descriptors, 10ULL << 32U);
+    descriptors.push_back(0x30); // leap=0, NPT advances at the UTC rate
+
+    std::vector<std::uint8_t> event_payload;
+    append_u16(event_payload, 0x001f); // group 1 + reserved nibble
+    event_payload.push_back(0);        // immediate
+    append_u64(event_payload, 0);
+    event_payload.push_back(2);
+    append_u16(event_payload, message_id);
+    event_payload.insert(event_payload.end(), {0xde, 0xad});
+    append_u16(descriptors, 0xf003);
+    append_u16(descriptors, event_payload.size());
+    descriptors.insert(descriptors.end(), event_payload.begin(), event_payload.end());
+
+    std::vector<std::uint8_t> section{
+        0xa6, 0xf0, 0x00,
+        0x30, 0x01, // data_event_id 3, group 1
+        static_cast<std::uint8_t>(0xc1U | ((version & 0x1fU) << 1U)),
+        0x00, 0x00,
+    };
+    section.insert(section.end(), descriptors.begin(), descriptors.end());
+    append_u32(section, 0);
+    const auto section_length = section.size() - 3;
+    section[1] = static_cast<std::uint8_t>(0xf0U | (section_length >> 8U));
+    section[2] = static_cast<std::uint8_t>(section_length);
+
+    std::vector<std::uint8_t> message{0x80, 0x00, 0x00};
+    append_u16(message, section.size());
+    message.insert(message.end(), section.begin(), section.end());
+    return message;
+}
+
+void test_emt_stream_events() {
+    auto stream = discovery_stream();
+    const auto first = signalling_tlv(1, 0, emt_message(7, 0xb007), 0xff04);
+    const auto repeated = signalling_tlv(2, 0, emt_message(7, 0xb007), 0xff04);
+    const auto updated = signalling_tlv(3, 0, emt_message(7, 0xb008), 0xff04);
+    stream.insert(stream.end(), first.begin(), first.end());
+    stream.insert(stream.end(), repeated.begin(), repeated.end());
+    stream.insert(stream.end(), updated.begin(), updated.end());
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+    check(sink.stream_events.size() == 2,
+          "EMT messages were not deduplicated by identity and version");
+    const auto& event = sink.stream_events.front();
+    check(event.event_message_tag == 40 && event.data_event_id == 3 &&
+              event.message_group_id == 1 && event.message_version == 7 &&
+              event.time_mode == 0 && event.message_type == 2 &&
+              event.raw_message_id == 0xb007 && event.message_id == 176,
+          "EMT identity was not parsed with its MPT-signalled tag");
+    check(event.utc_reference == std::optional<std::uint64_t>{200ULL << 32U} &&
+              event.npt_reference == std::optional<std::uint64_t>{10ULL << 32U} &&
+              event.private_data == std::vector<std::uint8_t>({0xde, 0xad}),
+          "EMT timing reference or private data was not parsed");
 }
 
 void test_global_packet_state_budget() {
@@ -635,6 +707,10 @@ void test_track_discovery_and_deduplication() {
               sink.application_services[0].ait_packet_id == 0xff02 &&
               sink.application_services[0].data_transmission_packet_id == 0xff03,
           "ARIB-HTML5 application service metadata was not parsed from the MPT");
+    check(sink.application_services[0].event_message_locations.size() == 1 &&
+              sink.application_services[0].event_message_locations[0].event_message_tag == 40 &&
+              sink.application_services[0].event_message_locations[0].packet_id == 0xff04,
+          "EMT tag/location metadata was not parsed from the MPT");
     check(sink.data_assets.size() == 1 &&
               sink.data_assets[0].packet_id == 0xf340 &&
               sink.data_assets[0].asset_type == "aapp" &&
@@ -1297,6 +1373,7 @@ int main() {
     test_track_discovery_and_deduplication();
     test_application_and_data_transmission_signalling();
     test_mh_eit_program_events();
+    test_emt_stream_events();
     test_dynamic_audio_layout_metadata();
     test_authenticated_mmtp_payload_bounds();
     test_codec_output_and_timeline();

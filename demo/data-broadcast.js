@@ -70,10 +70,6 @@ export function createProgramInfoFromEvents(present, following = null) {
   return result;
 }
 
-function isBackgroundHoleApplication(pathname) {
-  return /\/(?:caption)\/source\//.test(String(pathname));
-}
-
 export class DataBroadcastController {
   constructor({ viewport, videoSurface, mediaPlane, video, iframe, remote, status, detail, url }) {
     this.viewport = viewport;
@@ -143,12 +139,6 @@ export class DataBroadcastController {
         }
       },
       onUrlChange: value => this.applicationUrlChanged(value),
-      onMediaPlane: plane => {
-        videoSurface.classList.toggle('broadcast-video-plane-visible', plane.visible);
-        if (plane.visible && videoSurface.classList.contains('broadcast-background-hole')) {
-          viewport.style.backgroundColor = '#000';
-        }
-      },
     });
     window.__ARIB_HTML5_INSTALL__ = target => this.installRuntime(target);
     window.addEventListener('keydown', this.handleKeyboard);
@@ -168,17 +158,6 @@ export class DataBroadcastController {
   }
 
   installRuntime(target) {
-    if (isBackgroundHoleApplication(target.location.pathname)) {
-      const style = target.document.createElement('style');
-      style.dataset.tlvdemuxBackgroundHole = '';
-      style.textContent = `
-        html, body, #backscreen, #container, #vstream,
-        #vstream object, #vstream [data-arib-type="video/x-arib2-broadcast"] {
-          background: transparent !important;
-        }
-      `;
-      (target.document.head || target.document.documentElement).append(style);
-    }
     this.host.installRuntime(target);
   }
 
@@ -448,20 +427,11 @@ export class DataBroadcastController {
     this.visible = visible;
     if (!visible) this.host.exitApplication();
     this.viewport.classList.toggle('data-broadcast-visible', visible);
-    if (!visible) {
-      this.video.controls = true;
-      this.videoSurface.classList.remove(
-        'broadcast-video-plane-visible', 'broadcast-background-hole',
-      );
-    }
+    this.video.controls = !visible;
   }
 
   applicationUrlChanged(value) {
     this.url.textContent = value;
-    const backgroundHole = isBackgroundHoleApplication(value);
-    this.videoSurface.classList.toggle('broadcast-background-hole', backgroundHole);
-    this.video.controls = !backgroundHole;
-    if (backgroundHole) this.viewport.style.backgroundColor = '#000';
   }
 
   dispatchKey(code) {

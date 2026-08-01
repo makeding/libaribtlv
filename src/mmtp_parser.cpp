@@ -64,6 +64,7 @@ MmtpParser::MmtpParser(const std::uint32_t context_id, const Limits& limits,
                        DataUnitCallback on_data_unit,
                        SignallingCallback on_signalling,
                        EventCallback on_event,
+                       StreamEventCallback on_stream_event,
                        ApplicationCallback on_application,
                        DataTransmissionCallback on_data_transmission,
                        DataDirectoryCallback on_data_directory,
@@ -76,6 +77,7 @@ MmtpParser::MmtpParser(const std::uint32_t context_id, const Limits& limits,
       on_data_asset_(std::move(on_data_asset)), on_data_unit_(std::move(on_data_unit)),
       on_signalling_(std::move(on_signalling)),
       on_event_(std::move(on_event)),
+      on_stream_event_(std::move(on_stream_event)),
       on_application_(std::move(on_application)),
       on_data_transmission_(std::move(on_data_transmission)),
       on_data_directory_(std::move(on_data_directory)),
@@ -97,6 +99,7 @@ void MmtpParser::reset() {
     signalling_.clear();
     tracks_.clear();
     data_assets_.clear();
+    event_message_tags_.clear();
     latest_full_ntp_.reset();
 }
 
@@ -477,13 +480,14 @@ bool parse_application_service_descriptor(const std::uint32_t context_id,
         !skip_general_location(locations, info.data_transmission_packet_id)) {
         return false;
     }
+    info.event_message_locations.reserve(emt_count);
     for (std::uint16_t index = 0; index < emt_count; ++index) {
-        std::uint8_t ignored_tag = 0;
-        std::optional<std::uint16_t> ignored_packet_id;
-        if (!locations.read_u8(ignored_tag) ||
-            !skip_general_location(locations, ignored_packet_id)) {
+        ApplicationServiceInfo::EventMessageLocation location;
+        if (!locations.read_u8(location.event_message_tag) ||
+            !skip_general_location(locations, location.packet_id)) {
             return false;
         }
+        info.event_message_locations.push_back(std::move(location));
     }
     return true;
 }
@@ -882,6 +886,10 @@ bool MmtpParser::parse_tables(const std::uint8_t* data, const std::size_t size,
                 !parse_mh_ait(section, section_size, packet_id, input_offset)) {
                 return false;
             }
+            if (table_id == 0xa6 &&
+                !parse_emt(section, section_size, packet_id, input_offset)) {
+                return false;
+            }
         } else {
             // ARIB MMT tables in PA/M2 use a one-byte ID/version followed by a
             // 16-bit payload length. This lets v1 skip unneeded tables without
@@ -947,6 +955,83 @@ bool MmtpParser::parse_mh_eit(const std::uint8_t* data, const std::size_t size,
     return offset == section_end;
 }
 
+bool MmtpParser::parse_emt(const std::uint8_t* data, const std::size_t size,
+                           const std::uint16_t packet_id,
+                           const std::uint64_t input_offset) {
+    if (size < 12 || data[0] != 0xa6) return false;
+    const auto section_length = static_cast<std::size_t>(read_be16(data + 1) & 0x0fffU);
+    if (section_length + 3 != size || section_length < 9) return false;
+
+    const auto section_end = size - 4;
+    const auto data_event_and_group = read_be16(data + 3);
+    const auto data_event_id = static_cast<std::uint8_t>(data_event_and_group >> 12U);
+    const auto table_group_id = static_cast<std::uint16_t>(data_event_and_group & 0x0fffU);
+    const bool current_next = (data[5] & 0x01U) != 0;
+    const auto tag = event_message_tags_.find(packet_id);
+    const auto event_message_tag = tag == event_message_tags_.end()
+        ? std::uint8_t{0} : tag->second;
+
+    struct DescriptorView {
+        std::uint16_t tag = 0;
+        const std::uint8_t* payload = nullptr;
+        std::size_t length = 0;
+    };
+    std::vector<DescriptorView> descriptor_views;
+    ByteReader descriptors(data + 8, section_end - 8);
+    while (descriptors.remaining() != 0) {
+        std::uint16_t descriptor_tag = 0;
+        std::uint32_t descriptor_size = 0;
+        if (!descriptors.read_u16(descriptor_tag) ||
+            !descriptor_length(descriptors, descriptor_tag, descriptor_size) ||
+            descriptor_size > descriptors.remaining()) {
+            return false;
+        }
+        const std::uint8_t* payload = nullptr;
+        if (!descriptors.read_view(descriptor_size, payload)) return false;
+        descriptor_views.push_back(
+            DescriptorView{descriptor_tag, payload, static_cast<std::size_t>(descriptor_size)});
+    }
+
+    std::optional<std::uint64_t> utc_reference;
+    std::optional<std::uint64_t> npt_reference;
+    for (const auto& descriptor : descriptor_views) {
+        if (descriptor.tag == 0x8021 && descriptor.length >= 17) {
+            utc_reference = read_be64(descriptor.payload);
+            npt_reference = read_be64(descriptor.payload + 8);
+        }
+    }
+
+    for (const auto& descriptor : descriptor_views) {
+        if (descriptor.tag != 0xf003) continue;
+        if (descriptor.length < 14) return false;
+        StreamEvent event;
+        event.context_id = context_id_;
+        event.source_packet_id = packet_id;
+        event.event_message_tag = event_message_tag;
+        event.data_event_id = data_event_id;
+        event.message_group_id = static_cast<std::uint16_t>(
+            read_be16(descriptor.payload) >> 4U);
+        // All event-message descriptors in one EMT are required to use its group.
+        if (event.message_group_id != table_group_id) return false;
+        event.current_next = current_next;
+        event.section_number = data[6];
+        event.last_section_number = data[7];
+        event.time_mode = descriptor.payload[2];
+        event.time_value = read_be64(descriptor.payload + 3);
+        event.utc_reference = utc_reference;
+        event.npt_reference = npt_reference;
+        event.message_type = descriptor.payload[11];
+        event.raw_message_id = read_be16(descriptor.payload + 12);
+        event.message_id = static_cast<std::uint8_t>(event.raw_message_id >> 8U);
+        event.message_version = static_cast<std::uint8_t>(event.raw_message_id);
+        event.private_data.assign(descriptor.payload + 14,
+                                  descriptor.payload + descriptor.length);
+        event.input_offset = input_offset;
+        on_stream_event_(std::move(event));
+    }
+    return true;
+}
+
 bool MmtpParser::parse_mpt(const std::uint8_t* data, const std::size_t size,
                            const std::uint64_t input_offset) {
     (void)input_offset;
@@ -968,8 +1053,16 @@ bool MmtpParser::parse_mpt(const std::uint8_t* data, const std::size_t size,
     const std::uint8_t* program_descriptors = nullptr;
     if (!body.read_view(program_descriptors_length, program_descriptors)) return false;
     ByteReader program_descriptor_reader(program_descriptors, program_descriptors_length);
+    const ApplicationServiceCallback application_service = [this](ApplicationServiceInfo info) {
+        for (const auto& location : info.event_message_locations) {
+            if (location.packet_id.has_value()) {
+                event_message_tags_[*location.packet_id] = location.event_message_tag;
+            }
+        }
+        on_application_service_(std::move(info));
+    };
     if (!parse_program_descriptors(program_descriptor_reader, context_id_,
-                                   on_application_service_) ||
+                                   application_service) ||
         !body.read_u8(asset_count)) {
         return false;
     }

@@ -52,6 +52,7 @@ public:
     using DataUnitCallback = std::function<void(DataUnit)>;
     using SignallingCallback = std::function<void(SignallingMessage)>;
     using EventCallback = std::function<void(EventInfo)>;
+    using StreamEventCallback = std::function<void(StreamEvent)>;
     using ApplicationCallback = std::function<void(ApplicationInfo)>;
     using DataTransmissionCallback = std::function<void(DataTransmissionTable)>;
     using DataDirectoryCallback = std::function<void(DataDirectoryTable)>;
@@ -62,6 +63,7 @@ public:
     MmtpParser(std::uint32_t context_id, const Limits&, PackageCallback,
                TrackCallback, AccessUnitCallback, ApplicationServiceCallback,
                DataAssetCallback, DataUnitCallback, SignallingCallback, EventCallback,
+               StreamEventCallback,
                ApplicationCallback,
                DataTransmissionCallback, DataDirectoryCallback,
                DataAssetManagementCallback, StateAcquireCallback,
@@ -209,6 +211,8 @@ private:
                       std::uint16_t packet_id, std::uint64_t input_offset);
     bool parse_mh_eit(const std::uint8_t* data, std::size_t size,
                       std::uint16_t packet_id, std::uint64_t input_offset);
+    bool parse_emt(const std::uint8_t* data, std::size_t size,
+                   std::uint16_t packet_id, std::uint64_t input_offset);
     bool parse_data_directory_table(const DataTransmissionTable&);
     bool parse_data_asset_management_table(const DataTransmissionTable&);
     bool append(SignallingAssembler&, const std::uint8_t*, std::size_t,
@@ -224,6 +228,7 @@ private:
     DataUnitCallback on_data_unit_;
     SignallingCallback on_signalling_;
     EventCallback on_event_;
+    StreamEventCallback on_stream_event_;
     ApplicationCallback on_application_;
     DataTransmissionCallback on_data_transmission_;
     DataDirectoryCallback on_data_directory_;
@@ -234,6 +239,7 @@ private:
     std::unordered_map<std::uint16_t, SignallingAssembler> signalling_;
     std::unordered_map<std::uint16_t, TrackState> tracks_;
     std::unordered_map<std::uint16_t, DataAssetState> data_assets_;
+    std::unordered_map<std::uint16_t, std::uint8_t> event_message_tags_;
     std::optional<std::uint64_t> latest_full_ntp_;
 };
 

@@ -108,6 +108,11 @@ struct ApplicationServiceInfo {
     bool has_data_transmission_messages = false;
     std::optional<std::uint16_t> ait_packet_id;
     std::optional<std::uint16_t> data_transmission_packet_id;
+    struct EventMessageLocation {
+        std::uint8_t event_message_tag = 0;
+        std::optional<std::uint16_t> packet_id;
+    };
+    std::vector<EventMessageLocation> event_message_locations;
 };
 
 struct DataAssetInfo {
@@ -161,6 +166,32 @@ struct EventInfo {
     std::string language;
     std::string title;
     std::string description;
+    std::uint64_t input_offset = 0;
+};
+
+// An ARIB STD-B60 general event message carried by an EMT (table_id 0xA6).
+// time_value is the descriptor's raw 64-bit NTP/NPT field.  For time_mode 0
+// it is reserved and must not be interpreted as an ignition time.
+struct StreamEvent {
+    std::uint32_t context_id = 0;
+    std::uint16_t source_packet_id = 0;
+    std::uint8_t event_message_tag = 0;
+    std::uint8_t data_event_id = 0;
+    std::uint16_t message_group_id = 0;
+    std::uint8_t message_version = 0;
+    bool current_next = false;
+    std::uint8_t section_number = 0;
+    std::uint8_t last_section_number = 0;
+    std::uint8_t time_mode = 0;
+    std::uint64_t time_value = 0;
+    std::optional<std::uint64_t> utc_reference;
+    std::optional<std::uint64_t> npt_reference;
+    std::uint8_t message_type = 0;
+    // B60 carries the application message ID in the high octet and its version
+    // in the low octet. Preserve the combined descriptor value for diagnostics.
+    std::uint16_t raw_message_id = 0;
+    std::uint8_t message_id = 0;
+    std::vector<std::uint8_t> private_data;
     std::uint64_t input_offset = 0;
 };
 

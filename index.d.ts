@@ -170,6 +170,29 @@ declare namespace createTlvDemuxModule {
     inputOffset: bigint;
   }
 
+  interface StreamEvent {
+    contextId: number;
+    sourcePacketId: number;
+    eventMessageTag: number;
+    dataEventId: number;
+    messageGroupId: number;
+    messageVersion: number;
+    currentNext: boolean;
+    sectionNumber: number;
+    lastSectionNumber: number;
+    timeMode: number;
+    timeValue: bigint;
+    utcReference: bigint | null;
+    nptReference: bigint | null;
+    messageType: number;
+    /** Raw 16-bit ARIB STD-B60 event_msg_id, retained for diagnostics. */
+    rawMessageId: number;
+    /** High octet exposed as message_id to ARIB STD-B62 applications. */
+    messageId: number;
+    privateData: Uint8Array;
+    inputOffset: bigint;
+  }
+
   interface ApplicationState {
     contextId: number;
     sourcePacketId: number;
@@ -233,6 +256,7 @@ declare namespace createTlvDemuxModule {
     onError?: (error: DemuxError) => void;
     onBroadcastClock?: (clock: BroadcastClock) => void;
     onEventInfo?: (event: EventInfo) => void;
+    onStreamEvent?: (event: StreamEvent) => void;
     onApplicationState?: (application: ApplicationState) => void;
     onApplicationResource?: (resource: ApplicationResource) => void;
     onApplicationResourceView?: (resource: ApplicationResource) => void;

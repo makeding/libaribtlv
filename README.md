@@ -188,6 +188,36 @@ chosen limit without rewriting the AAC configuration. For example, a value of
 segment. Use `track.audio.channels` in `onTrack` to select a compatible
 alternative track; omitted or zero leaves the remuxer unlimited.
 
+#### BS8K の 22.2ch 音声を除外する
+
+BS8K の番組によっては、AAC の `channel_configuration=13` で表される
+22.2ch（24 チャンネル）音声が送出されます。Chromium 系ブラウザーはこの構成を
+MSE で受け付けず、音声の `appendBuffer()` が MediaError になることがあります。
+ブラウザー再生では次のように上限を 6 チャンネルにすると、モノラルから 5.1ch
+までは通し、22.2ch の MSE init segment は出力しません。
+
+```js
+let selectedAudio = false;
+const demuxer = new module.TlvDemuxer({
+  mseMaxAudioChannels: 6,
+  onTrack(track) {
+    const channels = track.audio?.channels ?? 0;
+    if (!selectedAudio && track.kind === "audio" &&
+        (channels === 0 || channels <= 6)) {
+      selectedAudio = true;
+      demuxer.selectTrack("audio", track.trackId);
+    }
+  },
+  onMseInit: init => appendInitSegment(init),
+  onMseSegment: segment => appendMediaSegment(segment),
+});
+```
+
+この設定は 22.2ch を 5.1ch にダウンミックスするものではなく、非対応の音声を
+MSE に渡さないための安全策です。複数の音声トラックがある場合は
+`track.audio.channels` を見て 5.1ch またはステレオの代替トラックを選択して
+ください。省略時または `0` の場合、チャンネル数による制限は行いません。
+
 TypeScript declarations for the module, callbacks, events, duration probe and
 recording index are included. The npm package contains the generated wrapper
 with its WebAssembly binary embedded, so consumers do not need Emscripten and
@@ -217,6 +247,7 @@ const module = await createTlvDemuxModule();
 const demuxer = new module.TlvDemuxer({
   onTrack: track => console.log(track),
   onEventInfo: event => console.log(event.title, event.startTimeUnixMilliseconds),
+  onStreamEvent: event => console.log(event.eventMessageTag, event.messageId),
   onAccessUnitView: unit => consumeSynchronously(unit),
   onApplicationState: application => console.log(application.state),
   onApplicationResourceView: resource => console.log(resource.path),
@@ -234,6 +265,12 @@ receives 64-bit offsets, timestamps, and track IDs as `BigInt` values.
 MH-EIT current/following and schedule entries are reported through
 `onEventInfo`; `tableId === 0x8b` with `sectionNumber` 0/1 identifies the
 present/following event for the service.
+ARIB STD-B60 EMT messages are reported through `onStreamEvent`. The event
+contains the MPT-signalled EMT tag, group/id/version, private bytes, and the raw
+time-mode fields so the receiver can ignite timed messages against its playback
+clock instead of the demux/read-ahead clock. `rawMessageId` preserves B60's
+16-bit descriptor field; its high octet is exposed as `messageId` and its low
+octet as `messageVersion` to the B62 application.
 `onAccessUnitView` avoids copying media output, but its `data` view is valid only
 for the duration of the callback and must be consumed synchronously. Use
 `onAccessUnit` instead when the callback needs an owned `Uint8Array` copy.

@@ -178,6 +178,31 @@ val event_info_value(const tlvdemux::EventInfo& info) {
     return result;
 }
 
+val stream_event_value(const tlvdemux::StreamEvent& event) {
+    auto result = val::object();
+    result.set("contextId", event.context_id);
+    result.set("sourcePacketId", event.source_packet_id);
+    result.set("eventMessageTag", event.event_message_tag);
+    result.set("dataEventId", event.data_event_id);
+    result.set("messageGroupId", event.message_group_id);
+    result.set("messageVersion", event.message_version);
+    result.set("currentNext", event.current_next);
+    result.set("sectionNumber", event.section_number);
+    result.set("lastSectionNumber", event.last_section_number);
+    result.set("timeMode", event.time_mode);
+    result.set("timeValue", event.time_value);
+    result.set("utcReference", event.utc_reference.has_value()
+        ? val(*event.utc_reference) : val::null());
+    result.set("nptReference", event.npt_reference.has_value()
+        ? val(*event.npt_reference) : val::null());
+    result.set("messageType", event.message_type);
+    result.set("rawMessageId", event.raw_message_id);
+    result.set("messageId", event.message_id);
+    result.set("privateData", copy_bytes(event.private_data));
+    result.set("inputOffset", event.input_offset);
+    return result;
+}
+
 class WasmDurationProbe final {
 public:
     bool begin(const std::uint64_t source_size, const val& js_options) {
@@ -517,6 +542,10 @@ public:
         emit("onEventInfo", event_info_value(info));
     }
 
+    void onStreamEvent(const tlvdemux::StreamEvent& event) override {
+        emit("onStreamEvent", stream_event_value(event));
+    }
+
     void onApplicationState(const tlvdemux::ApplicationState& state) override {
         application_resources_.onApplicationState(state);
         emit("onApplicationState", application_state_event(state));
@@ -551,7 +580,8 @@ private:
         const auto value = options["mseMaxAudioChannels"];
         if (value.typeOf().as<std::string>() != "number") return 0;
         const auto channels = value.as<double>();
-        if (!std::isfinite(channels) || channels <= 0 || channels > 24) return 0;
+        if (!std::isfinite(channels) || channels <= 0 || channels > 24 ||
+            std::floor(channels) != channels) return 0;
         return static_cast<std::uint32_t>(channels);
     }
 

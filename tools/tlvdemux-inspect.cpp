@@ -121,6 +121,12 @@ struct Inspector final : tlvdemux::Sink {
             std::cerr << " data-packet-id=0x" << std::hex
                       << *info.data_transmission_packet_id << std::dec;
         }
+        for (const auto& location : info.event_message_locations) {
+            std::cerr << " emt=" << static_cast<unsigned>(location.event_message_tag);
+            if (location.packet_id.has_value()) {
+                std::cerr << "@0x" << std::hex << *location.packet_id << std::dec;
+            }
+        }
         std::cerr << '\n';
     }
 
@@ -178,6 +184,22 @@ struct Inspector final : tlvdemux::Sink {
             std::cerr << " duration=" << *info.duration_seconds;
         }
         std::cerr << '\n';
+    }
+
+    void onStreamEvent(const tlvdemux::StreamEvent& event) override {
+        if (!list) return;
+        std::cerr << "stream-event context=" << event.context_id
+                  << " packet-id=0x" << std::hex << event.source_packet_id << std::dec
+                  << " emt=" << static_cast<unsigned>(event.event_message_tag)
+                  << " data-event=" << static_cast<unsigned>(event.data_event_id)
+                  << " group=" << event.message_group_id
+                  << " id=" << event.message_id
+                  << " raw-id=" << event.raw_message_id
+                  << " version=" << static_cast<unsigned>(event.message_version)
+                  << " type=" << static_cast<unsigned>(event.message_type)
+                  << " time-mode=" << static_cast<unsigned>(event.time_mode)
+                  << " time-value=0x" << std::hex << event.time_value << std::dec
+                  << " private-bytes=" << event.private_data.size() << '\n';
     }
 
     void onApplication(const tlvdemux::ApplicationInfo& info) override {

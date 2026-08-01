@@ -97,6 +97,15 @@ function mseAudioTrackSupported(track) {
   return channels === 0 || channels <= MSE_MAX_AUDIO_CHANNELS;
 }
 
+function preferredMseAudioTrack(tracks, preferredPacketId = null) {
+  const compatible = [...tracks.values()].filter(mseAudioTrackSupported);
+  if (preferredPacketId !== null) {
+    const preferred = compatible.find(track => track.packetId === preferredPacketId);
+    if (preferred) return preferred;
+  }
+  return compatible.find(track => track.audio?.mainComponent) || compatible[0];
+}
+
 function audioTrackLabel(track) {
   const parts = [`0x${track.packetId.toString(16)}`];
   if (track.language) parts.push(track.language);
@@ -908,6 +917,13 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
           if (selectedAudio === track.trackId) {
             selectedAudio = null;
             demuxer.selectTrack('audio', undefined);
+            const fallback = preferredMseAudioTrack(
+              knownAudioTracks, preferredAudioPacketId,
+            );
+            if (fallback) {
+              appendLog(`互換音声 packet_id=0x${fallback.packetId.toString(16)} に切り替えます`);
+              selectAudioTrack(fallback);
+            }
           }
           return;
         }
@@ -1261,11 +1277,7 @@ elements.audioTrack.addEventListener('change', () => {
     if (preferredAudioPacketId === null) localStorage.removeItem(AUDIO_STORAGE_KEY);
     else localStorage.setItem(AUDIO_STORAGE_KEY, String(preferredAudioPacketId));
   } catch (_) { /* Keep track switching available without storage. */ }
-  const target = preferredAudioPacketId === null
-    ? [...knownAudioTracks.values()].find(
-        track => mseAudioTrackSupported(track) && track.audio?.mainComponent,
-      ) || [...knownAudioTracks.values()].find(mseAudioTrackSupported)
-    : knownAudioTracks.get(preferredAudioPacketId);
+  const target = preferredMseAudioTrack(knownAudioTracks, preferredAudioPacketId);
   if (target && activeAudioSwitch) {
     activeAudioSwitch(target.packetId).catch(error => {
       appendLog(`音声切替エラー ${error.message || error}`);

@@ -49,6 +49,7 @@ public:
               [this](DataUnit unit) { data_unit(std::move(unit)); },
               [this](SignallingMessage message) { signalling(std::move(message)); },
               [this](EventInfo info) { event_info(std::move(info)); },
+              [this](StreamEvent event) { stream_event(std::move(event)); },
               [this](ApplicationInfo info) { application(std::move(info)); },
               [this](DataTransmissionTable table) { data_transmission(std::move(table)); },
               [this](DataDirectoryTable table) { data_directory(std::move(table)); },
@@ -92,6 +93,7 @@ public:
         application_services_.clear();
         data_assets_.clear();
         events_.clear();
+        stream_events_.clear();
         applications_.clear();
         data_transmission_tables_.clear();
         data_directory_versions_.clear();
@@ -139,6 +141,7 @@ public:
         application_services_.clear();
         data_assets_.clear();
         events_.clear();
+        stream_events_.clear();
         applications_.clear();
         data_transmission_tables_.clear();
         data_directory_versions_.clear();
@@ -300,6 +303,23 @@ private:
         }
         events_[key] = info;
         sink_.onEventInfo(info);
+    }
+
+    void stream_event(StreamEvent event) {
+        if (selected_service_.has_value() && *selected_service_ != event.context_id) return;
+        if (!event.current_next) return;
+        const auto key = std::to_string(event.context_id) + ':' +
+            std::to_string(event.event_message_tag) + ':' +
+            std::to_string(event.data_event_id) + ':' +
+            std::to_string(event.message_group_id) + ':' +
+            std::to_string(event.raw_message_id);
+        const auto found = stream_events_.find(key);
+        if (found != stream_events_.end() &&
+            found->second.message_version == event.message_version) {
+            return;
+        }
+        stream_events_[key] = event;
+        sink_.onStreamEvent(event);
     }
 
     void application(ApplicationInfo info) {
@@ -541,6 +561,7 @@ private:
     std::unordered_map<std::string, ApplicationServiceInfo> application_services_;
     std::unordered_map<std::string, DataAssetInfo> data_assets_;
     std::unordered_map<std::string, EventInfo> events_;
+    std::unordered_map<std::string, StreamEvent> stream_events_;
     std::unordered_map<std::string, ApplicationInfo> applications_;
     std::unordered_map<std::string, DataTransmissionTable> data_transmission_tables_;
     std::unordered_map<std::string, std::uint8_t> data_directory_versions_;

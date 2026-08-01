@@ -96,14 +96,6 @@ h2 { font-size: 15px; }
   background: #080b09;
 }
 
-/* The browser fallback is an external media plane. It stays outside the
-   application iframe, so place it above the iframe only while a slot exists. */
-.broadcast-video-surface.broadcast-video-plane-visible { z-index: 2; }
-
-.broadcast-video-surface.broadcast-video-plane-visible.broadcast-background-hole {
-  z-index: 0;
-}
-
 .broadcast-media-plane {
   position: relative;
   width: 100%;
