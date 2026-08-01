@@ -58,6 +58,18 @@ public:
 
     void onService(const tlvdemux::ServiceInfo&) override {}
 
+    void onLayoutConfiguration(const tlvdemux::LayoutConfiguration&) override {
+        ++layout_callbacks_[static_cast<std::size_t>(phase_)];
+    }
+
+    void onApplication(const tlvdemux::ApplicationInfo&) override {
+        ++application_callbacks_[static_cast<std::size_t>(phase_)];
+    }
+
+    void onStreamEvent(const tlvdemux::StreamEvent&) override {
+        ++stream_event_callbacks_[static_cast<std::size_t>(phase_)];
+    }
+
     void onTrack(const tlvdemux::TrackInfo& track) override {
         tracks_[track.track_id] = track;
         if (!video_track_.has_value() && track.kind == tlvdemux::TrackKind::Video &&
@@ -105,6 +117,7 @@ public:
 
     void onError(const tlvdemux::Error& error) override {
         ++error_counts_[static_cast<unsigned>(error.code)];
+        if (!error.recoverable) ++fatal_errors_;
     }
 
     void beginSeek(const std::int64_t target_us, const std::int64_t expected_landing_us) {
@@ -169,6 +182,16 @@ public:
     const std::array<std::uint64_t, 64>& videoNalTypeCounts() const noexcept {
         return video_nal_type_counts_;
     }
+    std::uint64_t layoutCallbacks(const Phase phase) const noexcept {
+        return layout_callbacks_[static_cast<std::size_t>(phase)];
+    }
+    std::uint64_t applicationCallbacks(const Phase phase) const noexcept {
+        return application_callbacks_[static_cast<std::size_t>(phase)];
+    }
+    std::uint64_t streamEventCallbacks(const Phase phase) const noexcept {
+        return stream_event_callbacks_[static_cast<std::size_t>(phase)];
+    }
+    std::uint64_t fatalErrors() const noexcept { return fatal_errors_; }
 
     bool landed() const noexcept { return landed_; }
     bool firstVideoSeen() const noexcept { return first_video_seen_; }
@@ -202,6 +225,10 @@ private:
     std::vector<FrameStamp> frames_;
     std::unordered_map<unsigned, std::uint64_t> error_counts_;
     std::array<std::uint64_t, 64> video_nal_type_counts_{};
+    std::array<std::uint64_t, 2> layout_callbacks_{};
+    std::array<std::uint64_t, 2> application_callbacks_{};
+    std::array<std::uint64_t, 2> stream_event_callbacks_{};
+    std::uint64_t fatal_errors_ = 0;
     std::uint64_t access_unit_count_ = 0;
     std::uint64_t random_access_video_units_ = 0;
     std::uint64_t rejected_video_index_units_ = 0;
@@ -584,6 +611,9 @@ int main(int argc, char** argv) {
                   << " random-video-aus=" << sink.randomAccessVideoUnits()
                   << " rejected-video-index=" << sink.rejectedVideoIndexUnits()
                   << " access-units=" << sink.accessUnitCount()
+                  << " layouts=" << sink.layoutCallbacks(CocktailSink::Phase::Indexing)
+                  << " applications=" << sink.applicationCallbacks(CocktailSink::Phase::Indexing)
+                  << " stream-events=" << sink.streamEventCallbacks(CocktailSink::Phase::Indexing)
                   << " elapsed-ms=" << elapsed.count() << '\n';
         std::cerr << "video-nal-types=";
         bool first_nal_type = true;
@@ -654,6 +684,14 @@ int main(int argc, char** argv) {
             }
         }
         state.close();
+        std::cerr << "signalling-replay layouts="
+                  << sink.layoutCallbacks(CocktailSink::Phase::Seeking)
+                  << " applications="
+                  << sink.applicationCallbacks(CocktailSink::Phase::Seeking)
+                  << " stream-events="
+                  << sink.streamEventCallbacks(CocktailSink::Phase::Seeking)
+                  << " fatal-errors=" << sink.fatalErrors() << '\n';
+        if (sink.fatalErrors() != 0) ++failures;
         std::cerr << "cocktail cases=" << requested.size()
                   << " failures=" << failures
                   << " seed=" << options.seed << '\n';

@@ -18,9 +18,20 @@ enum class ApplicationCollectionState {
     Ready,
 };
 
+enum class ApplicationLifecycleState {
+    Unsupported,
+    AutostartPending,
+    AutostartReady,
+    Present,
+    Prefetching,
+    Prefetched,
+    Killed,
+};
+
 struct ApplicationState {
     ApplicationInfo application;
     ApplicationCollectionState state = ApplicationCollectionState::Discovered;
+    ApplicationLifecycleState lifecycle = ApplicationLifecycleState::Unsupported;
     std::size_t resource_count = 0;
     bool entry_ready = false;
 };

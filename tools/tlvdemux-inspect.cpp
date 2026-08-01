@@ -102,8 +102,37 @@ struct Inspector final : tlvdemux::Sink {
                           << " main=" << info.audio->main_component
                           << " sample-rate=" << info.audio->sample_rate;
             }
+            for (const auto& region : info.presentation_regions) {
+                std::cerr << " presentation=mpu:" << region.mpu_sequence_number
+                          << "@layout:" << static_cast<unsigned>(region.layout_number)
+                          << "/region:" << static_cast<unsigned>(region.region_number);
+            }
             std::cerr << '\n';
         }
+    }
+
+    void onLayoutConfiguration(const tlvdemux::LayoutConfiguration& info) override {
+        if (!list) return;
+        std::cerr << "layout context=" << info.context_id
+                  << " packet-id=0x" << std::hex << info.source_packet_id << std::dec
+                  << " version=" << static_cast<unsigned>(info.version);
+        if (info.background_color_rgb.has_value()) {
+            std::cerr << " background-rgb=0x" << std::hex
+                      << *info.background_color_rgb << std::dec;
+        }
+        for (const auto& device : info.devices) {
+            std::cerr << " device=" << static_cast<unsigned>(device.device_id)
+                      << "@layout:" << static_cast<unsigned>(device.layout_number);
+            for (const auto& region : device.regions) {
+                std::cerr << " region=" << static_cast<unsigned>(region.region_number)
+                          << '[' << static_cast<unsigned>(region.left_top_pos_x)
+                          << ',' << static_cast<unsigned>(region.left_top_pos_y)
+                          << '-' << static_cast<unsigned>(region.right_down_pos_x)
+                          << ',' << static_cast<unsigned>(region.right_down_pos_y)
+                          << "]@layer:" << static_cast<unsigned>(region.layer_order);
+            }
+        }
+        std::cerr << '\n';
     }
 
     void onApplicationService(const tlvdemux::ApplicationServiceInfo& info) override {

@@ -1,6 +1,6 @@
 # tlvdemux
 
-`tlvdemux` is a C++17 incremental demultiplexer for
+`tlvdemux` is a C++20 incremental demultiplexer for
 already-descrambled ARIB MMT/TLV streams. It is designed to emit player-ready
 HEVC, AAC-LATM/LOAS and ARIB STD-B62 TTML access units without converting the
 stream to MPEG-TS or exposing FFmpeg ABI types.
@@ -27,7 +27,7 @@ Shared-library builds are enabled by default. Linux produces
 `libtlvdemux.so.0` (with the versioned implementation file), while macOS
 produces the corresponding `libtlvdemux.0.dylib`. Use
 `-DBUILD_SHARED_LIBS=OFF` when a static `libtlvdemux.a` is preferred.
-The exported interface is a C++17 ABI, so dynamically linked consumers should
+The exported interface is a C++20 ABI, so dynamically linked consumers should
 use a compatible compiler and C++ standard library.
 
 When embedding the project with `add_subdirectory()`, the diagnostic executable
@@ -222,6 +222,33 @@ TypeScript declarations for the module, callbacks, events, duration probe and
 recording index are included. The npm package contains the generated wrapper
 with its WebAssembly binary embedded, so consumers do not need Emscripten and
 do not make a separate `.wasm` request.
+
+### iOS and iPadOS Safari
+
+The WASM demuxer itself runs on current iOS Safari, including the `BigInt`
+values used by the public API. Player integrations must not assume that the
+standard `MediaSource` constructor exists, however: iOS exposes the compatible
+`ManagedMediaSource` API instead. Select the constructor once and use it for
+both capability checks and construction:
+
+```js
+const BrowserMediaSource = globalThis.ManagedMediaSource || globalThis.MediaSource;
+if (!BrowserMediaSource?.isTypeSupported(mime)) throw new Error(`Unsupported: ${mime}`);
+const mediaSource = new BrowserMediaSource();
+```
+
+Register the `sourceopen` listener before assigning the object URL to the video
+element, then attach it and begin playback. `demo/demo.js` implements this
+path. `demo/ios-compat.html` is a small feature and end-to-end diagnostic page;
+it reports WASM, HEVC/AAC, MSE/MMS and SourceBuffer results separately.
+
+Do not use the iOS Simulator as the final ManagedMediaSource playback verdict.
+WebKit bug 266764 documents that the simulator can expose the API but never
+open the source. Confirm the SourceBuffer stage on physical iPhone/iPad
+hardware. See also WebKit's ManagedMediaSource integration example:
+
+- https://webkit.org/blog/15036/how-to-use-media-source-extensions-with-airplay/
+- https://bugs.webkit.org/show_bug.cgi?id=266764
 
 ### Build the npm package
 

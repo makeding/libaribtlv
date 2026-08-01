@@ -60,6 +60,7 @@ MmtpParser::MmtpParser(const std::uint32_t context_id, const Limits& limits,
                        PackageCallback on_package, TrackCallback on_track,
                        AccessUnitCallback on_access_unit,
                        ApplicationServiceCallback on_application_service,
+                       LayoutCallback on_layout,
                        DataAssetCallback on_data_asset,
                        DataUnitCallback on_data_unit,
                        SignallingCallback on_signalling,
@@ -74,6 +75,7 @@ MmtpParser::MmtpParser(const std::uint32_t context_id, const Limits& limits,
     : context_id_(context_id), limits_(limits), on_package_(std::move(on_package)),
       on_track_(std::move(on_track)), on_access_unit_(std::move(on_access_unit)),
       on_application_service_(std::move(on_application_service)),
+      on_layout_(std::move(on_layout)),
       on_data_asset_(std::move(on_data_asset)), on_data_unit_(std::move(on_data_unit)),
       on_signalling_(std::move(on_signalling)),
       on_event_(std::move(on_event)),
@@ -361,6 +363,20 @@ bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata) {
                 if (!values.read_u32(sequence) || !values.read_view(8, ntp)) return false;
                 metadata.timestamps[sequence] = TimestampMapping{read_be64(ntp)};
             }
+        } else if (tag == 0x8003) {
+            ByteReader values(payload, length);
+            while (values.remaining() != 0) {
+                MpuPresentationRegion region;
+                std::uint8_t reserved_length = 0;
+                if (!values.read_u32(region.mpu_sequence_number) ||
+                    !values.read_u8(region.layout_number) ||
+                    !values.read_u8(region.region_number) ||
+                    !values.read_u8(reserved_length) ||
+                    !values.skip(reserved_length)) {
+                    return false;
+                }
+                metadata.presentation_regions.push_back(region);
+            }
         } else if (tag == 0x8011 && length >= 2) {
             metadata.component_tag = read_be16(payload);
         } else if (tag == 0x8010 && length >= 8) {
@@ -562,6 +578,9 @@ bool parse_application_descriptors(ByteReader& reader, ApplicationInfo& applicat
         } else if (tag == 0x802a && length >= 3) {
             const auto protocol_id = read_be16(payload);
             if (protocol_id != 0x0003 && protocol_id != 0x0005) continue;
+            ApplicationInfo::Transport transport;
+            transport.protocol_id = protocol_id;
+            transport.label = payload[2];
             ByteReader selector(payload + 3, length - 3);
             while (selector.remaining() != 0) {
                 std::uint8_t base_length = 0;
@@ -573,7 +592,7 @@ bool parse_application_descriptors(ByteReader& reader, ApplicationInfo& applicat
                     return false;
                 }
                 const std::string base_url(reinterpret_cast<const char*>(base.data()), base.size());
-                if (extension_count == 0) application.transport_urls.push_back(base_url);
+                if (extension_count == 0) transport.urls.push_back(base_url);
                 for (std::uint16_t index = 0; index < extension_count; ++index) {
                     std::uint8_t extension_length = 0;
                     std::vector<std::uint8_t> extension;
@@ -581,12 +600,30 @@ bool parse_application_descriptors(ByteReader& reader, ApplicationInfo& applicat
                         !selector.read_bytes(extension_length, extension)) {
                         return false;
                     }
-                    application.transport_urls.push_back(
+                    transport.urls.push_back(
                         base_url + std::string(reinterpret_cast<const char*>(extension.data()),
                                                extension.size()));
                 }
             }
+            application.transports.erase(
+                std::remove_if(application.transports.begin(), application.transports.end(),
+                               [label = transport.label](const auto& existing) {
+                                   return existing.label == label;
+                               }),
+                application.transports.end());
+            application.transports.push_back(std::move(transport));
         }
+    }
+    application.transport_urls.clear();
+    for (const auto& transport : application.transports) {
+        if (!application.transport_protocol_labels.empty() &&
+            std::find(application.transport_protocol_labels.begin(),
+                      application.transport_protocol_labels.end(), transport.label) ==
+                application.transport_protocol_labels.end()) {
+            continue;
+        }
+        application.transport_urls.insert(application.transport_urls.end(),
+                                          transport.urls.begin(), transport.urls.end());
     }
     return true;
 }
@@ -839,7 +876,6 @@ bool MmtpParser::parse_data_asset_management_table(const DataTransmissionTable& 
 bool MmtpParser::parse_mh_ait(const std::uint8_t* data, const std::size_t size,
                               const std::uint16_t packet_id,
                               const std::uint64_t input_offset) {
-    (void)input_offset;
     if (size < 12 || data[0] != 0x9c) return false;
     const auto declared_size = 3 + static_cast<std::size_t>(read_be16(data + 1) & 0x0fffU);
     if (declared_size != size) return false;
@@ -854,10 +890,12 @@ bool MmtpParser::parse_mh_ait(const std::uint8_t* data, const std::size_t size,
         !body.read_u16(common_length_field)) {
         return false;
     }
-    (void)section_number;
-    (void)last_section_number;
     const auto common_length = static_cast<std::size_t>(common_length_field & 0x0fffU);
-    if (!body.skip(common_length)) return false;
+    const std::uint8_t* common_descriptors = nullptr;
+    if (!body.read_view(common_length, common_descriptors)) return false;
+    ApplicationInfo common;
+    ByteReader common_reader(common_descriptors, common_length);
+    if (!parse_application_descriptors(common_reader, common)) return false;
     std::uint16_t loop_length_field = 0;
     if (!body.read_u16(loop_length_field)) return false;
     const auto loop_length = static_cast<std::size_t>(loop_length_field & 0x0fffU);
@@ -867,11 +905,15 @@ bool MmtpParser::parse_mh_ait(const std::uint8_t* data, const std::size_t size,
     ByteReader applications(loop_data, loop_length);
     while (applications.remaining() != 0) {
         if (applications.remaining() < 9) return false;
-        ApplicationInfo application;
+        ApplicationInfo application = common;
         application.context_id = context_id_;
         application.source_packet_id = packet_id;
         application.application_type = application_type;
         application.version = static_cast<std::uint8_t>((version_flags >> 1U) & 0x1fU);
+        application.current_next = (version_flags & 0x01U) != 0;
+        application.section_number = section_number;
+        application.last_section_number = last_section_number;
+        application.input_offset = input_offset;
         std::uint16_t descriptor_length_field = 0;
         if (!applications.read_u16(application.organization_id) ||
             !applications.read_u32(application.application_id) ||
@@ -885,52 +927,7 @@ bool MmtpParser::parse_mh_ait(const std::uint8_t* data, const std::size_t size,
         if (!applications.read_view(descriptor_length, descriptors)) return false;
         ByteReader descriptor_reader(descriptors, descriptor_length);
         if (!parse_application_descriptors(descriptor_reader, application)) return false;
-        on_application_(std::move(application));
-    }
-    return true;
-}
-
-bool MmtpParser::parse_tables(const std::uint8_t* data, const std::size_t size,
-                              const std::uint16_t packet_id,
-                              const std::uint64_t input_offset) {
-    ByteReader tables(data, size);
-    while (tables.remaining() != 0) {
-        std::uint8_t table_id = 0;
-        if (!tables.peek_u8(table_id)) return false;
-        if (table_id == 0x20 || table_id == 0x80) {
-            if (tables.remaining() < 4) return false;
-            const auto table_size = 4 + static_cast<std::size_t>(read_be16(tables.current() + 2));
-            const std::uint8_t* table = nullptr;
-            if (!tables.read_view(table_size, table)) return false;
-            const bool valid = table_id == 0x20
-                ? parse_mpt(table, table_size, input_offset)
-                : parse_package_list(table, table_size, input_offset);
-            if (!valid) return false;
-        } else if (table_id >= 0x81) {
-            if (tables.remaining() < 3) return false;
-            const auto section_size = 3 + static_cast<std::size_t>(read_be16(tables.current() + 1) & 0x0fffU);
-            const std::uint8_t* section = nullptr;
-            if (!tables.read_view(section_size, section)) return false;
-            if (table_id >= 0x8b && table_id <= 0x9b &&
-                !parse_mh_eit(section, section_size, packet_id, input_offset)) {
-                return false;
-            }
-            if (table_id == 0x9c &&
-                !parse_mh_ait(section, section_size, packet_id, input_offset)) {
-                return false;
-            }
-            if (table_id == 0xa6 &&
-                !parse_emt(section, section_size, packet_id, input_offset)) {
-                return false;
-            }
-        } else {
-            // ARIB MMT tables in PA/M2 use a one-byte ID/version followed by a
-            // 16-bit payload length. This lets v1 skip unneeded tables without
-            // interpreting their contents.
-            if (tables.remaining() < 4) return false;
-            const auto table_size = 4 + static_cast<std::size_t>(read_be16(tables.current() + 2));
-            if (!tables.skip(table_size)) return false;
-        }
+        if (application.current_next) on_application_(std::move(application));
     }
     return true;
 }
@@ -986,83 +983,6 @@ bool MmtpParser::parse_mh_eit(const std::uint8_t* data, const std::size_t size,
         on_event_(std::move(event));
     }
     return offset == section_end;
-}
-
-bool MmtpParser::parse_emt(const std::uint8_t* data, const std::size_t size,
-                           const std::uint16_t packet_id,
-                           const std::uint64_t input_offset) {
-    if (size < 12 || data[0] != 0xa6) return false;
-    const auto section_length = static_cast<std::size_t>(read_be16(data + 1) & 0x0fffU);
-    if (section_length + 3 != size || section_length < 9) return false;
-
-    const auto section_end = size - 4;
-    const auto data_event_and_group = read_be16(data + 3);
-    const auto data_event_id = static_cast<std::uint8_t>(data_event_and_group >> 12U);
-    const auto table_group_id = static_cast<std::uint16_t>(data_event_and_group & 0x0fffU);
-    const bool current_next = (data[5] & 0x01U) != 0;
-    const auto tag = event_message_tags_.find(packet_id);
-    const auto event_message_tag = tag == event_message_tags_.end()
-        ? std::uint8_t{0} : tag->second;
-
-    struct DescriptorView {
-        std::uint16_t tag = 0;
-        const std::uint8_t* payload = nullptr;
-        std::size_t length = 0;
-    };
-    std::vector<DescriptorView> descriptor_views;
-    ByteReader descriptors(data + 8, section_end - 8);
-    while (descriptors.remaining() != 0) {
-        std::uint16_t descriptor_tag = 0;
-        std::uint32_t descriptor_size = 0;
-        if (!descriptors.read_u16(descriptor_tag) ||
-            !descriptor_length(descriptors, descriptor_tag, descriptor_size) ||
-            descriptor_size > descriptors.remaining()) {
-            return false;
-        }
-        const std::uint8_t* payload = nullptr;
-        if (!descriptors.read_view(descriptor_size, payload)) return false;
-        descriptor_views.push_back(
-            DescriptorView{descriptor_tag, payload, static_cast<std::size_t>(descriptor_size)});
-    }
-
-    std::optional<std::uint64_t> utc_reference;
-    std::optional<std::uint64_t> npt_reference;
-    for (const auto& descriptor : descriptor_views) {
-        if (descriptor.tag == 0x8021 && descriptor.length >= 17) {
-            utc_reference = read_be64(descriptor.payload);
-            npt_reference = read_be64(descriptor.payload + 8);
-        }
-    }
-
-    for (const auto& descriptor : descriptor_views) {
-        if (descriptor.tag != 0xf003) continue;
-        if (descriptor.length < 14) return false;
-        StreamEvent event;
-        event.context_id = context_id_;
-        event.source_packet_id = packet_id;
-        event.event_message_tag = event_message_tag;
-        event.data_event_id = data_event_id;
-        event.message_group_id = static_cast<std::uint16_t>(
-            read_be16(descriptor.payload) >> 4U);
-        // All event-message descriptors in one EMT are required to use its group.
-        if (event.message_group_id != table_group_id) return false;
-        event.current_next = current_next;
-        event.section_number = data[6];
-        event.last_section_number = data[7];
-        event.time_mode = descriptor.payload[2];
-        event.time_value = read_be64(descriptor.payload + 3);
-        event.utc_reference = utc_reference;
-        event.npt_reference = npt_reference;
-        event.message_type = descriptor.payload[11];
-        event.raw_message_id = read_be16(descriptor.payload + 12);
-        event.message_id = static_cast<std::uint8_t>(event.raw_message_id >> 8U);
-        event.message_version = static_cast<std::uint8_t>(event.raw_message_id);
-        event.private_data.assign(descriptor.payload + 14,
-                                  descriptor.payload + descriptor.length);
-        event.input_offset = input_offset;
-        on_stream_event_(std::move(event));
-    }
-    return true;
 }
 
 bool MmtpParser::parse_mpt(const std::uint8_t* data, const std::size_t size,
@@ -1144,6 +1064,7 @@ bool MmtpParser::parse_mpt(const std::uint8_t* data, const std::size_t size,
         track.timescale = metadata.timescale;
         track.audio = metadata.audio;
         track.subtitle = metadata.subtitle;
+        track.presentation_regions = metadata.presentation_regions;
 
         bool supported = true;
         if (asset_type == "hev1") {
@@ -1168,6 +1089,7 @@ bool MmtpParser::parse_mpt(const std::uint8_t* data, const std::size_t size,
             info.asset_id = std::move(track.asset_id);
             info.asset_type = asset_type;
             info.component_tag = metadata.component_tag;
+            info.presentation_regions = metadata.presentation_regions;
             auto state_entry = data_assets_.find(*packet_id);
             if (state_entry == data_assets_.end()) {
                 if (!acquire_state_()) {

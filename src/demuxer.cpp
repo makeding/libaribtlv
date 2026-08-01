@@ -45,6 +45,7 @@ public:
               [this](TrackInfo info) { return track(std::move(info)); },
               [this](detail::TimedAccessUnit unit) { access_unit(std::move(unit)); },
               [this](ApplicationServiceInfo info) { application_service(std::move(info)); },
+              [this](LayoutConfiguration info) { layout(std::move(info)); },
               [this](DataAssetInfo info) { data_asset(std::move(info)); },
               [this](DataUnit unit) { data_unit(std::move(unit)); },
               [this](SignallingMessage message) { signalling(std::move(message)); },
@@ -91,6 +92,7 @@ public:
         services_.clear();
         current_tracks_.clear();
         application_services_.clear();
+        layouts_.clear();
         data_assets_.clear();
         events_.clear();
         stream_events_.clear();
@@ -207,7 +209,8 @@ private:
                left.kind == right.kind && left.codec == right.codec &&
                left.language == right.language && left.component_tag == right.component_tag &&
                left.timescale == right.timescale && same_audio(left.audio, right.audio) &&
-               same_subtitle(left.subtitle, right.subtitle);
+               same_subtitle(left.subtitle, right.subtitle) &&
+               left.presentation_regions == right.presentation_regions;
     }
 
     void service(ServiceInfo info) {
@@ -275,11 +278,26 @@ private:
         key.append(reinterpret_cast<const char*>(info.asset_id.data()), info.asset_id.size());
         const auto found = data_assets_.find(key);
         if (found != data_assets_.end() && found->second.asset_type == info.asset_type &&
-            found->second.component_tag == info.component_tag) {
+            found->second.component_tag == info.component_tag &&
+            found->second.presentation_regions == info.presentation_regions) {
             return;
         }
         data_assets_[key] = info;
         sink_.onDataAsset(info);
+    }
+
+    void layout(LayoutConfiguration info) {
+        if (selected_service_.has_value() && *selected_service_ != info.context_id) return;
+        const auto key = std::to_string(info.context_id) + ':' +
+            std::to_string(info.source_packet_id);
+        const auto found = layouts_.find(key);
+        if (found != layouts_.end() && found->second.version == info.version &&
+            found->second.devices == info.devices &&
+            found->second.background_color_rgb == info.background_color_rgb) {
+            return;
+        }
+        layouts_[key] = info;
+        sink_.onLayoutConfiguration(info);
     }
 
     void data_unit(DataUnit unit) {
@@ -334,6 +352,9 @@ private:
         const auto found = applications_.find(key);
         if (found != applications_.end() && found->second.version == info.version &&
             found->second.control_code == info.control_code &&
+            found->second.current_next == info.current_next &&
+            found->second.section_number == info.section_number &&
+            found->second.last_section_number == info.last_section_number &&
             found->second.application_descriptor_present == info.application_descriptor_present &&
             found->second.profiles == info.profiles &&
             found->second.service_bound == info.service_bound &&
@@ -341,6 +362,7 @@ private:
             found->second.present_application_priority == info.present_application_priority &&
             found->second.application_priority == info.application_priority &&
             found->second.transport_protocol_labels == info.transport_protocol_labels &&
+            found->second.transports == info.transports &&
             found->second.entry_path == info.entry_path &&
             found->second.transport_urls == info.transport_urls) {
             return;
@@ -573,6 +595,7 @@ private:
     std::unordered_map<std::string, std::uint64_t> track_ids_;
     std::unordered_map<std::uint64_t, TrackInfo> current_tracks_;
     std::unordered_map<std::string, ApplicationServiceInfo> application_services_;
+    std::unordered_map<std::string, LayoutConfiguration> layouts_;
     std::unordered_map<std::string, DataAssetInfo> data_assets_;
     std::unordered_map<std::string, EventInfo> events_;
     std::unordered_map<std::string, StreamEvent> stream_events_;

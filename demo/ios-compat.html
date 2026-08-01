@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>tlvdemux Safari compatibility</title>
+  <style>
+    body { font: 16px/1.5 ui-monospace, monospace; padding: 16px; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <h1>tlvdemux compat</h1>
+  <div id="video-host"></div>
+  <pre id="result">loading</pre>
+  <script src="../build-wasm/tlvdemux.js"></script>
+  <script>
+    const lines = [];
+    const add = (name, value) => lines.push(`${name}: ${String(value)}`);
+    const render = () => { document.getElementById('result').textContent = lines.join('\n'); };
+    const MediaSourceClass = globalThis.ManagedMediaSource || globalThis.MediaSource;
+    add('secureContext', globalThis.isSecureContext);
+    add('webAssembly', typeof WebAssembly);
+    add('bigInt', typeof BigInt);
+    add('mediaSource', typeof globalThis.MediaSource);
+    add('managedMediaSource', typeof globalThis.ManagedMediaSource);
+    add('serviceWorker', 'serviceWorker' in navigator);
+    add('hevc', MediaSourceClass?.isTypeSupported(
+      'video/mp4; codecs="hvc1.2.4.L123.B0"') ?? false);
+    add('aac', MediaSourceClass?.isTypeSupported(
+      'audio/mp4; codecs="mp4a.40.2"') ?? false);
+    add('userAgent', navigator.userAgent);
+    render();
+    if (typeof createTlvDemuxModule !== 'function') {
+      add('tlvdemux', 'wrapper-missing');
+      render();
+    } else {
+      createTlvDemuxModule().then(async module => {
+        add('tlvdemux', typeof module.TlvDemuxer === 'function' ? 'ready' : 'class-missing');
+        render();
+        if (!MediaSourceClass) return;
+        const source = new MediaSourceClass();
+        const video = document.createElement('video');
+        video.controls = true;
+        video.autoplay = true;
+        video.muted = true;
+        video.playsInline = true;
+        video.style.cssText = 'width: 100%; min-height: 180px';
+        for (const name of ['sourceopen', 'sourceclose', 'startstreaming', 'endstreaming']) {
+          source.addEventListener(name, () => {
+            add(name, source.readyState);
+            render();
+          });
+        }
+        const opened = source.readyState === 'open'
+          ? Promise.resolve()
+          : Promise.race([
+              new Promise(resolve => source.addEventListener('sourceopen', resolve, { once: true })),
+              new Promise((_, reject) => setTimeout(
+                () => reject(new Error(`sourceopen timeout (${source.readyState})`)), 5000)),
+            ]);
+        const mediaElementSource = document.createElement('source');
+        mediaElementSource.type = 'video/mp4';
+        mediaElementSource.src = URL.createObjectURL(source);
+        video.append(mediaElementSource);
+        document.getElementById('video-host').append(video);
+        video.play().then(
+          () => { add('play', 'resolved'); render(); },
+          error => { add('play', `${error.name}: ${error.message}`); render(); },
+        );
+        setTimeout(() => {
+          add('after2s', `source=${source.readyState} media=${video.readyState}/${video.networkState}`);
+          render();
+        }, 2000);
+        await opened;
+        add('sourceOpen', source.readyState);
+        const queues = new Map();
+        const enqueue = (type, mime, data) => {
+          let item = queues.get(type);
+          if (!item) {
+            const buffer = source.addSourceBuffer(mime);
+            item = { buffer, mime, data: [] };
+            buffer.addEventListener('updateend', () => {
+              if (!buffer.updating && item.data.length) buffer.appendBuffer(item.data.shift());
+            });
+            queues.set(type, item);
+          }
+          item.data.push(data);
+          if (!item.buffer.updating) item.buffer.appendBuffer(item.data.shift());
+        };
+        let demuxer;
+        demuxer = new module.TlvDemuxer({
+          mseMaxAudioChannels: 6,
+          onTrack(track) {
+            if (track.kind === 'video' && !queues.has('video-track')) {
+              queues.set('video-track', true);
+              demuxer.selectTrack('video', track.trackId);
+            } else if (track.kind === 'audio' && !queues.has('audio-track') &&
+                       (track.audio?.channels ?? 0) <= 6) {
+              queues.set('audio-track', true);
+              demuxer.selectTrack('audio', track.trackId);
+            }
+          },
+          onMseInit(init) { enqueue(init.type, init.mime, init.data); },
+          onMseSegment(segment) {
+            const item = queues.get(segment.type);
+            if (item) enqueue(segment.type, item.mime, segment.data);
+          },
+          onError(error) {
+            if (!error.recoverable) add('demuxError', error.message);
+          },
+        });
+        const response = await fetch('bsp4k-lag-1.mmts', {
+          headers: { Range: 'bytes=0-33554431' },
+        });
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        demuxer.push(bytes);
+        demuxer.flush();
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        add('sampleBytes', bytes.byteLength);
+        add('videoBuffered', queues.get('video')?.buffer.buffered.length ?? 0);
+        add('audioBuffered', queues.get('audio')?.buffer.buffered.length ?? 0);
+        add('mediaError', video.error?.message ?? 'none');
+        demuxer.delete();
+        render();
+      }, error => {
+        add('tlvdemux', `failed ${error?.stack || error}`);
+        render();
+      }).catch(error => {
+        add('msePlayback', `failed ${error?.stack || error}`);
+        render();
+      });
+    }
+  </script>
+</body>
+</html>

@@ -20,6 +20,7 @@ add_library(tlvdemux
     src/demuxer.cpp
     src/duration_probe.cpp
     src/mmtp_parser.cpp
+    src/mmtp_signalling_tables.cpp
     wasm/mse_remuxer.cpp
     src/playback.cpp
     src/recording.cpp
@@ -28,12 +29,13 @@ add_library(tlvdemux
 add_library(tlvdemux::tlvdemux ALIAS tlvdemux)
 
 set_target_properties(tlvdemux PROPERTIES
+    CXX_EXTENSIONS OFF
     OUTPUT_NAME tlvdemux
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR}
 )
 
-target_compile_features(tlvdemux PUBLIC cxx_std_17)
+target_compile_features(tlvdemux PUBLIC cxx_std_20)
 if(EMSCRIPTEN)
     target_compile_options(tlvdemux PRIVATE "-sUSE_ZLIB=1")
     target_link_options(tlvdemux PUBLIC "-sUSE_ZLIB=1")

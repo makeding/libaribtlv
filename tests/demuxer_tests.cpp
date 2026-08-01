@@ -15,6 +15,7 @@ struct TestSink final : tlvdemux::Sink {
     std::vector<tlvdemux::TrackInfo> tracks;
     std::vector<tlvdemux::AccessUnit> access_units;
     std::vector<tlvdemux::ApplicationServiceInfo> application_services;
+    std::vector<tlvdemux::LayoutConfiguration> layouts;
     std::vector<tlvdemux::DataAssetInfo> data_assets;
     std::vector<tlvdemux::SignallingMessage> signalling_messages;
     std::vector<tlvdemux::EventInfo> events;
@@ -29,6 +30,9 @@ struct TestSink final : tlvdemux::Sink {
     }
     void onApplicationService(const tlvdemux::ApplicationServiceInfo& value) override {
         application_services.push_back(value);
+    }
+    void onLayoutConfiguration(const tlvdemux::LayoutConfiguration& value) override {
+        layouts.push_back(value);
     }
     void onDataAsset(const tlvdemux::DataAssetInfo& value) override {
         data_assets.push_back(value);
@@ -271,6 +275,21 @@ void asset(std::vector<std::uint8_t>& body, const std::uint16_t packet_id,
     body.insert(body.end(), descriptors.begin(), descriptors.end());
 }
 
+std::vector<std::uint8_t> layout_configuration_table() {
+    std::vector<std::uint8_t> body{
+        1,       // number_of_loop
+        2, 0, 2, // layout 2, main device, two regions
+        0, 0, 0, 100, 100, 0,
+        1, 10, 20, 90, 80, 3,
+    };
+    descriptor(body, 0x8abc, {0xde, 0xad});
+    descriptor(body, 0x8002, {0x12, 0x34, 0x56});
+    std::vector<std::uint8_t> table{0x81, 7};
+    append_u16(table, body.size());
+    table.insert(table.end(), body.begin(), body.end());
+    return table;
+}
+
 std::vector<std::uint8_t> discovery_message() {
     std::vector<std::uint8_t> program_descriptors;
     descriptor(program_descriptors, 0x8034,
@@ -281,6 +300,9 @@ std::vector<std::uint8_t> discovery_message() {
     descriptor(video_descriptors, 0x8011, {0x00, 0x00});
     descriptor(video_descriptors, 0x8abc, {0xde, 0xad, 0xbe});
     descriptor(video_descriptors, 0x8010, {0, 0, 0, 0, 0, 'j', 'p', 'n'});
+    descriptor(video_descriptors, 0x8003,
+               {0, 0, 0, 1, 2, 1, 0,
+                0, 0, 0, 2, 3, 4, 2, 0xaa, 0xbb});
     timing_descriptors(video_descriptors, 1, 180000);
 
     std::vector<std::uint8_t> audio_descriptors;
@@ -298,6 +320,7 @@ std::vector<std::uint8_t> discovery_message() {
 
     std::vector<std::uint8_t> application_descriptors;
     descriptor(application_descriptors, 0x8011, {0x12, 0x40});
+    descriptor(application_descriptors, 0x8003, {0, 0, 0, 9, 2, 1, 0});
 
     std::vector<std::uint8_t> mpt_body{0xfc, 2, 0x00, 0x65};
     append_u16(mpt_body, program_descriptors.size());
@@ -311,9 +334,11 @@ std::vector<std::uint8_t> discovery_message() {
     append_u16(mpt, mpt_body.size());
     mpt.insert(mpt.end(), mpt_body.begin(), mpt_body.end());
 
+    const auto lct = layout_configuration_table();
     std::vector<std::uint8_t> pa{0x00, 0x00, 0x00};
-    append_u32(pa, 1 + mpt.size());
+    append_u32(pa, 1 + lct.size() + mpt.size());
     pa.push_back(0);
+    pa.insert(pa.end(), lct.begin(), lct.end());
     pa.insert(pa.end(), mpt.begin(), mpt.end());
     return pa;
 }
@@ -384,12 +409,19 @@ std::vector<std::uint8_t> application_control_message() {
     descriptor(descriptors, 0x8029,
                {0x05, 0x00, 0x01, 0x01, 0x02, 0x03,
                 0xe1, 0x7f, 0x05});
-    std::vector<std::uint8_t> transport{0x00, 0x05, 0x01, 0x05};
-    transport.insert(transport.end(), {'/', 'a', 'p', 'p', '/'});
-    transport.push_back(0);
-    descriptor(descriptors, 0x802a, transport);
     descriptor(descriptors, 0x802b,
                {'i', 'n', 'd', 'e', 'x', '.', 'h', 't', 'm', 'l'});
+
+    std::vector<std::uint8_t> common_descriptors;
+    std::vector<std::uint8_t> transport{0x00, 0x05, 0x05, 0x05};
+    transport.insert(transport.end(), {'/', 'a', 'p', 'p', '/'});
+    transport.push_back(0);
+    descriptor(common_descriptors, 0x802a, transport);
+    std::vector<std::uint8_t> unreferenced_transport{0x00, 0x05, 0x06, 0x07};
+    unreferenced_transport.insert(unreferenced_transport.end(),
+                                  {'/', 'i', 'g', 'n', 'o', 'r', 'e'});
+    unreferenced_transport.push_back(0);
+    descriptor(common_descriptors, 0x802a, unreferenced_transport);
 
     std::vector<std::uint8_t> applications;
     append_u16(applications, 0x1234);
@@ -403,7 +435,8 @@ std::vector<std::uint8_t> application_control_message() {
     section.push_back(0xc7);
     section.push_back(0);
     section.push_back(0);
-    append_u16(section, 0xf000);
+    append_u16(section, 0xf000U | common_descriptors.size());
+    section.insert(section.end(), common_descriptors.begin(), common_descriptors.end());
     append_u16(section, 0xf000U | applications.size());
     section.insert(section.end(), applications.begin(), applications.end());
     append_u32(section, 0);
@@ -702,6 +735,22 @@ void test_track_discovery_and_deduplication() {
     demuxer.push(data.data(), data.size());
     demuxer.flush();
     check(sink.tracks.size() == 3, "MPT did not discover exactly three supported tracks");
+    check(sink.layouts.size() == 1 && sink.layouts[0].context_id == 1 &&
+              sink.layouts[0].source_packet_id == 0xff02 &&
+              sink.layouts[0].version == 7 &&
+              sink.layouts[0].background_color_rgb ==
+                  std::optional<std::uint32_t>{0x123456} &&
+              sink.layouts[0].devices.size() == 1 &&
+              sink.layouts[0].devices[0].layout_number == 2 &&
+              sink.layouts[0].devices[0].device_id == 0 &&
+              sink.layouts[0].devices[0].regions.size() == 2 &&
+              sink.layouts[0].devices[0].regions[1].region_number == 1 &&
+              sink.layouts[0].devices[0].regions[1].left_top_pos_x == 10 &&
+              sink.layouts[0].devices[0].regions[1].left_top_pos_y == 20 &&
+              sink.layouts[0].devices[0].regions[1].right_down_pos_x == 90 &&
+              sink.layouts[0].devices[0].regions[1].right_down_pos_y == 80 &&
+              sink.layouts[0].devices[0].regions[1].layer_order == 3,
+          "LCT layout regions or background color were not exposed");
     check(sink.application_services.size() == 1 &&
               sink.application_services[0].application_format == 1 &&
               sink.application_services[0].document_resolution == 1 &&
@@ -717,7 +766,9 @@ void test_track_discovery_and_deduplication() {
     check(sink.data_assets.size() == 1 &&
               sink.data_assets[0].packet_id == 0xf340 &&
               sink.data_assets[0].asset_type == "aapp" &&
-              sink.data_assets[0].component_tag == 0x1240,
+              sink.data_assets[0].component_tag == 0x1240 &&
+              sink.data_assets[0].presentation_regions ==
+                  std::vector<tlvdemux::MpuPresentationRegion>{{9, 2, 1}},
           "MMT application data asset was not exposed");
     check(sink.signalling_messages.size() == 1 &&
               sink.signalling_messages[0].message_id == 0x0000 &&
@@ -725,6 +776,9 @@ void test_track_discovery_and_deduplication() {
           "completed MMTP signalling message was not exposed");
     check(sink.tracks[0].codec == tlvdemux::Codec::Hevc && sink.tracks[0].timescale == 180000,
           "HEVC metadata was not parsed from MPT descriptors");
+    check(sink.tracks[0].presentation_regions ==
+              std::vector<tlvdemux::MpuPresentationRegion>{{1, 2, 1}, {2, 3, 4}},
+          "MPU presentation-region descriptor was not exposed on the track");
     check(sink.tracks[1].codec == tlvdemux::Codec::AacLatm && sink.tracks[1].language == "jpn",
           "AAC-LATM metadata was not parsed from MPT descriptors");
     check(sink.tracks[1].audio.has_value() &&
@@ -753,7 +807,8 @@ void test_track_discovery_and_deduplication() {
     demuxer.reset();
     demuxer.push(data.data(), data.size());
     demuxer.flush();
-    check(sink.tracks.size() == 6 && sink.tracks[3].track_id == stable_id,
+    check(sink.tracks.size() == 6 && sink.tracks[3].track_id == stable_id &&
+              sink.layouts.size() == 2,
           "reset changed a track's Demuxer-lifetime stable identity");
 }
 
@@ -772,6 +827,9 @@ void test_application_and_data_transmission_signalling() {
               sink.applications[0].application_id == 0x01020304 &&
               sink.applications[0].control_code == 0x01 &&
               sink.applications[0].version == 3 &&
+              sink.applications[0].current_next &&
+              sink.applications[0].section_number == 0 &&
+              sink.applications[0].last_section_number == 0 &&
               sink.applications[0].application_descriptor_present &&
               sink.applications[0].profiles.size() == 1 &&
               sink.applications[0].profiles[0].application_profile == 0x0001 &&
@@ -785,6 +843,8 @@ void test_application_and_data_transmission_signalling() {
               sink.applications[0].transport_protocol_labels ==
                   std::vector<std::uint8_t>{0x05} &&
               sink.applications[0].entry_path == "index.html" &&
+              sink.applications[0].transports.size() == 2 &&
+              sink.applications[0].transports[0].label == 0x05 &&
               sink.applications[0].transport_urls.size() == 1 &&
               sink.applications[0].transport_urls[0] == "/app/",
           "MH-AIT application identity, control, and location were not parsed");

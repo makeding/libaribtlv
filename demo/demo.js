@@ -100,6 +100,7 @@ const AUDIO_LAYOUTS = [
   '4.0ch', '5.0ch', '5.1ch', '3.3.1ch', '6.1ch', '7.1ch', '10.2ch', '22.2ch',
 ];
 const MSE_MAX_AUDIO_CHANNELS = 6;
+const BrowserMediaSource = globalThis.ManagedMediaSource || globalThis.MediaSource;
 
 function mseAudioTrackSupported(track) {
   const channels = track.audio?.channels ?? 0;
@@ -352,7 +353,9 @@ function intersectBufferedRanges(left, right) {
 
 class AppendQueue {
   constructor(mediaSource, mediaElement, mime, onUpdateEnd = null) {
-    if (!MediaSource.isTypeSupported(mime)) throw new Error(`このブラウザーは ${mime} に対応していません`);
+    if (!BrowserMediaSource?.isTypeSupported(mime)) {
+      throw new Error(`このブラウザーは ${mime} に対応していません`);
+    }
     this.mediaElement = mediaElement;
     this.mediaSource = mediaSource;
     this.mime = mime;
@@ -575,6 +578,7 @@ function releaseMedia() {
   for (const queue of activeQueues) queue.destroy();
   elements.video.pause();
   elements.video.removeAttribute('src');
+  elements.video.replaceChildren();
   elements.video.load();
   if (activeObjectUrl) URL.revokeObjectURL(activeObjectUrl);
   activeObjectUrl = null;
@@ -714,13 +718,32 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   }
   let mediaSource;
   const openFreshMediaSource = async () => {
+    if (!BrowserMediaSource) {
+      throw new Error('このブラウザーは Media Source Extensions に対応していません');
+    }
     activeQueueByType = new Map();
-    const fresh = new MediaSource();
+    const fresh = new BrowserMediaSource();
+    // Register before attaching the object URL. WebKit may transition to open
+    // while load()/play() is running, before code after those calls resumes.
+    const opened = fresh.readyState === 'open'
+      ? Promise.resolve()
+      : once(fresh, 'sourceopen');
     fresh.tlvdemuxQueues = activeQueueByType;
     activeMediaSource = fresh;
     activeObjectUrl = URL.createObjectURL(fresh);
+    elements.video.replaceChildren();
     elements.video.src = activeObjectUrl;
-    await once(fresh, 'sourceopen');
+    elements.video.load();
+    if (typeof globalThis.ManagedMediaSource === 'function' &&
+        fresh instanceof globalThis.ManagedMediaSource) {
+      // iOS starts a ManagedMediaSource only after the media element enters
+      // playback. The element is muted/playsinline, so this is autoplay-safe.
+      elements.video.play().catch(() => {});
+    }
+    await opened;
+    appendLog(`${typeof globalThis.ManagedMediaSource === 'function' &&
+      fresh instanceof globalThis.ManagedMediaSource
+      ? 'ManagedMediaSource' : 'MediaSource'} を使用します`);
     return fresh;
   };
   if (reuseMedia && (!activeMediaSource || !activeObjectUrl)) reuseMedia = false;

@@ -120,6 +120,66 @@ void test_playback_state_machine() {
     check(state.close(), "failed session could not be closed");
 }
 
+void test_stream_event_timing() {
+    const auto ntp = [](const std::uint64_t seconds) { return seconds << 32U; };
+    const auto target_is = [](const tlvdemux::StreamEventTiming& timing,
+                              const std::int64_t microseconds) {
+        return timing.target_time.has_value() &&
+            timing.target_time->value == microseconds &&
+            timing.target_time->timescale == 1000000;
+    };
+    tlvdemux::StreamEvent event;
+
+    event.time_mode = 0;
+    auto timing = tlvdemux::resolveStreamEventTiming(event, true);
+    check(timing.domain == tlvdemux::StreamEventClockDomain::Immediate &&
+              !timing.target_time.has_value(),
+          "immediate EMT event acquired a target clock");
+
+    event.time_mode = 1;
+    event.time_value = ntp(200);
+    timing = tlvdemux::resolveStreamEventTiming(event, true);
+    check(timing.domain == tlvdemux::StreamEventClockDomain::PlaybackUtc &&
+              target_is(timing, 200000000),
+          "mode-1 EMT event did not retain the playback wall-clock domain");
+
+    const tlvdemux::BroadcastClock clock{
+        tlvdemux::Timestamp{10000000, 1000000},
+        tlvdemux::Timestamp{100000000, 1000000}, 0, false};
+    event.time_mode = 5;
+    event.time_value = ntp(103);
+    timing = tlvdemux::resolveStreamEventTiming(event, true, clock);
+    check(timing.domain == tlvdemux::StreamEventClockDomain::MediaTimeline &&
+              target_is(timing, 13000000),
+          "mode-5 recorded EMT event did not use original broadcast time");
+    timing = tlvdemux::resolveStreamEventTiming(event, false, clock);
+    check(timing.domain == tlvdemux::StreamEventClockDomain::PlaybackUtc &&
+              target_is(timing, 103000000),
+          "mode-5 live EMT event did not use the wall clock");
+
+    event.time_mode = 2;
+    event.utc_reference = ntp(100);
+    event.npt_reference = ntp(20);
+    event.time_value = ntp(22);
+    timing = tlvdemux::resolveStreamEventTiming(event, true, clock);
+    check(timing.domain == tlvdemux::StreamEventClockDomain::MediaTimeline &&
+              target_is(timing, 12000000),
+          "NPT EMT event was not projected through UTC onto media time");
+
+    event.time_mode = 3;
+    event.time_value = ntp(3);
+    timing = tlvdemux::resolveStreamEventTiming(
+        event, true, std::nullopt, tlvdemux::Timestamp{5000000, 1000000});
+    check(timing.domain == tlvdemux::StreamEventClockDomain::MediaTimeline &&
+              target_is(timing, 8000000),
+          "programme-relative EMT event did not use programme media start");
+
+    event.time_mode = 4;
+    timing = tlvdemux::resolveStreamEventTiming(event, true);
+    check(timing.domain == tlvdemux::StreamEventClockDomain::Unsupported,
+          "reserved EMT time mode was accepted");
+}
+
 void test_recording_index() {
     tlvdemux::RecordingIndex index;
     index.begin(false);
@@ -253,6 +313,7 @@ void test_duration_probe_range_protocol() {
 int main() {
     test_seek_policy_selection();
     test_playback_state_machine();
+    test_stream_event_timing();
     test_recording_index();
     test_duration_uses_recording_timeline_endpoint();
     test_duration_probe_range_protocol();

@@ -38,6 +38,14 @@ declare namespace createTlvDemuxModule {
     | "range-limit"
     | "parse-error";
   type ApplicationCollectionState = "discovered" | "collecting" | "ready";
+  type ApplicationLifecycleState =
+    | "unsupported"
+    | "autostart-pending"
+    | "autostart-ready"
+    | "present"
+    | "prefetching"
+    | "prefetched"
+    | "killed";
 
   interface TlvDemuxModuleOverrides {
     print?: (text: string) => void;
@@ -84,6 +92,37 @@ declare namespace createTlvDemuxModule {
     packageId: Uint8Array;
   }
 
+  interface MpuPresentationRegion {
+    mpuSequenceNumber: number;
+    layoutNumber: number;
+    regionNumber: number;
+  }
+
+  interface LayoutRegion {
+    regionNumber: number;
+    leftTopPosX: number;
+    leftTopPosY: number;
+    rightDownPosX: number;
+    rightDownPosY: number;
+    layerOrder: number;
+  }
+
+  interface LayoutDevice {
+    layoutNumber: number;
+    deviceId: number;
+    regions: LayoutRegion[];
+  }
+
+  interface LayoutConfiguration {
+    contextId: number;
+    sourcePacketId: number;
+    version: number;
+    devices: LayoutDevice[];
+    /** ARIB STD-B60 RGB value encoded as 0xRRGGBB, or null when absent. */
+    backgroundColorRgb: number | null;
+    inputOffset: bigint;
+  }
+
   interface AudioTrackInfo {
     componentType: number;
     componentTag: number;
@@ -112,6 +151,7 @@ declare namespace createTlvDemuxModule {
     language: string;
     componentTag: number;
     timescale: number;
+    presentationRegions: MpuPresentationRegion[];
     audio?: AudioTrackInfo;
     subtitle?: SubtitleTrackInfo;
   }
@@ -203,6 +243,10 @@ declare namespace createTlvDemuxModule {
     applicationId: number;
     controlCode: number;
     version: number;
+    currentNext: boolean;
+    sectionNumber: number;
+    lastSectionNumber: number;
+    inputOffset: bigint;
     applicationDescriptorPresent: boolean;
     profiles: Array<{
       applicationProfile: number;
@@ -216,9 +260,12 @@ declare namespace createTlvDemuxModule {
     presentApplicationPriority: boolean;
     applicationPriority: number;
     transportProtocolLabels: number[];
+    transports: Array<{ protocolId: number; label: number; urls: string[] }>;
     entryPath: string;
     transportUrls: string[];
     state: ApplicationCollectionState;
+    /** Broadcast-requested lifecycle; this does not claim the HTML runtime started. */
+    lifecycle: ApplicationLifecycleState;
     entryReady: boolean;
     resourceCount: number;
   }
@@ -266,6 +313,7 @@ declare namespace createTlvDemuxModule {
   interface TlvDemuxCallbacks {
     onService?: (service: ServiceInfo) => void;
     onTrack?: (track: TrackInfo) => void;
+    onLayoutConfiguration?: (layout: LayoutConfiguration) => void;
     onAccessUnit?: (unit: AccessUnit) => void;
     onAccessUnitView?: (unit: AccessUnit) => void;
     onError?: (error: DemuxError) => void;

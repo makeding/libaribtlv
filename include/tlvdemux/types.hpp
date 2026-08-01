@@ -115,12 +115,48 @@ struct ApplicationServiceInfo {
     std::vector<EventMessageLocation> event_message_locations;
 };
 
+struct MpuPresentationRegion {
+    std::uint32_t mpu_sequence_number = 0;
+    std::uint8_t layout_number = 0;
+    std::uint8_t region_number = 0;
+    bool operator==(const MpuPresentationRegion&) const = default;
+};
+
+struct LayoutRegion {
+    std::uint8_t region_number = 0;
+    std::uint8_t left_top_pos_x = 0;
+    std::uint8_t left_top_pos_y = 0;
+    std::uint8_t right_down_pos_x = 0;
+    std::uint8_t right_down_pos_y = 0;
+    std::uint8_t layer_order = 0;
+    bool operator==(const LayoutRegion&) const = default;
+};
+
+struct LayoutDevice {
+    std::uint8_t layout_number = 0;
+    std::uint8_t device_id = 0;
+    std::vector<LayoutRegion> regions;
+    bool operator==(const LayoutDevice&) const = default;
+};
+
+struct LayoutConfiguration {
+    std::uint32_t context_id = 0;
+    std::uint16_t source_packet_id = 0;
+    std::uint8_t version = 0;
+    std::vector<LayoutDevice> devices;
+    // ARIB STD-B60 Background_Color_Descriptor, encoded as 0xRRGGBB.
+    std::optional<std::uint32_t> background_color_rgb;
+    std::uint64_t input_offset = 0;
+    bool operator==(const LayoutConfiguration&) const = default;
+};
+
 struct DataAssetInfo {
     std::uint32_t context_id = 0;
     std::uint16_t packet_id = 0;
     std::vector<std::uint8_t> asset_id;
     std::string asset_type;
     std::uint16_t component_tag = 0;
+    std::vector<MpuPresentationRegion> presentation_regions;
 };
 
 struct DataUnit {
@@ -205,6 +241,13 @@ struct ApplicationInfo {
         bool operator==(const Profile&) const = default;
     };
 
+    struct Transport {
+        std::uint16_t protocol_id = 0;
+        std::uint8_t label = 0;
+        std::vector<std::string> urls;
+        bool operator==(const Transport&) const = default;
+    };
+
     std::uint32_t context_id = 0;
     std::uint16_t source_packet_id = 0;
     std::uint16_t application_type = 0;
@@ -212,6 +255,9 @@ struct ApplicationInfo {
     std::uint32_t application_id = 0;
     std::uint8_t control_code = 0;
     std::uint8_t version = 0;
+    bool current_next = false;
+    std::uint8_t section_number = 0;
+    std::uint8_t last_section_number = 0;
     bool application_descriptor_present = false;
     std::vector<Profile> profiles;
     bool service_bound = false;
@@ -219,8 +265,10 @@ struct ApplicationInfo {
     bool present_application_priority = false;
     std::uint8_t application_priority = 0;
     std::vector<std::uint8_t> transport_protocol_labels;
+    std::vector<Transport> transports;
     std::string entry_path;
     std::vector<std::string> transport_urls;
+    std::uint64_t input_offset = 0;
 };
 
 struct DataTransmissionTable {
@@ -301,6 +349,7 @@ struct TrackInfo {
     std::uint32_t timescale = 1;
     std::optional<AudioInfo> audio;
     std::optional<SubtitleInfo> subtitle;
+    std::vector<MpuPresentationRegion> presentation_regions;
 };
 
 struct SubtitleResource {

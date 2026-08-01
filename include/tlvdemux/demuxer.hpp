@@ -26,6 +26,7 @@ public:
     virtual void onEventInfo(const EventInfo&) {}
     virtual void onStreamEvent(const StreamEvent&) {}
     virtual void onApplicationService(const ApplicationServiceInfo&) {}
+    virtual void onLayoutConfiguration(const LayoutConfiguration&) {}
     virtual void onDataAsset(const DataAssetInfo&) {}
     virtual void onDataUnit(DataUnit&&) {}
     virtual void onSignallingMessage(SignallingMessage&&) {}

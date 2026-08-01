@@ -1,5 +1,7 @@
 #pragma once
 
+#include <tlvdemux/types.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -83,6 +85,32 @@ public:
 SeekPolicy chooseSeekPolicy(const SourceCapabilities&, bool usable_index,
                             bool buffered_seek_available) noexcept;
 
+// Clock domain selected by ARIB STD-B60 table 11-4. PlaybackUtc means that
+// the host compares target_time with the wall clock used during playback;
+// MediaTimeline means that it compares against the media element timeline.
+enum class StreamEventClockDomain {
+    Immediate,
+    PlaybackUtc,
+    MediaTimeline,
+    AwaitingReference,
+    Unsupported,
+};
+
+struct StreamEventTiming {
+    StreamEventClockDomain domain = StreamEventClockDomain::Unsupported;
+    std::optional<Timestamp> target_time;
+};
+
+// Resolve an EMT event into a host clock domain. For recorded playback,
+// modes 2 and 5 use broadcast_clock to project the original broadcast UTC
+// onto the normalized media timeline. Mode 3 requires the programme start on
+// that same media timeline. Mode 1 deliberately remains playback wall-clock
+// based even for recordings, as required by STD-B60.
+StreamEventTiming resolveStreamEventTiming(
+    const StreamEvent&, bool recorded,
+    std::optional<BroadcastClock> broadcast_clock = std::nullopt,
+    std::optional<Timestamp> program_start_media_time = std::nullopt) noexcept;
+
 class PlaybackStateMachine {
 public:
     bool beginOpen(SourceCapabilities, SeekPolicy);
@@ -138,4 +166,3 @@ private:
 };
 
 } // namespace tlvdemux
-

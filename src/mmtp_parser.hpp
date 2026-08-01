@@ -31,6 +31,7 @@ struct AssetMetadata {
     std::uint32_t timescale = 1;
     std::optional<AudioInfo> audio;
     std::optional<SubtitleInfo> subtitle;
+    std::vector<MpuPresentationRegion> presentation_regions;
     bool aac_latm = false;
     bool ttml = false;
     std::map<std::uint32_t, TimestampMapping> timestamps;
@@ -48,6 +49,7 @@ public:
     using TrackCallback = std::function<std::uint64_t(TrackInfo)>;
     using AccessUnitCallback = std::function<void(TimedAccessUnit)>;
     using ApplicationServiceCallback = std::function<void(ApplicationServiceInfo)>;
+    using LayoutCallback = std::function<void(LayoutConfiguration)>;
     using DataAssetCallback = std::function<void(DataAssetInfo)>;
     using DataUnitCallback = std::function<void(DataUnit)>;
     using SignallingCallback = std::function<void(SignallingMessage)>;
@@ -62,7 +64,7 @@ public:
 
     MmtpParser(std::uint32_t context_id, const Limits&, PackageCallback,
                TrackCallback, AccessUnitCallback, ApplicationServiceCallback,
-               DataAssetCallback, DataUnitCallback, SignallingCallback, EventCallback,
+               LayoutCallback, DataAssetCallback, DataUnitCallback, SignallingCallback, EventCallback,
                StreamEventCallback,
                ApplicationCallback,
                DataTransmissionCallback, DataDirectoryCallback,
@@ -207,6 +209,8 @@ private:
                    std::uint64_t input_offset);
     bool parse_package_list(const std::uint8_t* data, std::size_t size,
                             std::uint64_t input_offset);
+    bool parse_lct(const std::uint8_t* data, std::size_t size,
+                   std::uint16_t packet_id, std::uint64_t input_offset);
     bool parse_mh_ait(const std::uint8_t* data, std::size_t size,
                       std::uint16_t packet_id, std::uint64_t input_offset);
     bool parse_mh_eit(const std::uint8_t* data, std::size_t size,
@@ -224,6 +228,7 @@ private:
     TrackCallback on_track_;
     AccessUnitCallback on_access_unit_;
     ApplicationServiceCallback on_application_service_;
+    LayoutCallback on_layout_;
     DataAssetCallback on_data_asset_;
     DataUnitCallback on_data_unit_;
     SignallingCallback on_signalling_;

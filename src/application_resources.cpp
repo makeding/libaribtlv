@@ -182,6 +182,21 @@ std::string application_key(const ApplicationInfo& info) {
         std::to_string(info.organization_id) + ':' + std::to_string(info.application_id);
 }
 
+ApplicationLifecycleState application_lifecycle(const ApplicationInfo& info,
+                                                const bool entry_ready) {
+    switch (info.control_code) {
+    case 0x01:
+        return entry_ready ? ApplicationLifecycleState::AutostartReady
+                           : ApplicationLifecycleState::AutostartPending;
+    case 0x02: return ApplicationLifecycleState::Present;
+    case 0x04: return ApplicationLifecycleState::Killed;
+    case 0x05:
+        return entry_ready ? ApplicationLifecycleState::Prefetched
+                           : ApplicationLifecycleState::Prefetching;
+    default: return ApplicationLifecycleState::Unsupported;
+    }
+}
+
 } // namespace
 
 class ApplicationResourceAssembler::Impl {
@@ -197,6 +212,7 @@ public:
         state.resource_count = resource_count(info.context_id);
         state.entry_ready = entry_ready(info);
         if (state.entry_ready) state.state = ApplicationCollectionState::Ready;
+        state.lifecycle = application_lifecycle(info, state.entry_ready);
         sink_.onApplicationState(state);
     }
 
@@ -438,11 +454,16 @@ private:
             if (state.application.context_id != context) continue;
             const auto ready = entry_ready(state.application);
             const auto count = resource_count(context);
-            if (state.entry_ready == ready && state.resource_count == count) continue;
+            const auto lifecycle = application_lifecycle(state.application, ready);
+            if (state.entry_ready == ready && state.resource_count == count &&
+                state.lifecycle == lifecycle) {
+                continue;
+            }
             state.entry_ready = ready;
             state.resource_count = count;
             state.state = ready ? ApplicationCollectionState::Ready
                                 : ApplicationCollectionState::Collecting;
+            state.lifecycle = lifecycle;
             sink_.onApplicationState(state);
         }
     }

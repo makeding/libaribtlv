@@ -113,6 +113,20 @@ const char* application_collection_state_name(
     return "discovered";
 }
 
+const char* application_lifecycle_state_name(
+    const tlvdemux::ApplicationLifecycleState state) noexcept {
+    switch (state) {
+    case tlvdemux::ApplicationLifecycleState::Unsupported: return "unsupported";
+    case tlvdemux::ApplicationLifecycleState::AutostartPending: return "autostart-pending";
+    case tlvdemux::ApplicationLifecycleState::AutostartReady: return "autostart-ready";
+    case tlvdemux::ApplicationLifecycleState::Present: return "present";
+    case tlvdemux::ApplicationLifecycleState::Prefetching: return "prefetching";
+    case tlvdemux::ApplicationLifecycleState::Prefetched: return "prefetched";
+    case tlvdemux::ApplicationLifecycleState::Killed: return "killed";
+    }
+    return "unsupported";
+}
+
 val duration_value(const tlvdemux::DurationInfo duration) {
     if (duration.status == tlvdemux::DurationStatus::Unknown) return val::null();
     auto result = val::object();
@@ -142,6 +156,55 @@ val broadcast_clock_value(const tlvdemux::BroadcastClock& clock) {
     result.set("broadcastTimeTimescale", clock.broadcast_time.timescale);
     result.set("inputOffset", clock.input_offset);
     result.set("discontinuity", clock.discontinuity);
+    return result;
+}
+
+val presentation_regions_value(
+    const std::vector<tlvdemux::MpuPresentationRegion>& regions) {
+    auto result = val::array();
+    for (std::size_t index = 0; index < regions.size(); ++index) {
+        auto region = val::object();
+        region.set("mpuSequenceNumber", regions[index].mpu_sequence_number);
+        region.set("layoutNumber", regions[index].layout_number);
+        region.set("regionNumber", regions[index].region_number);
+        result.set(index, region);
+    }
+    return result;
+}
+
+val layout_configuration_value(const tlvdemux::LayoutConfiguration& info) {
+    auto result = val::object();
+    result.set("contextId", info.context_id);
+    result.set("sourcePacketId", info.source_packet_id);
+    result.set("version", info.version);
+    result.set("inputOffset", info.input_offset);
+    if (info.background_color_rgb.has_value()) {
+        result.set("backgroundColorRgb", *info.background_color_rgb);
+    } else {
+        result.set("backgroundColorRgb", val::null());
+    }
+    auto devices = val::array();
+    for (std::size_t device_index = 0; device_index < info.devices.size(); ++device_index) {
+        const auto& source = info.devices[device_index];
+        auto device = val::object();
+        device.set("layoutNumber", source.layout_number);
+        device.set("deviceId", source.device_id);
+        auto regions = val::array();
+        for (std::size_t region_index = 0; region_index < source.regions.size(); ++region_index) {
+            const auto& source_region = source.regions[region_index];
+            auto region = val::object();
+            region.set("regionNumber", source_region.region_number);
+            region.set("leftTopPosX", source_region.left_top_pos_x);
+            region.set("leftTopPosY", source_region.left_top_pos_y);
+            region.set("rightDownPosX", source_region.right_down_pos_x);
+            region.set("rightDownPosY", source_region.right_down_pos_y);
+            region.set("layerOrder", source_region.layer_order);
+            regions.set(region_index, region);
+        }
+        device.set("regions", regions);
+        devices.set(device_index, device);
+    }
+    result.set("devices", devices);
     return result;
 }
 
@@ -478,6 +541,7 @@ public:
         event.set("language", info.language);
         event.set("componentTag", info.component_tag);
         event.set("timescale", info.timescale);
+        event.set("presentationRegions", presentation_regions_value(info.presentation_regions));
         if (info.audio.has_value()) {
             auto audio = val::object();
             audio.set("componentType", info.audio->component_type);
@@ -499,6 +563,10 @@ public:
             event.set("subtitle", subtitle);
         }
         emit("onTrack", event);
+    }
+
+    void onLayoutConfiguration(const tlvdemux::LayoutConfiguration& info) override {
+        emit("onLayoutConfiguration", layout_configuration_value(info));
     }
 
     void onAccessUnit(tlvdemux::AccessUnit&& unit) override {
@@ -711,6 +779,10 @@ private:
         event.set("applicationId", state.application.application_id);
         event.set("controlCode", state.application.control_code);
         event.set("version", state.application.version);
+        event.set("currentNext", state.application.current_next);
+        event.set("sectionNumber", state.application.section_number);
+        event.set("lastSectionNumber", state.application.last_section_number);
+        event.set("inputOffset", state.application.input_offset);
         event.set("applicationDescriptorPresent",
                   state.application.application_descriptor_present);
         event.set("serviceBound", state.application.service_bound);
@@ -735,6 +807,20 @@ private:
             labels.set(index, state.application.transport_protocol_labels[index]);
         }
         event.set("transportProtocolLabels", labels);
+        auto transports = val::array();
+        for (std::size_t index = 0; index < state.application.transports.size(); ++index) {
+            const auto& source = state.application.transports[index];
+            auto transport = val::object();
+            transport.set("protocolId", source.protocol_id);
+            transport.set("label", source.label);
+            auto transport_urls = val::array();
+            for (std::size_t url_index = 0; url_index < source.urls.size(); ++url_index) {
+                transport_urls.set(url_index, source.urls[url_index]);
+            }
+            transport.set("urls", transport_urls);
+            transports.set(index, transport);
+        }
+        event.set("transports", transports);
         event.set("entryPath", state.application.entry_path);
         auto urls = val::array();
         for (std::size_t index = 0;
@@ -743,6 +829,8 @@ private:
         }
         event.set("transportUrls", urls);
         event.set("state", std::string(application_collection_state_name(state.state)));
+        event.set("lifecycle",
+                  std::string(application_lifecycle_state_name(state.lifecycle)));
         event.set("entryReady", state.entry_ready);
         event.set("resourceCount", state.resource_count);
         return event;

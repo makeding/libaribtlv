@@ -121,6 +121,7 @@ tlvdemux::ApplicationInfo application(const std::uint32_t context) {
     value.organization_id = 2;
     value.application_id = 3;
     value.version = 1;
+    value.control_code = 0x01;
     value.entry_path = "top/source/index.html";
     value.transport_urls.push_back("sh4/60/001/");
     return value;
@@ -144,8 +145,22 @@ void test_out_of_order_collection_and_update() {
           "resource path was not normalized");
     check(sink.resources[0].data == first, "resource bytes changed during assembly");
     check(!sink.states.empty() && sink.states.back().entry_ready &&
-              sink.states.back().state == tlvdemux::ApplicationCollectionState::Ready,
+              sink.states.back().state == tlvdemux::ApplicationCollectionState::Ready &&
+              sink.states.back().lifecycle ==
+                  tlvdemux::ApplicationLifecycleState::AutostartReady,
           "entry resource did not make the application ready");
+
+    auto prefetched = application(1);
+    prefetched.control_code = 0x05;
+    assembler.onApplication(prefetched);
+    check(sink.states.back().lifecycle ==
+              tlvdemux::ApplicationLifecycleState::Prefetched,
+          "PREFETCH application did not retain its ready resource state");
+    auto killed = application(1);
+    killed.control_code = 0x04;
+    assembler.onApplication(killed);
+    check(sink.states.back().lifecycle == tlvdemux::ApplicationLifecycleState::Killed,
+          "KILL application control was not exposed separately from collection state");
 
     assembler.onDataUnit(unit(1, 5, first));
     check(sink.resources.size() == 1, "carousel duplicate was emitted twice");
