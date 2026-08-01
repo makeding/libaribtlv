@@ -361,6 +361,25 @@ Live mode.
 The demo contains a deliberately small fMP4/MSE layer and does not depend on
 mmts.js at runtime. Browser HEVC MSE support is still required.
 
+Demuxing and fMP4 remuxing run in `demo/demux-worker-runtime.js`. The main
+thread sends input chunks as transferable buffers and receives only MSE init
+segments, media segments, subtitle payloads, application files, and small
+control events. `demo/worker-tlvdemux.js` owns the RPC facade, while
+`demo/demux-worker-protocol.js` contains the shared message names. Keeping these
+three responsibilities separate makes it possible to change the player UI,
+the transport protocol, or the worker-side demux lifecycle independently.
+
+Run the repeatable WASM throughput benchmark with:
+
+```sh
+npm run benchmark:wasm -- build-wasm/tlvdemux.js test.tlv 268435456
+```
+
+It reports demux-only and demux-plus-MSE throughput, callback/segment counts,
+output bytes, and maximum observed WASM heap size. See
+[`docs/performance.md`](docs/performance.md) for the hot-path ownership map,
+measurement guidance, and regression checklist.
+
 ## Current scope
 
 Version 0.1 supports the ARIB broadcast subset exercised by the validation

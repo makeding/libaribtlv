@@ -14,20 +14,24 @@ export function usesWebKitMediaPlaneFallback(userAgent = globalThis.navigator?.u
 }
 
 /**
- * WebKit fallback for the browser prototype. Safari does not reliably expose
- * an external video plane through a transparent iframe, so keep the video
- * between the application's background and foreground UI by adopting it into
- * the broadcast object. Chromium deliberately stays on the external adapter:
- * adopting an MSE-connected video there closes its MediaSource.
+ * WebKit fallback for the browser prototype. Safari keeps decoded video pixels
+ * on the media layer of the video element's original document, so neither an
+ * external plane below the iframe nor adopting that element into the iframe is
+ * reliable. Keep the MSE video in place for decoding/audio and mirror frames to
+ * a canvas in the broadcast object. Chromium deliberately stays on the faster
+ * external-plane path.
  */
-export class WebKitObjectMediaPlaneAdapter {
+export class WebKitCanvasMediaPlaneAdapter {
   renderMode = 'in-object';
 
   constructor(video) {
     this.video = video;
-    this.normalParent = video.parentElement;
-    this.normalNextSibling = video.nextSibling;
     this.normalStyle = video.getAttribute('style');
+    this.canvas = null;
+    this.context = null;
+    this.frameCallback = null;
+    this.animationFrame = null;
+    this.lastPlane = null;
   }
 
   mountMediaPlane(object, plane) {
@@ -43,8 +47,16 @@ export class WebKitObjectMediaPlaneAdapter {
   }
 
   apply(object, plane) {
-    if (this.video.parentElement !== object) object.append(this.video);
-    Object.assign(this.video.style, {
+    this.lastPlane = plane;
+    if (!this.canvas || this.canvas.ownerDocument !== object.ownerDocument) {
+      this.stopFramePump();
+      this.canvas?.remove();
+      this.canvas = object.ownerDocument.createElement('canvas');
+      this.context = this.canvas.getContext('2d', { alpha: false, desynchronized: true });
+      this.canvas.dataset.aribMediaPlaneContent = '';
+    }
+    if (this.canvas.parentElement !== object) object.append(this.canvas);
+    Object.assign(this.canvas.style, {
       position: 'static',
       width: '100%',
       height: '100%',
@@ -52,26 +64,75 @@ export class WebKitObjectMediaPlaneAdapter {
       maxHeight: 'none',
       display: 'block',
       visibility: plane.visible ? 'visible' : 'hidden',
-      objectFit: 'contain',
       background: '#080b09',
       pointerEvents: 'none',
     });
-    this.video.style.removeProperty('left');
-    this.video.style.removeProperty('top');
-    this.video.style.removeProperty('z-index');
+    // opacity keeps WebKit's media pipeline active; display/visibility would
+    // allow it to suspend pixel production and break canvas mirroring.
+    this.video.style.opacity = '0';
+    this.video.style.pointerEvents = 'none';
+    if (plane.visible) this.startFramePump();
+    else this.stopFramePump();
   }
 
   restore(visible) {
-    if (this.normalParent && this.video.parentElement !== this.normalParent) {
-      if (this.normalNextSibling?.parentNode === this.normalParent) {
-        this.normalParent.insertBefore(this.video, this.normalNextSibling);
-      } else {
-        this.normalParent.append(this.video);
-      }
-    }
+    this.stopFramePump();
+    this.canvas?.remove();
+    this.canvas = null;
+    this.context = null;
+    this.lastPlane = null;
     if (this.normalStyle === null) this.video.removeAttribute('style');
     else this.video.setAttribute('style', this.normalStyle);
-    if (!visible) this.video.style.visibility = 'hidden';
+    if (!visible) this.video.style.opacity = '0';
+  }
+
+  startFramePump() {
+    if (this.frameCallback !== null || this.animationFrame !== null) return;
+    if (typeof this.video.requestVideoFrameCallback === 'function') {
+      this.frameCallback = this.video.requestVideoFrameCallback(() => {
+        this.frameCallback = null;
+        this.drawFrame();
+        if (this.canvas) this.startFramePump();
+      });
+      return;
+    }
+    this.animationFrame = requestAnimationFrame(() => {
+      this.animationFrame = null;
+      this.drawFrame();
+      if (this.canvas) this.startFramePump();
+    });
+  }
+
+  stopFramePump() {
+    if (this.frameCallback !== null) {
+      this.video.cancelVideoFrameCallback?.(this.frameCallback);
+      this.frameCallback = null;
+    }
+    if (this.animationFrame !== null) {
+      cancelAnimationFrame(this.animationFrame);
+      this.animationFrame = null;
+    }
+  }
+
+  drawFrame() {
+    if (!this.canvas || !this.context || !this.lastPlane || this.video.readyState < 2) return;
+    const sourceWidth = this.video.videoWidth || Math.round(this.lastPlane.width);
+    const sourceHeight = this.video.videoHeight || Math.round(this.lastPlane.height);
+    if (!(sourceWidth > 0) || !(sourceHeight > 0)) return;
+    // A full 3840x2160 copy at every frame is too expensive on mobile Safari.
+    // Keep the prototype fallback at most 1080p while preserving aspect ratio.
+    const maxPixels = 1920 * 1080;
+    const scale = Math.min(1, Math.sqrt(maxPixels / (sourceWidth * sourceHeight)));
+    const width = Math.max(1, Math.round(sourceWidth * scale));
+    const height = Math.max(1, Math.round(sourceHeight * scale));
+    if (this.canvas.width !== width) this.canvas.width = width;
+    if (this.canvas.height !== height) this.canvas.height = height;
+    try {
+      this.context.drawImage(this.video, 0, 0, width, height);
+    } catch (error) {
+      console.error('[tlvdemux] Safari canvas media-plane copy failed.', error);
+      this.stopFramePump();
+    }
   }
 }
 
@@ -193,13 +254,13 @@ export class DataBroadcastController {
     });
     this.usesWebKitMediaPlaneFallback = usesWebKitMediaPlaneFallback();
     this.mediaPlaneAdapter = this.usesWebKitMediaPlaneFallback
-      ? new WebKitObjectMediaPlaneAdapter(video)
+      ? new WebKitCanvasMediaPlaneAdapter(video)
       : new window.ARIBHTML5.BehindIframeMediaPlaneAdapter({
           surface: videoSurface,
           keepVisible: false,
         });
     viewport.dataset.mediaPlane = this.usesWebKitMediaPlaneFallback
-      ? 'in-object-webkit'
+      ? 'in-object-canvas-webkit'
       : 'external';
     this.host = new window.ARIBHTML5.AribReceiverHost({
       iframe,

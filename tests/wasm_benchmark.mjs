@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { closeSync, openSync, readSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
 
 const [modulePath, mediaPath, maximumBytesText] = process.argv.slice(2);
 assert.ok(modulePath && mediaPath,
@@ -11,7 +12,7 @@ const maximumBytes = Number(maximumBytesText ?? 256 * 1024 * 1024);
 assert.ok(Number.isSafeInteger(maximumBytes) && maximumBytes > 0, 'invalid MAX_BYTES');
 
 const require = createRequire(import.meta.url);
-const createTlvDemuxModule = require(modulePath);
+const createTlvDemuxModule = require(resolve(modulePath));
 const module = await createTlvDemuxModule();
 
 function benchmark(remux) {

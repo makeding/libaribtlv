@@ -42,6 +42,7 @@
   },
   "files": [
     "dist/",
+    "docs/performance.md",
     "index.d.ts",
     "README.md",
     "LICENSE"

@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { mkdir, open, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
 
 const [modulePath, mediaPath, outputDirectory] = process.argv.slice(2);
 assert.ok(modulePath && mediaPath,
   'usage: node tests/demo_playback_smoke.mjs TLVDEMUX_JS SAMPLE');
 
 const require = createRequire(import.meta.url);
-const createTlvDemuxModule = require(modulePath);
+const createTlvDemuxModule = require(resolve(modulePath));
 const module = await createTlvDemuxModule();
 const initSegments = new Map();
 const mediaSegments = new Map([['video', []], ['audio', []]]);
