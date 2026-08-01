@@ -45,6 +45,11 @@
         video.autoplay = true;
         video.muted = true;
         video.playsInline = true;
+        if (typeof globalThis.ManagedMediaSource === 'function' &&
+            source instanceof globalThis.ManagedMediaSource) {
+          video.disableRemotePlayback = true;
+          add('remotePlayback', 'disabled');
+        }
         video.style.cssText = 'width: 100%; min-height: 180px';
         for (const name of ['sourceopen', 'sourceclose', 'startstreaming', 'endstreaming']) {
           source.addEventListener(name, () => {

@@ -732,6 +732,14 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     activeMediaSource = fresh;
     activeObjectUrl = URL.createObjectURL(fresh);
     elements.video.replaceChildren();
+    if (typeof globalThis.ManagedMediaSource === 'function' &&
+        fresh instanceof globalThis.ManagedMediaSource) {
+      // WebKit only activates ManagedMediaSource when an AirPlay fallback is
+      // present or remote playback is explicitly disabled. The raw TLV demo
+      // has no native AirPlay source, so opt out before attaching the blob URL.
+      elements.video.disableRemotePlayback = true;
+      appendLog('ManagedMediaSource: Remote Playback を無効化しました');
+    }
     elements.video.src = activeObjectUrl;
     elements.video.load();
     if (typeof globalThis.ManagedMediaSource === 'function' &&
