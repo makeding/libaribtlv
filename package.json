@@ -1,6 +1,6 @@
 {
   "name": "tlvdemux",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "ARIB MMT/TLV demultiplexer for browsers, workers, and Node.js",
   "license": "MIT",
   "author": {
