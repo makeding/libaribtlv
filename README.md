@@ -1,5 +1,7 @@
 # tlvdemux
 
+English | [日本語](README.ja.md)
+
 `tlvdemux` is a C++20 incremental demultiplexer for
 already-descrambled ARIB MMT/TLV streams. It is designed to emit player-ready
 HEVC, AAC-LATM/LOAS and ARIB STD-B62 TTML access units without converting the
@@ -188,13 +190,14 @@ chosen limit without rewriting the AAC configuration. For example, a value of
 segment. Use `track.audio.channels` in `onTrack` to select a compatible
 alternative track; omitted or zero leaves the remuxer unlimited.
 
-#### BS8K の 22.2ch 音声を除外する
+#### Excluding BS8K 22.2-channel audio
 
-BS8K の番組によっては、AAC の `channel_configuration=13` で表される
-22.2ch（24 チャンネル）音声が送出されます。Chromium 系ブラウザーはこの構成を
-MSE で受け付けず、音声の `appendBuffer()` が MediaError になることがあります。
-ブラウザー再生では次のように上限を 6 チャンネルにすると、モノラルから 5.1ch
-までは通し、22.2ch の MSE init segment は出力しません。
+Some BS8K programmes carry 22.2-channel (24-channel) AAC audio, represented by
+`channel_configuration=13`. Chromium-based browsers do not accept this layout
+through MSE, which may cause an audio `appendBuffer()` call to raise a
+MediaError. For browser playback, setting the limit to six channels as shown
+below allows mono through 5.1 while preventing a 22.2-channel MSE init segment
+from being emitted.
 
 ```js
 let selectedAudio = false;
@@ -213,10 +216,10 @@ const demuxer = new module.TlvDemuxer({
 });
 ```
 
-この設定は 22.2ch を 5.1ch にダウンミックスするものではなく、非対応の音声を
-MSE に渡さないための安全策です。複数の音声トラックがある場合は
-`track.audio.channels` を見て 5.1ch またはステレオの代替トラックを選択して
-ください。省略時または `0` の場合、チャンネル数による制限は行いません。
+This setting does not downmix 22.2-channel audio to 5.1. It is a safeguard that
+keeps unsupported audio out of MSE. When multiple audio tracks are available,
+use `track.audio.channels` to choose a 5.1 or stereo alternative. If the option
+is omitted or set to `0`, no channel-count limit is applied.
 
 TypeScript declarations for the module, callbacks, events, duration probe and
 recording index are included. The npm package contains the generated wrapper

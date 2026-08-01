@@ -45,6 +45,7 @@
     "docs/performance.md",
     "index.d.ts",
     "README.md",
+    "README.ja.md",
     "LICENSE"
   ],
   "publishConfig": {
