@@ -21,9 +21,14 @@ of per-access-unit callbacks on the UI thread.
 
 The worker receives each input `ArrayBuffer` by transfer, so the main thread
 does not retain or clone a full MMTS chunk. Small live-network chunks are
-coalesced up to 512 KiB with a 25 ms latency bound before transfer. Media access
-units normally stay inside WASM: HEVC and AAC data are converted into fMP4 in
-the worker, and only complete MSE segments cross back. TTML access units and
+coalesced up to 512 KiB with a 25 ms latency bound before transfer. Input is
+copied into a reusable, grow-only WASM staging allocation and passed through
+`pushFromHeap()`, avoiding a fresh C++ input vector allocation for every push.
+Once TLV synchronization is established, the parser reads complete packets
+directly from that staging allocation and retains only the packet tail crossing
+a push boundary; malformed input still falls back to the bounded resync buffer.
+Media access units normally stay inside WASM: HEVC and AAC data are converted
+into fMP4 in the worker, and only complete MSE segments cross back. TTML access units and
 application files are the exceptions because their consumers run on the main
 thread. The sparse `onPlaybackAccessUnitView` callback forwards HEVC RAP and
 discontinuity metadata and AAC discontinuity metadata without their

@@ -4,12 +4,14 @@ import { performance } from 'node:perf_hooks';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 
-const [modulePath, mediaPath, maximumBytesText] = process.argv.slice(2);
+const [modulePath, mediaPath, maximumBytesText, chunkBytesText] = process.argv.slice(2);
 assert.ok(modulePath && mediaPath,
-  'usage: node tests/wasm_benchmark.mjs TLVDEMUX_JS SAMPLE [MAX_BYTES]');
+  'usage: node tests/wasm_benchmark.mjs TLVDEMUX_JS SAMPLE [MAX_BYTES] [CHUNK_BYTES]');
 
 const maximumBytes = Number(maximumBytesText ?? 256 * 1024 * 1024);
 assert.ok(Number.isSafeInteger(maximumBytes) && maximumBytes > 0, 'invalid MAX_BYTES');
+const chunkBytes = Number(chunkBytesText ?? 2 * 1024 * 1024);
+assert.ok(Number.isSafeInteger(chunkBytes) && chunkBytes > 0, 'invalid CHUNK_BYTES');
 
 const require = createRequire(import.meta.url);
 const createTlvDemuxModule = require(resolve(modulePath));
@@ -49,7 +51,9 @@ function benchmark(remux) {
   demuxer = new module.TlvDemuxer(callbacks);
 
   const descriptor = openSync(mediaPath, 'r');
-  const chunk = new Uint8Array(2 * 1024 * 1024);
+  const chunk = new Uint8Array(chunkBytes);
+  const inputAddress = module._malloc(chunk.byteLength);
+  assert.ok(inputAddress, `cannot allocate ${chunk.byteLength} bytes of WASM input memory`);
   let position = 0;
   const started = performance.now();
   try {
@@ -57,7 +61,8 @@ function benchmark(remux) {
       const length = Math.min(chunk.byteLength, maximumBytes - position);
       const count = readSync(descriptor, chunk, 0, length, position);
       if (count === 0) break;
-      assert.equal(demuxer.push(chunk.subarray(0, count)), true);
+      module.HEAPU8.set(chunk.subarray(0, count), inputAddress);
+      assert.equal(demuxer.pushFromHeap(inputAddress, count), true);
       while (demuxer.drainApplicationResources(256)) {}
       position += count;
       maximumWasmHeap = Math.max(maximumWasmHeap, module.HEAPU8.byteLength);
@@ -67,6 +72,7 @@ function benchmark(remux) {
   } finally {
     closeSync(descriptor);
     demuxer.delete();
+    module._free(inputAddress);
   }
   const elapsedMilliseconds = performance.now() - started;
   return {
@@ -85,5 +91,7 @@ function benchmark(remux) {
 console.log(JSON.stringify({
   sample: mediaPath,
   maximumBytes,
+  chunkBytes,
+  inputMode: 'reusable-wasm-heap',
   results: [benchmark(false), benchmark(true)],
 }, null, 2));

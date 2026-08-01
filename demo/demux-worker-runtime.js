@@ -73,7 +73,10 @@ function automaticSelection(record, track) {
 function createDemuxer(module, objectId, options) {
   const record = {
     type: 'demuxer',
+    module,
     instance: null,
+    inputAddress: 0,
+    inputCapacity: 0,
     applicationDrainScheduled: false,
     applicationDrainError: null,
     selection: {
@@ -127,6 +130,28 @@ function createDemuxer(module, objectId, options) {
     onError: event('onError'),
   });
   return record;
+}
+
+function ensureInputCapacity(record, byteLength) {
+  if (byteLength <= record.inputCapacity) return;
+  const allocationUnit = 64 * 1024;
+  const capacity = Math.ceil(byteLength / allocationUnit) * allocationUnit;
+  if (!Number.isSafeInteger(capacity) || capacity <= 0) {
+    throw new RangeError(`invalid demux input size: ${byteLength}`);
+  }
+  const address = record.module._malloc(capacity);
+  if (!address) throw new RangeError(`cannot allocate ${capacity} bytes of WASM input memory`);
+  if (record.inputAddress) record.module._free(record.inputAddress);
+  record.inputAddress = address;
+  record.inputCapacity = capacity;
+}
+
+function pushDemuxBytes(record, bytes) {
+  const byteLength = Number(bytes?.byteLength || 0);
+  if (byteLength === 0) return record.instance.pushFromHeap(0, 0);
+  ensureInputCapacity(record, byteLength);
+  record.module.HEAPU8.set(bytes, record.inputAddress);
+  return record.instance.pushFromHeap(record.inputAddress, byteLength);
 }
 
 function scheduleApplicationDrain(record) {
@@ -205,11 +230,15 @@ async function invokeObject(message) {
     if (record.type !== 'demuxer') throw new Error('track selection requires a demuxer');
     value = configureSelection(record, message.args[0] || {});
   } else {
-    const method = record.instance[message.method];
-    if (typeof method !== 'function') {
-      throw new Error(`unknown ${record.type} method: ${message.method}`);
+    if (record.type === 'demuxer' && message.method === 'push') {
+      value = pushDemuxBytes(record, message.args?.[0]);
+    } else {
+      const method = record.instance[message.method];
+      if (typeof method !== 'function') {
+        throw new Error(`unknown ${record.type} method: ${message.method}`);
+      }
+      value = method.apply(record.instance, message.args || []);
     }
-    value = method.apply(record.instance, message.args || []);
     if (message.method === 'push' || message.method === 'flush') {
       drainApplications(record, message.method === 'flush');
     }
@@ -220,6 +249,7 @@ async function invokeObject(message) {
 async function destroyObject(message) {
   const record = objects.get(message.objectId);
   if (record) {
+    if (record.inputAddress) record.module._free(record.inputAddress);
     record.instance.delete();
     objects.delete(message.objectId);
   }

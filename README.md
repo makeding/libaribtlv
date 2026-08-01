@@ -91,6 +91,42 @@ Audio tracks expose their MH audio component metadata through
 main-component flag and sampling rate. Select tracks from this metadata rather
 than assuming packet IDs remain fixed between programmes.
 
+### Demuxer lifecycle
+
+Treat each demuxer instance as one logical input session. The important
+boundaries are different operations rather than interchangeable ways to clear
+the parser:
+
+- `push()` accepts arbitrary chunk boundaries. Native callbacks and direct-WASM
+  media/signalling callbacks run synchronously inside the call; callback-
+  lifetime byte views must be consumed before it returns. Direct WASM queues
+  application-resource assembly separately as described below.
+- `flush()` closes the current contiguous input span. It emits complete buffered
+  access units, reports and drops incomplete fragments, and makes any later
+  media resume at a discontinuity (video waits for a RAP). It does not destroy
+  the demuxer, clear discovered metadata, finalize a recording index, or call
+  `MediaSource.endOfStream()`. Call it at a real EOF or intentional input
+  boundary, not whenever a live network read is temporarily empty.
+- `reposition(offset, true)` seeks within the same source. It preserves track
+  selections and the normalized media timeline, uses `offset` as the new
+  absolute input position, waits for a selected video RAP, and marks the first
+  output from each track discontinuous. Pass `false` only when the new position
+  should establish a new timeline origin. In the WASM wrapper, completed
+  application VFS files survive a reposition while incomplete carousel
+  assembly is discarded.
+- `reset()` replaces the logical source. Parser, service/track catalogue,
+  timeline, application resources, offsets and error counters are cleared, but
+  explicit service/track selections and construction options are retained. An
+  active WASM recording index is restarted empty. Clear or reselect retained
+  track IDs if the replacement source uses different IDs.
+- `selectService()` is a service-session change, not a media seek. It clears
+  service-scoped tracks, timing and application resources; select new tracks
+  from the subsequent `onTrack` callbacks.
+- At permanent EOF, call `flush()`, then `finalizeIndex()` if indexing was
+  enabled. Let asynchronous SourceBuffer/application consumers drain before
+  ending MSE. WASM objects must finally be released with `delete()`; in native
+  code the `Sink` must outlive the `Demuxer`.
+
 ## Data-broadcast applications and virtual files
 
 Application-resource collection is enabled by default. While media access units
@@ -100,6 +136,34 @@ tables, asset-management tables and out-of-order data units into complete files.
 `onApplicationResourcesReset` events. An application becomes `Ready` when its
 AIT entry path is present; other referenced files may continue arriving from the
 broadcast carousel.
+
+Collection readiness and broadcast-requested application lifecycle are
+independent. `state` describes virtual-file availability: `ready` means that
+the entry document exists, not that every referenced resource has arrived or
+that an HTML runtime is running. `lifecycle` maps the AIT `controlCode`:
+
+| `controlCode` | Reported `lifecycle` | Receiver responsibility |
+| --- | --- | --- |
+| `0x01` AUTOSTART | `autostart-pending` until the entry exists, then `autostart-ready` | Start only after it is ready and receiver policy permits it. |
+| `0x02` PRESENT | `present` | Make the application available for presentation; this is not proof that it was launched. |
+| `0x04` KILL | `killed` | Stop any active runtime/session. Cached files may remain until a resource reset. |
+| `0x05` PREFETCH | `prefetching` until the entry exists, then `prefetched` | Collect/cache resources without presenting the application. |
+| any other value | `unsupported` | Do not infer a launch action. |
+
+`tlvdemux` reports these transitions but never launches, reloads or terminates
+the application runtime itself. The host owns that state machine, including
+idempotent start/stop behavior, UI policy and the security boundary. In the
+WASM API, `reset()` and `selectService()` clear the completed VFS and emit
+`onApplicationResourcesReset`; `reposition()` deliberately retains completed
+files. A `killed` application can therefore still have `state: "ready"` until
+the host closes it or the resource session is reset.
+
+Direct WASM callers must also drive application assembly explicitly. Call
+`drainApplicationResources(maxEvents)` after input batches and schedule another
+drain when it returns `true`; a value of `0` drains all events currently queued.
+After `flush()`, drain until it returns `false` before reading the final VFS or
+deleting the demuxer. The demo worker wrapper performs this scheduling
+automatically so large carousel decompression cannot block media input.
 
 Completed bytes are moved to the sink rather than retained indefinitely by the
 demuxer. Native hosts can keep them in the thread-safe
@@ -333,6 +397,13 @@ stream and `finalizeIndex()` at its real EOF. `seekPointsFor(targetUs)` returns
 the surrounding RAP checkpoints. Reposition to `first.signallingOffset`, feed
 from there, decode from the emitted RAP, and present the first frame at or after
 the requested time.
+
+The recording index has a lifecycle separate from the demux session. A VOD
+scan starts in `building`; `finalizeIndex()` makes its duration and seek points
+complete. Use `startIndex(true)` for a growing recording and finalize only when
+the source has permanently stopped growing. `reposition()` preserves the
+current index, whereas `reset()` or `selectService()` restarts an active index
+from empty. `flush()` alone never finalizes it.
 
 ### Browser demo
 

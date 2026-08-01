@@ -90,6 +90,40 @@ sample rate を含む MH audio component metadata を `TrackInfo::audio` で公�
 番組をまたいで packet ID が固定されていると仮定せず、この metadata からトラックを
 選択してください。
 
+### Demuxer のライフサイクル
+
+demuxer の各 instance は、1 つの論理的な input session として扱います。以下の操作は
+parser を消去する別名ではなく、それぞれ異なる境界を表します。
+
+- `push()` は任意の chunk 境界を受け付けます。native callback および直接利用する
+  WASM の media／signalling callback は、この呼び出しの中で同期的に実行されます。
+  callback-lifetime の byte view は、`push()` が戻る前に消費してください。直接利用する
+  WASM では、後述のとおり application-resource assembly は別の queue で処理します。
+- `flush()` は現在の連続した input 区間を閉じます。完成した buffered access unit を
+  出力し、不完全な fragment を通知して破棄します。その後に media を入力すると
+  discontinuity から再開し、video は RAP を待ちます。demuxer の破棄、検出済み
+  metadata の消去、recording index の finalize、`MediaSource.endOfStream()` は行いません。
+  実際の EOF または意図した input 境界で呼び、live の network read が一時的に空に
+  なっただけでは呼び出さないでください。
+- `reposition(offset, true)` は同じ source 内での seek です。track selection と正規化済み
+  media timeline を維持し、`offset` を新しい絶対 input position として使用します。
+  選択された video の RAP を待ち、各 track の最初の output を discontinuous にします。
+  新しい位置を timeline の新しい原点にする場合だけ `false` を指定してください。
+  WASM wrapper では、完成済みの application VFS file は維持され、不完全な carousel
+  assembly だけが破棄されます。
+- `reset()` は論理的な source の交換です。parser、service／track catalogue、timeline、
+  application resource、offset、error counter は消去されますが、明示的な service／track
+  selection と生成時の option は維持されます。有効な WASM recording index は空の状態で
+  再開されます。交換後の source で track ID が異なる場合は、維持された ID を解除するか
+  選び直してください。
+- `selectService()` は service session の変更であり、media seek ではありません。
+  service に属する track、timing、application resource を消去するため、その後の
+  `onTrack` callback から新しい track を選択してください。
+- 永続的な EOF では `flush()` を呼び、indexing を有効にしている場合は続けて
+  `finalizeIndex()` を呼びます。非同期の SourceBuffer／application consumer が空に
+  なってから MSE を終了してください。WASM object は最後に `delete()` で解放する必要が
+  あります。native code では `Sink` が `Demuxer` より長く生存する必要があります。
+
 ## データ放送アプリケーションと仮想ファイル
 
 アプリケーションリソースの収集はデフォルトで有効です。demuxer はメディアの
@@ -99,6 +133,33 @@ asset-management table、および順不同で届く data unit を完全なフ�
 `onApplicationResourcesReset` イベントが届きます。AIT の entry path が存在すると
 アプリケーションは `Ready` になりますが、参照先のほかのファイルはその後も放送
 carousel から到着する場合があります。
+
+resource の収集状態と、放送側が要求する application lifecycle は互いに独立しています。
+`state` は仮想 file の利用可能性を表します。`ready` は entry document が存在するという
+意味であり、参照先の全 resource が揃ったことや HTML runtime が起動したことを意味
+しません。`lifecycle` は AIT の `controlCode` を次のように変換します。
+
+| `controlCode` | 通知される `lifecycle` | receiver の責務 |
+| --- | --- | --- |
+| `0x01` AUTOSTART | entry が届くまでは `autostart-pending`、到着後は `autostart-ready` | ready になり、receiver policy が許可した後にだけ起動します。 |
+| `0x02` PRESENT | `present` | application を提示可能にします。実際に起動したことを示す状態ではありません。 |
+| `0x04` KILL | `killed` | 実行中の runtime／session を停止します。resource reset までは cached file が残る場合があります。 |
+| `0x05` PREFETCH | entry が届くまでは `prefetching`、到着後は `prefetched` | application を提示せず、resource の収集／cache だけを行います。 |
+| その他 | `unsupported` | 起動操作を推測しません。 |
+
+`tlvdemux` はこれらの遷移を通知しますが、application runtime 自体の起動、reload、終了は
+行いません。冪等な start／stop、UI policy、security boundary を含む state machine は
+host が所有します。WASM API では `reset()` と `selectService()` が完成済み VFS を消去して
+`onApplicationResourcesReset` を通知し、`reposition()` は完成済み file を意図的に維持
+します。このため、host が停止するか resource session が reset されるまで、`killed` の
+application が同時に `state: "ready"` である場合もあります。
+
+WASM を直接利用する場合は、application assembly も明示的に進める必要があります。
+input batch の後に `drainApplicationResources(maxEvents)` を呼び、`true` が返った場合は
+次の drain を schedule してください。`0` を指定すると、その時点で queue にある event
+をすべて処理します。`flush()` の後は、final VFS を読み取るか demuxer を削除する前に、
+`false` が返るまで drain してください。demo の worker wrapper はこの scheduling を
+自動で行い、大きな carousel の展開が media input を塞がないようにしています。
 
 完成した byte 列は demuxer 内に無期限で保持されず、sink へ move されます。
 ネイティブのホストでは、thread-safe な `ApplicationResourceStore` に保存できます。
@@ -331,6 +392,13 @@ request を実行し、取得した byte 列をそのまま `pushRange()` へ渡
 実際の EOF で `finalizeIndex()` を呼びます。`seekPointsFor(targetUs)` は、対象時刻を
 挟む RAP checkpoint を返します。`first.signallingOffset` へ移動してそこから入力し、
 出力された RAP から decode を開始し、指定時刻以降で最初の frame を表示します。
+
+recording index は demux session とは別の lifecycle を持ちます。VOD scan は
+`building` から始まり、`finalizeIndex()` によって duration と seek point が complete に
+なります。追いかけ録画では `startIndex(true)` を使い、source が永続的に成長を停止した
+ときだけ finalize してください。`reposition()` は現在の index を維持しますが、
+`reset()` または `selectService()` は有効な index を空から再開します。`flush()` だけでは
+index は finalize されません。
 
 ### ブラウザーデモ
 

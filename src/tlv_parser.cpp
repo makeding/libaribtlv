@@ -10,11 +10,72 @@ TlvParser::TlvParser(const Limits& limits, PacketCallback on_packet, ErrorCallba
     : limits_(limits), on_packet_(std::move(on_packet)), on_error_(std::move(on_error)) {}
 
 void TlvParser::push(const std::uint8_t* data, const std::size_t size) {
-    if (size == 0) {
+    if (size == 0) return;
+
+    std::size_t input_cursor = 0;
+    if (!synchronized_) {
+        buffer_.insert(buffer_.end(), data, data + size);
+        process(false);
         return;
     }
-    buffer_.insert(buffer_.end(), data, data + size);
-    process(false);
+
+    // Complete only the packet that crossed the previous push boundary. Once
+    // it is emitted, the remaining complete packets can borrow the caller's
+    // input for the duration of the synchronous callback.
+    while (input_cursor < size && !buffer_.empty() && synchronized_) {
+        std::size_t required = 0;
+        if (buffer_.size() < 4) {
+            required = 4 - buffer_.size();
+        } else {
+            if (buffer_[0] != 0x7f || !candidate_type(buffer_[1])) {
+                buffer_.insert(buffer_.end(), data + input_cursor, data + size);
+                process(false);
+                return;
+            }
+            const auto payload_size = static_cast<std::size_t>(read_be16(buffer_.data() + 2));
+            if (payload_size > limits_.max_tlv_payload) {
+                buffer_.insert(buffer_.end(), data + input_cursor, data + size);
+                process(false);
+                return;
+            }
+            const auto packet_size = 4 + payload_size;
+            required = packet_size > buffer_.size() ? packet_size - buffer_.size() : 0;
+        }
+
+        const auto copied = std::min(required, size - input_cursor);
+        buffer_.insert(buffer_.end(), data + input_cursor, data + input_cursor + copied);
+        input_cursor += copied;
+        if (copied < required) return;
+        process(false);
+    }
+
+    if (input_cursor == size) return;
+    if (!synchronized_ || !buffer_.empty()) {
+        buffer_.insert(buffer_.end(), data + input_cursor, data + size);
+        process(false);
+        return;
+    }
+
+    const auto direct_begin = input_cursor;
+    while (size - input_cursor >= 4) {
+        const auto* header = data + input_cursor;
+        if (header[0] != 0x7f || !candidate_type(header[1])) break;
+        const auto payload_size = static_cast<std::size_t>(read_be16(header + 2));
+        if (payload_size > limits_.max_tlv_payload) break;
+        const auto packet_size = 4 + payload_size;
+        if (packet_size > size - input_cursor) break;
+        on_packet_(TlvPacketView{
+            header[1], header + 4, payload_size,
+            buffer_offset_ + static_cast<std::uint64_t>(input_cursor - direct_begin),
+        });
+        input_cursor += packet_size;
+    }
+
+    buffer_offset_ += static_cast<std::uint64_t>(input_cursor - direct_begin);
+    if (input_cursor != size) {
+        buffer_.insert(buffer_.end(), data + input_cursor, data + size);
+        process(false);
+    }
 }
 
 void TlvParser::flush() {
