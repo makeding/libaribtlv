@@ -1,5 +1,5 @@
 import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
-import { DataBroadcastController } from './data-broadcast.js?v=mh-eit-v1';
+import { DataBroadcastController } from './data-broadcast.js?v=caption-v1';
 
 const MiB = 1024n * 1024n;
 const PLAYBACK_CHUNK = 2n * MiB;
@@ -15,6 +15,7 @@ const SEEK_PROBE_BYTES = 64n * MiB;
 const MAX_SEEK_PROBE_ATTEMPTS = 5;
 const DEFAULT_PLAYBACK_RATE = 2;
 const LIVE_PLAYBACK_RATE = 1;
+const SHORT_RECORDING_THRESHOLD_SECONDS = 60;
 const URL_STORAGE_KEY = 'tlvdemux.demo.httpUrl';
 const AUDIO_STORAGE_KEY = 'tlvdemux.demo.audioPacketId';
 const SUBTITLE_STORAGE_KEY = 'tlvdemux.demo.subtitlePacketId';
@@ -64,6 +65,14 @@ let selectedSubtitlePacketId = null;
 let preferredSubtitlePacketId = null;
 let knownSubtitleTracks = new Map();
 let playbackQualityTimer = null;
+
+dataBroadcast.setCaptionSubscriptionListener(() => {
+  const selectedTrack = [...knownSubtitleTracks.values()]
+    .find(track => track.packetId === selectedSubtitlePacketId);
+  if (selectedTrack && dataBroadcast.isCaptionSubscribed(selectedTrack.componentTag)) {
+    activeSubtitleRenderer?.reset();
+  }
+});
 
 elements.video.defaultPlaybackRate = DEFAULT_PLAYBACK_RATE;
 elements.video.playbackRate = DEFAULT_PLAYBACK_RATE;
@@ -694,9 +703,15 @@ async function playbackBackpressure(generation) {
 
 async function playSource(source, probeResult, generation, startTimeSeconds = 0,
                           liveMode = false, reuseMedia = false) {
-  const playbackRate = liveMode ? LIVE_PLAYBACK_RATE : DEFAULT_PLAYBACK_RATE;
+  const recordingDurationSeconds = liveMode ? Infinity : durationSeconds(probeResult.duration);
+  const playbackRate = liveMode || recordingDurationSeconds < SHORT_RECORDING_THRESHOLD_SECONDS
+    ? LIVE_PLAYBACK_RATE
+    : DEFAULT_PLAYBACK_RATE;
   elements.video.defaultPlaybackRate = playbackRate;
   elements.video.playbackRate = playbackRate;
+  if (!liveMode && playbackRate === LIVE_PLAYBACK_RATE) {
+    appendLog(`60 秒未満の録画は ${LIVE_PLAYBACK_RATE}× で再生します`);
+  }
   let mediaSource;
   const openFreshMediaSource = async () => {
     activeQueueByType = new Map();
@@ -930,6 +945,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         const desired = preferredAudioPacketId ?? selectedAudioPacketId;
         if (selectedAudio === null || track.packetId === desired) selectAudioTrack(track);
       } else if (track.kind === 'subtitle' && track.codec === 'ttml') {
+        dataBroadcast.captionTrackChanged(track);
         knownSubtitleTracks.set(track.packetId, track);
         renderSubtitleTracks();
         const desired = preferredSubtitlePacketId ?? selectedSubtitlePacketId;
@@ -957,6 +973,10 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     },
     onAccessUnitView(unit) {
       try {
+        const subtitleTrack = tracks.get(unit.trackId);
+        if (!suppressOutput && unit.codec === 'ttml' && subtitleTrack?.kind === 'subtitle') {
+          dataBroadcast.captionDataChanged(unit);
+        }
         if (unit.trackId === selectedVideo) {
           if (unit.discontinuity) {
             videoDiscontinuityCount += 1;
@@ -980,13 +1000,17 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         } else if (unit.trackId === selectedSubtitle && !suppressOutput) {
           const track = tracks.get(unit.trackId);
           if (!track || !activeSubtitleRenderer) return;
+          if (dataBroadcast.isCaptionSubscribed(unit.componentTag)) {
+            activeSubtitleRenderer.reset();
+            return;
+          }
           if (unit.discontinuity) activeSubtitleRenderer.reset();
           const subtitleData = {
             packetId: track.packetId,
             mpuSequenceNumber: unit.mpuSequenceNumber ?? undefined,
             pts: timestampMilliseconds(unit.ptsValue, unit.ptsTimescale),
             dts: timestampMilliseconds(unit.dtsValue, unit.dtsTimescale),
-            subtitleTimingMode: track.subtitle?.timingMode,
+            subtitleTimingMode: unit.subtitleTimingMode ?? track.subtitle?.timingMode,
             subtitleReferenceStartMediaTime: timestampMilliseconds(
               unit.subtitleReferenceStartPtsValue,
               unit.subtitleReferenceStartPtsTimescale,
@@ -1014,6 +1038,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       else if (recoverableErrors++ < 8) appendLog(`分離警告 @${error.inputOffset}: ${error.message}`);
     },
   });
+  demuxer.setSubtitlePassthroughEnabled(true);
   demuxer.setMseOutputEnabled(!suppressOutput);
   activeDemuxer = demuxer;
   const applicationDrainState = { alive: true, scheduled: false };

@@ -102,6 +102,9 @@ export class DataBroadcastController {
     this.readyContextId = null;
     this.loadedEntry = null;
     this.programEvents = new Map();
+    this.captionComponentTags = new Set();
+    this.captionSubscriptions = new Set();
+    this.captionSubscriptionListener = () => {};
     this.showRequested = false;
     this.log = () => {};
 
@@ -139,6 +142,10 @@ export class DataBroadcastController {
         }
       },
       onUrlChange: value => this.applicationUrlChanged(value),
+      onCaptionSubscription: subscription => {
+        this.captionSubscriptions = new Set(subscription.componentTags);
+        this.captionSubscriptionListener([...this.captionSubscriptions]);
+      },
     });
     window.__ARIB_HTML5_INSTALL__ = target => this.installRuntime(target);
     window.addEventListener('keydown', this.handleKeyboard);
@@ -157,6 +164,10 @@ export class DataBroadcastController {
     this.log = typeof callback === 'function' ? callback : () => {};
   }
 
+  setCaptionSubscriptionListener(callback) {
+    this.captionSubscriptionListener = typeof callback === 'function' ? callback : () => {};
+  }
+
   installRuntime(target) {
     this.host.installRuntime(target);
   }
@@ -169,6 +180,10 @@ export class DataBroadcastController {
     this.readyEntry = null;
     this.readyContextId = null;
     this.loadedEntry = null;
+    this.host.resetCaptions();
+    this.captionComponentTags.clear();
+    this.captionSubscriptions.clear();
+    this.captionSubscriptionListener([]);
     this.host.clearBroadcastClock();
     this.host.clearProgramInfo();
     this.programEvents.clear();
@@ -181,6 +196,62 @@ export class DataBroadcastController {
     this.vfsSession.beginSession()
       .catch(error => this.setStatus('VFS エラー', error.message));
     this.setStatus('データ放送を収集中', '0 ファイル');
+  }
+
+  captionTrackChanged(track) {
+    const componentTag = this.normalizeCaptionComponentTag(track?.componentTag);
+    if (componentTag === null) return;
+    this.captionComponentTags.add(componentTag);
+    this.host.setCaptionTracks([...this.captionComponentTags]);
+  }
+
+  captionDataChanged(unit) {
+    const componentTag = this.normalizeCaptionComponentTag(unit?.componentTag);
+    if (componentTag === null || !(unit.data instanceof Uint8Array)) return;
+    const tmd = this.binaryNibble(unit.subtitleTimingMode ?? 0);
+    const decoder = new TextDecoder();
+    this.host.pushCaption({
+      componentTag,
+      dataType: '0000',
+      tmd,
+      data: decoder.decode(unit.data),
+    });
+    for (const resource of unit.subtitleResources || []) {
+      const dataType = Number(resource.dataType);
+      if (!Number.isInteger(dataType) || dataType < 0 || dataType > 0x0f ||
+          !(resource.data instanceof Uint8Array)) continue;
+      this.host.pushCaption({
+        componentTag,
+        dataType: this.binaryNibble(dataType),
+        tmd,
+        data: dataType === 6
+          ? decoder.decode(resource.data)
+          : this.bytesToDomString(resource.data),
+      });
+    }
+  }
+
+  isCaptionSubscribed(componentTag) {
+    const normalized = this.normalizeCaptionComponentTag(componentTag);
+    return normalized !== null && this.captionSubscriptions.has(normalized);
+  }
+
+  normalizeCaptionComponentTag(value) {
+    const componentTag = Number(value);
+    if (!Number.isInteger(componentTag) || componentTag < 0 || componentTag > 0xffff) return null;
+    return componentTag & 0xff;
+  }
+
+  binaryNibble(value) {
+    return (Number(value) & 0x0f).toString(2).padStart(4, '0');
+  }
+
+  bytesToDomString(data) {
+    let result = '';
+    for (let offset = 0; offset < data.byteLength; offset += 8192) {
+      result += String.fromCharCode(...data.subarray(offset, offset + 8192));
+    }
+    return result;
   }
 
   broadcastClockChanged(clock) {

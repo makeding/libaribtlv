@@ -27,6 +27,8 @@ assert.equal(demuxer.pushFromHeap(0, 0), true);
 assert.equal(demuxer.pushFromHeap(module.HEAPU8.byteLength, 1), false);
 demuxer.selectService(undefined);
 demuxer.selectTrack('video', undefined);
+demuxer.setSubtitlePassthroughEnabled(true);
+demuxer.setSubtitlePassthroughEnabled(false);
 assert.equal(demuxer.indexDuration(), null);
 assert.equal(demuxer.setIndexDuration(1000000n), true);
 demuxer.reposition(0n, true);
