@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(tlvdemux VERSION 0.1.4 LANGUAGES CXX)
+project(tlvdemux VERSION 0.1.5 LANGUAGES CXX)
 
 include(CTest)
 include(GNUInstallDirs)
