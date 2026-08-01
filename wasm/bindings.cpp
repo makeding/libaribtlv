@@ -578,7 +578,9 @@ public:
             emit("onAccessUnitView", event);
             return;
         }
-        emit("onAccessUnit", access_unit_event(unit, copy_bytes(unit.data)));
+        if (has_callback("onAccessUnit")) {
+            emit("onAccessUnit", access_unit_event(unit, copy_bytes(unit.data)));
+        }
     }
 
     void onApplication(const tlvdemux::ApplicationInfo& info) override {

@@ -129,6 +129,7 @@ void MmtpParser::flush() {
         track.subtitle = {};
         track.current_mpu_sequence.reset();
         track.au_index = 0;
+        track.dts_offset_accumulator = 0;
         track.discontinuity = true;
         if (track.info.kind == TrackKind::Video) track.wait_for_rap = true;
     }
@@ -1652,11 +1653,10 @@ void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_seq
             output_restart_offset,
             std::min(timestamp->second.restart_offset,
                      extended->second.restart_offset));
-        dts_offset = -static_cast<std::int64_t>(extended->second.decoding_time_offset);
-        for (std::size_t index = 0; index < track.au_index; ++index) {
-            dts_offset += extended->second.pts_offsets[index];
-        }
+        dts_offset = -static_cast<std::int64_t>(extended->second.decoding_time_offset) +
+            track.dts_offset_accumulator;
         pts_offset = dts_offset + extended->second.dts_pts_offsets[track.au_index];
+        track.dts_offset_accumulator += extended->second.pts_offsets[track.au_index];
         ntp = timestamp->second.ntp;
         ++track.au_index;
     } else if (track.info.codec == Codec::Ttml && latest_full_ntp_.has_value()) {
@@ -1925,6 +1925,7 @@ void MmtpParser::parse_mpu(const std::uint16_t packet_id,
         }
         track.current_mpu_sequence = mpu_sequence;
         track.au_index = 0;
+        track.dts_offset_accumulator = 0;
     }
 
     const auto* body = data + 8;

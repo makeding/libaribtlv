@@ -21,6 +21,9 @@ add_library(tlvdemux
     src/duration_probe.cpp
     src/mmtp_parser.cpp
     src/mmtp_signalling_tables.cpp
+    src/mse/hevc_parser.cpp
+    src/mse/latm_parser.cpp
+    src/mse/mp4_builder.cpp
     wasm/mse_remuxer.cpp
     src/playback.cpp
     src/recording.cpp

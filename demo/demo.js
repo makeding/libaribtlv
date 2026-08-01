@@ -1,5 +1,6 @@
 import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
 import { DataBroadcastController } from './data-broadcast.js?v=caption-v1';
+import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js';
 
 const MiB = 1024n * 1024n;
 const PLAYBACK_CHUNK = 2n * MiB;
@@ -44,7 +45,6 @@ dataBroadcast.setLogger(appendLog);
 let wasmModule = null;
 let activeProbe = null;
 let activeDemuxer = null;
-let activeApplicationDrainState = null;
 let activeController = null;
 let activeMediaSource = null;
 let activeObjectUrl = null;
@@ -589,10 +589,8 @@ function releaseMedia() {
 function stopPlayback(quiet = false, preserveMedia = false) {
   runGeneration += 1;
   activeController?.abort();
-  activeProbe?.cancel();
+  void activeProbe?.cancel();
   activeProbe?.delete();
-  if (activeApplicationDrainState) activeApplicationDrainState.alive = false;
-  activeApplicationDrainState = null;
   activeDemuxer?.delete();
   activeController = null;
   activeProbe = null;
@@ -618,10 +616,12 @@ async function probeDuration(source, generation) {
   if (videoPacketId !== undefined) options.videoPacketId = videoPacketId;
   const probe = new wasmModule.DurationProbe();
   activeProbe = probe;
-  if (!probe.begin(source.size, options)) throw new Error(`再生時間の検出を開始できません: ${probe.failure()}`);
+  if (!await probe.begin(source.size, options)) {
+    throw new Error(`再生時間の検出を開始できません: ${await probe.failure()}`);
+  }
   let number = 0;
-  while (probe.state() === 'need-range') {
-    const request = probe.nextRange();
+  while (await probe.state() === 'need-range') {
+    const request = await probe.nextRange();
     if (!request) throw new Error('検出器から Range リクエストが返されませんでした');
     number += 1;
     const end = request.offset + request.length - 1n;
@@ -630,17 +630,23 @@ async function probeDuration(source, generation) {
     let data;
     try { data = await source.read(request.offset, request.length); }
     catch (error) {
-      if (generation === runGeneration) probe.failRange(request.requestId);
+      if (generation === runGeneration) await probe.failRange(request.requestId);
       throw error;
     }
     if (generation !== runGeneration) return null;
-    if (!probe.pushRange(request.requestId, request.offset, data, true)) {
+    if (!await probe.pushRange(request.requestId, request.offset, data, true)) {
       throw new Error(`Range #${number} は検出器に拒否されました`);
     }
-    elements.transferred.textContent = formatBytes(probe.transferredBytes());
+    elements.transferred.textContent = formatBytes(await probe.transferredBytes());
   }
-  if (probe.state() !== 'complete') throw new Error(`検出未完了: ${probe.state()} / ${probe.failure()}`);
-  const result = { duration: probe.duration(), transferred: probe.transferredBytes() };
+  const state = await probe.state();
+  if (state !== 'complete') {
+    throw new Error(`検出未完了: ${state} / ${await probe.failure()}`);
+  }
+  const result = {
+    duration: await probe.duration(),
+    transferred: await probe.transferredBytes(),
+  };
   probe.delete();
   activeProbe = null;
   return result;
@@ -923,14 +929,14 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   const selectAudioTrack = track => {
     selectedAudio = track.trackId;
     selectedAudioPacketId = track.packetId;
-    demuxer.selectTrack('audio', selectedAudio);
+    void demuxer.selectTrack('audio', selectedAudio);
     renderAudioTracks();
   };
 
   const selectSubtitleTrack = track => {
     selectedSubtitle = track.trackId;
     selectedSubtitlePacketId = track.packetId;
-    demuxer.selectTrack('subtitle', selectedSubtitle);
+    void demuxer.selectTrack('subtitle', selectedSubtitle);
     activeSubtitleRenderer?.reset();
     renderSubtitleTracks();
   };
@@ -949,10 +955,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       if (track.kind === 'video' && selectedVideo === null &&
           (wantedVideoPacketId === undefined || track.packetId === wantedVideoPacketId)) {
         selectedVideo = track.trackId;
-        demuxer.selectTrack('video', selectedVideo);
-        if (externalDurationUs !== null && typeof demuxer.setIndexDuration === 'function') {
-          demuxer.setIndexDuration(externalDurationUs);
-        }
+        void demuxer.selectTrack('video', selectedVideo);
       } else if (track.kind === 'audio') {
         knownAudioTracks.set(track.packetId, track);
         renderAudioTracks();
@@ -962,7 +965,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
             `${MSE_MAX_AUDIO_CHANNELS}ch を超えるため除外します`);
           if (selectedAudio === track.trackId) {
             selectedAudio = null;
-            demuxer.selectTrack('audio', undefined);
+            void demuxer.selectTrack('audio', undefined);
             const fallback = preferredMseAudioTrack(
               knownAudioTracks, preferredAudioPacketId,
             );
@@ -1069,31 +1072,14 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       else if (recoverableErrors++ < 8) appendLog(`分離警告 @${error.inputOffset}: ${error.message}`);
     },
   });
-  demuxer.setSubtitlePassthroughEnabled(true);
-  demuxer.setMseOutputEnabled(!suppressOutput);
+  await demuxer.configureTrackSelection({
+    videoPacketId: wantedVideoPacketId,
+    audioPacketId: preferredAudioPacketId,
+    subtitlePacketId: preferredSubtitlePacketId,
+  });
+  await demuxer.setSubtitlePassthroughEnabled(true);
+  await demuxer.setMseOutputEnabled(!suppressOutput);
   activeDemuxer = demuxer;
-  const applicationDrainState = { alive: true, scheduled: false };
-  activeApplicationDrainState = applicationDrainState;
-  const scheduleApplicationDrain = () => {
-    if (applicationDrainState.scheduled || !applicationDrainState.alive) return;
-    applicationDrainState.scheduled = true;
-    const run = () => {
-      applicationDrainState.scheduled = false;
-      if (!applicationDrainState.alive || generation !== runGeneration) return;
-      try {
-        if (demuxer.drainApplicationResources(32)) scheduleApplicationDrain();
-      } catch (error) {
-        callbackError = error;
-      }
-    };
-    if (globalThis.scheduler?.postTask) {
-      globalThis.scheduler.postTask(run, { priority: 'background' }).catch(error => {
-        callbackError = error;
-      });
-    } else {
-      setTimeout(run, 0);
-    }
-  };
   activeAudioSwitch = async packetId => {
     const track = [...tracks.values()].find(item => item.kind === 'audio' && item.packetId === packetId);
     if (!track) throw new Error(`音声 packet_id=0x${packetId.toString(16)} は利用できません`);
@@ -1119,10 +1105,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     selectSubtitleTrack(track);
     appendLog(`字幕切替 packet_id=0x${packetId.toString(16)}`);
   };
-  demuxer.startIndex(liveMode);
-  if (typeof demuxer.setIndexDuration !== 'function' && startTimeSeconds > 0) {
-    throw new Error('現在の tlvdemux.js は Range シークに未対応です。WASM を再ビルドしてください');
-  }
+  await demuxer.startIndex(liveMode);
   elements.mediaInfo.textContent = 'tlvdemux';
   elements.probeState.textContent = 'バッファリング中';
 
@@ -1137,23 +1120,24 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         ? maximumHead - headEnd : PLAYBACK_CHUNK;
       const data = await source.read(headEnd, length);
       if (generation !== runGeneration) return;
-      if (!demuxer.push(data)) throw new Error(`先頭解析に失敗しました: ${headEnd}`);
-      scheduleApplicationDrain();
+      if (!await demuxer.push(data)) {
+        throw new Error(`先頭解析に失敗しました: ${headEnd}`);
+      }
       if (callbackError) throw callbackError;
       headEnd += length;
       playbackBytes += length;
     }
     if (!selectedVideo || !headVideoSeen) throw new Error('シーク準備中に選択した映像を検出できませんでした');
     const targetUs = BigInt(Math.round(startTimeSeconds * 1000000));
-    demuxer.setIndexDuration(externalDurationUs);
-    const estimate = demuxer.estimateOffset(targetUs, source.size);
+    await demuxer.setIndexDuration(externalDurationUs);
+    const estimate = await demuxer.estimateOffset(targetUs, source.size);
     if (estimate === null) throw new Error('シーク先のバイト位置を推定できませんでした');
     let preroll = seekPrerollBytes(source.size, externalDurationUs);
     let candidate = 0n;
     let attempt = 0;
     for (;;) {
       candidate = estimate > preroll ? estimate - preroll : 0n;
-      demuxer.reposition(candidate, true);
+      await demuxer.reposition(candidate, true);
       seekProbeRap = null;
       seekProbeActive = true;
       let probeOffset = candidate;
@@ -1164,8 +1148,9 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
           ? probeLimit - probeOffset : PLAYBACK_CHUNK;
         const data = await source.read(probeOffset, length);
         if (generation !== runGeneration) return;
-        if (!demuxer.push(data)) throw new Error(`シーク位置の検証に失敗しました: ${probeOffset}`);
-        scheduleApplicationDrain();
+        if (!await demuxer.push(data)) {
+          throw new Error(`シーク位置の検証に失敗しました: ${probeOffset}`);
+        }
         if (callbackError) throw callbackError;
         probeOffset += length;
         playbackBytes += length;
@@ -1182,9 +1167,9 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       if (preroll > estimate) preroll = estimate;
     }
     offset = seekProbeRap.restartOffset;
-    demuxer.reposition(offset, true);
+    await demuxer.reposition(offset, true);
     suppressOutput = false;
-    demuxer.setMseOutputEnabled(true);
+    await demuxer.setMseOutputEnabled(true);
     if (!reuseMedia) {
       internalSeekTarget = startTimeSeconds;
       elements.video.currentTime = startTimeSeconds;
@@ -1194,10 +1179,12 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   if (liveMode && source.stream) {
     for await (const data of source.stream()) {
       if (generation !== runGeneration) return;
-      if (!demuxer.push(data)) throw new Error(`Live 分離入力に失敗しました: ${playbackBytes}`);
-      scheduleApplicationDrain();
+      const dataLength = BigInt(data.byteLength);
+      if (!await demuxer.push(data)) {
+        throw new Error(`Live 分離入力に失敗しました: ${playbackBytes}`);
+      }
       if (callbackError) throw callbackError;
-      playbackBytes += BigInt(data.byteLength);
+      playbackBytes += dataLength;
       elements.transferred.textContent = `${formatBytes(playbackBytes)} / ${bufferedAhead().toFixed(1)}s`;
       if (playbackBytes - lastReported >= 32n * MiB) {
         appendLog(`Live ${formatBytes(playbackBytes)}、バッファ=${bufferedAhead().toFixed(1)}s`);
@@ -1210,8 +1197,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     const length = source.size - offset < PLAYBACK_CHUNK ? source.size - offset : PLAYBACK_CHUNK;
     const data = await source.read(offset, length);
     if (generation !== runGeneration) return;
-    if (!demuxer.push(data)) throw new Error(`分離入力に失敗しました: ${offset}`);
-    scheduleApplicationDrain();
+    if (!await demuxer.push(data)) throw new Error(`分離入力に失敗しました: ${offset}`);
     if (callbackError) throw callbackError;
     offset += length;
     playbackBytes += length;
@@ -1223,16 +1209,13 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     await playbackBackpressure(generation);
   }
   if (generation !== runGeneration) return;
-  demuxer.flush();
-  while (demuxer.drainApplicationResources(256)) {
-    await new Promise(resolve => setTimeout(resolve, 0));
-    if (generation !== runGeneration) return;
-  }
+  await demuxer.flush();
   if (callbackError) throw callbackError;
-  if (!liveMode) demuxer.finalizeIndex();
-  appendLog(`索引 RAP ${demuxer.seekPointCount()} 点、状態=${demuxer.indexState()}`);
-  applicationDrainState.alive = false;
-  if (activeApplicationDrainState === applicationDrainState) activeApplicationDrainState = null;
+  if (!liveMode) await demuxer.finalizeIndex();
+  const [seekPointCount, indexState] = await Promise.all([
+    demuxer.seekPointCount(), demuxer.indexState(),
+  ]);
+  appendLog(`索引 RAP ${seekPointCount} 点、状態=${indexState}`);
   demuxer.delete();
   activeDemuxer = null;
   activeAudioSwitch = null;
@@ -1313,8 +1296,6 @@ async function loadAndPlay(startTimeSeconds = 0, reuseMedia = false, operationLa
     if (generation === runGeneration) {
       activeProbe?.delete();
       activeProbe = null;
-      if (activeApplicationDrainState) activeApplicationDrainState.alive = false;
-      activeApplicationDrainState = null;
       activeDemuxer?.delete();
       activeDemuxer = null;
       activeController = null;
@@ -1387,21 +1368,14 @@ elements.video.addEventListener('seeked', () => {
   }
 });
 
-if (typeof createTlvDemuxModule !== 'function') {
-  elements.wasmStatus.textContent = 'WASM がありません';
+createWorkerTlvDemuxModule().then(module => {
+  wasmModule = module;
+  elements.wasmStatus.textContent = 'WASM Worker 準備完了';
+  elements.wasmStatus.className = 'badge';
+  setRunning(false);
+}).catch(error => {
+  elements.wasmStatus.textContent = 'WASM Worker 読み込み失敗';
   elements.wasmStatus.className = 'badge error';
-  elements.probeState.textContent = 'build-wasm/tlvdemux.js を先にビルドしてください';
-  appendLog('../build-wasm/tlvdemux.js が見つかりません');
-} else {
-  createTlvDemuxModule().then(module => {
-    wasmModule = module;
-    elements.wasmStatus.textContent = 'WASM 準備完了';
-    elements.wasmStatus.className = 'badge';
-    setRunning(false);
-  }).catch(error => {
-    elements.wasmStatus.textContent = 'WASM 読み込み失敗';
-    elements.wasmStatus.className = 'badge error';
-    elements.probeState.textContent = '読み込み失敗';
-    appendLog(`WASM エラー ${error.message || error}`);
-  });
-}
+  elements.probeState.textContent = '読み込み失敗';
+  appendLog(`WASM Worker エラー ${error.message || error}`);
+});

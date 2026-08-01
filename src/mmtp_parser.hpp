@@ -149,6 +149,7 @@ private:
         std::uint64_t restart_offset = 0;
         std::optional<std::uint32_t> current_mpu_sequence;
         std::size_t au_index = 0;
+        std::int64_t dts_offset_accumulator = 0;
         bool wait_for_rap = false;
         bool discontinuity = false;
         MediaAssembler media;

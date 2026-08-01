@@ -54,16 +54,18 @@ void TlvParser::compact() {
     if (cursor_ == 0) {
         return;
     }
-    buffer_.erase(buffer_.begin(), buffer_.begin() + static_cast<std::ptrdiff_t>(cursor_));
+    if (cursor_ == buffer_.size()) {
+        buffer_.clear();
+    } else {
+        buffer_.erase(buffer_.begin(),
+                      buffer_.begin() + static_cast<std::ptrdiff_t>(cursor_));
+    }
     buffer_offset_ += static_cast<std::uint64_t>(cursor_);
     cursor_ = 0;
 }
 
 void TlvParser::consume(const std::size_t size) {
     cursor_ += size;
-    if (cursor_ >= 64 * 1024 && cursor_ * 2 >= buffer_.size()) {
-        compact();
-    }
 }
 
 bool TlvParser::find_boundary(const bool end_of_stream) {

@@ -1,0 +1,214 @@
+importScripts('./demux-worker-protocol.js');
+
+const protocol = globalThis.TlvDemuxWorkerProtocol;
+const objects = new Map();
+let modulePromise = null;
+let operationQueue = Promise.resolve();
+
+function serializeError(error) {
+  return {
+    name: error?.name || 'Error',
+    message: error?.message || String(error),
+    stack: error?.stack || '',
+  };
+}
+
+function sendFailure(requestId, error) {
+  postMessage({ type: protocol.failure, requestId, error: serializeError(error) });
+}
+
+function sendEvent(objectId, name, value, transfer = []) {
+  postMessage({ type: protocol.event, objectId, name, value }, transfer);
+}
+
+function copyBytes(source) {
+  const output = new Uint8Array(source?.byteLength || 0);
+  if (output.byteLength) output.set(source);
+  return output;
+}
+
+function transferAccessUnit(objectId, unit) {
+  if (unit.codec === 'hevc' && !unit.randomAccess && !unit.discontinuity) return;
+  if (unit.codec === 'aac-latm' && !unit.discontinuity) return;
+  const data = unit.codec === 'ttml' ? copyBytes(unit.data) : new Uint8Array(0);
+  const resources = (unit.subtitleResources || []).map(resource => ({
+    ...resource,
+    data: copyBytes(resource.data),
+  }));
+  const value = { ...unit, data, subtitleResources: resources };
+  const transfer = [data.buffer, ...resources.map(resource => resource.data.buffer)];
+  sendEvent(objectId, 'onAccessUnitView', value, transfer);
+}
+
+function automaticSelection(record, track) {
+  const selection = record.selection;
+  if (track.kind === 'video') {
+    if (selection.videoTrack !== null) return;
+    if (selection.videoPacketId !== null && track.packetId !== selection.videoPacketId) return;
+    selection.videoTrack = track.trackId;
+    record.instance.selectTrack('video', track.trackId);
+    return;
+  }
+  if (track.kind === 'audio') {
+    const channels = Number(track.audio?.channels || 0);
+    if (selection.maxAudioChannels > 0 && channels > selection.maxAudioChannels) return;
+    const preferred = selection.audioPacketId;
+    if (selection.audioTrack !== null && (preferred === null || track.packetId !== preferred)) {
+      return;
+    }
+    selection.audioTrack = track.trackId;
+    record.instance.selectTrack('audio', track.trackId);
+    return;
+  }
+  if (track.kind === 'subtitle' && track.codec === 'ttml') {
+    const preferred = selection.subtitlePacketId;
+    if (selection.subtitleTrack !== null &&
+        (preferred === null || track.packetId !== preferred)) return;
+    selection.subtitleTrack = track.trackId;
+    record.instance.selectTrack('subtitle', track.trackId);
+  }
+}
+
+function createDemuxer(module, objectId, options) {
+  const record = {
+    type: 'demuxer',
+    instance: null,
+    selection: {
+      videoPacketId: options.videoPacketId ?? null,
+      audioPacketId: options.audioPacketId ?? null,
+      subtitlePacketId: options.subtitlePacketId ?? null,
+      maxAudioChannels: Number(options.mseMaxAudioChannels || 0),
+      videoTrack: null,
+      audioTrack: null,
+      subtitleTrack: null,
+    },
+  };
+  const event = (name, transform = value => value) => value => {
+    sendEvent(objectId, name, transform(value));
+  };
+  record.instance = new module.TlvDemuxer({
+    mseMaxAudioChannels: record.selection.maxAudioChannels,
+    onMseVideoStart: event('onMseVideoStart'),
+    onMseInit(init) {
+      sendEvent(objectId, 'onMseInit', init, [init.data.buffer]);
+    },
+    onMseSegment(segment) {
+      sendEvent(objectId, 'onMseSegment', segment, [segment.data.buffer]);
+    },
+    onService: event('onService'),
+    onTrack(track) {
+      automaticSelection(record, track);
+      sendEvent(objectId, 'onTrack', track);
+    },
+    onLayoutConfiguration: event('onLayoutConfiguration'),
+    onApplicationService: event('onApplicationService'),
+    onDataAsset: event('onDataAsset'),
+    onSignallingMessage: event('onSignallingMessage'),
+    onBroadcastClock: event('onBroadcastClock'),
+    onEventInfo: event('onEventInfo'),
+    onStreamEvent: event('onStreamEvent'),
+    onApplicationResourceView(resource) {
+      const data = copyBytes(resource.data);
+      sendEvent(objectId, 'onApplicationResourceView', { ...resource, data }, [data.buffer]);
+    },
+    onApplicationState(state) {
+      sendEvent(objectId, 'onApplicationState', {
+        ...state,
+        applicationEntry: record.instance.applicationEntry(state.contextId),
+      });
+    },
+    onApplicationResourcesReset: event('onApplicationResourcesReset'),
+    onAccessUnitView(unit) {
+      transferAccessUnit(objectId, unit);
+    },
+    onError: event('onError'),
+  });
+  return record;
+}
+
+function drainApplications(record) {
+  if (record.type !== 'demuxer') return;
+  while (record.instance.drainApplicationResources(256)) {
+    // Application decompression and assembly deliberately remain in the worker.
+  }
+}
+
+async function initialize(message) {
+  if (!modulePromise) {
+    importScripts(message.wasmUrl);
+    if (typeof createTlvDemuxModule !== 'function') {
+      throw new Error(`WASM factory was not exported by ${message.wasmUrl}`);
+    }
+    modulePromise = createTlvDemuxModule();
+  }
+  await modulePromise;
+  postMessage({ type: protocol.ready, requestId: message.requestId });
+}
+
+async function createObject(message) {
+  const module = await modulePromise;
+  let record;
+  if (message.objectType === 'duration-probe') {
+    record = { type: 'duration-probe', instance: new module.DurationProbe() };
+  } else if (message.objectType === 'demuxer') {
+    record = createDemuxer(module, message.objectId, message.options || {});
+  } else {
+    throw new Error(`unknown worker object type: ${message.objectType}`);
+  }
+  objects.set(message.objectId, record);
+  postMessage({ type: protocol.result, requestId: message.requestId, value: true });
+}
+
+function configureSelection(record, options) {
+  const selection = record.selection;
+  if ('videoPacketId' in options) selection.videoPacketId = options.videoPacketId ?? null;
+  if ('audioPacketId' in options) selection.audioPacketId = options.audioPacketId ?? null;
+  if ('subtitlePacketId' in options) {
+    selection.subtitlePacketId = options.subtitlePacketId ?? null;
+  }
+  return true;
+}
+
+async function invokeObject(message) {
+  const record = objects.get(message.objectId);
+  if (!record) throw new Error(`worker object ${message.objectId} does not exist`);
+  let value;
+  if (message.method === 'configureTrackSelection') {
+    if (record.type !== 'demuxer') throw new Error('track selection requires a demuxer');
+    value = configureSelection(record, message.args[0] || {});
+  } else {
+    const method = record.instance[message.method];
+    if (typeof method !== 'function') {
+      throw new Error(`unknown ${record.type} method: ${message.method}`);
+    }
+    value = method.apply(record.instance, message.args || []);
+    if (message.method === 'push' || message.method === 'flush') {
+      drainApplications(record);
+    }
+  }
+  postMessage({ type: protocol.result, requestId: message.requestId, value });
+}
+
+async function destroyObject(message) {
+  const record = objects.get(message.objectId);
+  if (record) {
+    record.instance.delete();
+    objects.delete(message.objectId);
+  }
+  postMessage({ type: protocol.result, requestId: message.requestId, value: true });
+}
+
+async function dispatch(message) {
+  try {
+    if (message.type === protocol.init) await initialize(message);
+    else if (message.type === protocol.create) await createObject(message);
+    else if (message.type === protocol.invoke) await invokeObject(message);
+    else if (message.type === protocol.destroy) await destroyObject(message);
+  } catch (error) {
+    sendFailure(message.requestId, error);
+  }
+}
+
+self.onmessage = event => {
+  operationQueue = operationQueue.then(() => dispatch(event.data));
+};
