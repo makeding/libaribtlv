@@ -26,12 +26,12 @@ export class WebKitCanvasMediaPlaneAdapter {
 
   constructor(video) {
     this.video = video;
-    this.normalStyle = video.getAttribute('style');
     this.canvas = null;
     this.context = null;
-    this.frameCallback = null;
     this.animationFrame = null;
     this.lastPlane = null;
+    this.activeObject = null;
+    this.objectOpacity = null;
   }
 
   mountMediaPlane(object, plane) {
@@ -48,29 +48,45 @@ export class WebKitCanvasMediaPlaneAdapter {
 
   apply(object, plane) {
     this.lastPlane = plane;
+    if (this.activeObject !== object) {
+      this.restoreObject();
+      this.activeObject = object;
+      this.objectOpacity = {
+        value: object.style.getPropertyValue('opacity'),
+        priority: object.style.getPropertyPriority('opacity'),
+      };
+      object.style.setProperty('opacity', '0', 'important');
+    }
     if (!this.canvas || this.canvas.ownerDocument !== object.ownerDocument) {
       this.stopFramePump();
       this.canvas?.remove();
       this.canvas = object.ownerDocument.createElement('canvas');
-      this.context = this.canvas.getContext('2d', { alpha: false, desynchronized: true });
+      this.context = this.canvas.getContext('2d');
       this.canvas.dataset.aribMediaPlaneContent = '';
     }
-    if (this.canvas.parentElement !== object) object.append(this.canvas);
+    const parent = object.ownerDocument.body;
+    if (this.canvas.parentElement !== parent) parent.append(this.canvas);
     Object.assign(this.canvas.style, {
-      position: 'static',
-      width: '100%',
-      height: '100%',
+      position: 'fixed',
+      left: `${plane.x}px`,
+      top: `${plane.y}px`,
+      width: `${plane.width}px`,
+      height: `${plane.height}px`,
       maxWidth: 'none',
       maxHeight: 'none',
       display: 'block',
       visibility: plane.visible ? 'visible' : 'hidden',
       background: '#080b09',
       pointerEvents: 'none',
+      zIndex: '2147483646',
     });
-    // opacity keeps WebKit's media pipeline active; display/visibility would
-    // allow it to suspend pixel production and break canvas mirroring.
-    this.video.style.opacity = '0';
-    this.video.style.pointerEvents = 'none';
+    if (this.canvas.width === 300 && this.canvas.height === 150 && this.context) {
+      this.context.fillStyle = '#271338';
+      this.context.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+    // Do not hide or move the source video. Safari may stop submitting decoded
+    // frames when a hardware-backed media element becomes fully transparent.
+    // The application iframe already covers this original external surface.
     if (plane.visible) this.startFramePump();
     else this.stopFramePump();
   }
@@ -81,21 +97,11 @@ export class WebKitCanvasMediaPlaneAdapter {
     this.canvas = null;
     this.context = null;
     this.lastPlane = null;
-    if (this.normalStyle === null) this.video.removeAttribute('style');
-    else this.video.setAttribute('style', this.normalStyle);
-    if (!visible) this.video.style.opacity = '0';
+    this.restoreObject();
   }
 
   startFramePump() {
-    if (this.frameCallback !== null || this.animationFrame !== null) return;
-    if (typeof this.video.requestVideoFrameCallback === 'function') {
-      this.frameCallback = this.video.requestVideoFrameCallback(() => {
-        this.frameCallback = null;
-        this.drawFrame();
-        if (this.canvas) this.startFramePump();
-      });
-      return;
-    }
+    if (this.animationFrame !== null) return;
     this.animationFrame = requestAnimationFrame(() => {
       this.animationFrame = null;
       this.drawFrame();
@@ -104,10 +110,6 @@ export class WebKitCanvasMediaPlaneAdapter {
   }
 
   stopFramePump() {
-    if (this.frameCallback !== null) {
-      this.video.cancelVideoFrameCallback?.(this.frameCallback);
-      this.frameCallback = null;
-    }
     if (this.animationFrame !== null) {
       cancelAnimationFrame(this.animationFrame);
       this.animationFrame = null;
@@ -129,10 +131,27 @@ export class WebKitCanvasMediaPlaneAdapter {
     if (this.canvas.height !== height) this.canvas.height = height;
     try {
       this.context.drawImage(this.video, 0, 0, width, height);
+      // Temporary prototype marker: if this green square is visible while the
+      // rest stays black, WebKit is returning black pixels for the HEVC video.
+      this.context.fillStyle = '#00ff66';
+      this.context.fillRect(0, 0, Math.max(24, width / 48), Math.max(24, height / 27));
     } catch (error) {
       console.error('[tlvdemux] Safari canvas media-plane copy failed.', error);
       this.stopFramePump();
     }
+  }
+
+  restoreObject() {
+    if (!this.activeObject || !this.objectOpacity) return;
+    if (this.objectOpacity.value) {
+      this.activeObject.style.setProperty(
+        'opacity', this.objectOpacity.value, this.objectOpacity.priority,
+      );
+    } else {
+      this.activeObject.style.removeProperty('opacity');
+    }
+    this.activeObject = null;
+    this.objectOpacity = null;
   }
 }
 

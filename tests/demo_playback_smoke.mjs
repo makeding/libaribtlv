@@ -14,11 +14,16 @@ const initSegments = new Map();
 const mediaSegments = new Map([['video', []], ['audio', []]]);
 let videoTrack = null;
 let audioTrack = null;
+let playbackAccessUnits = 0;
 const fatalErrors = [];
 let demuxer;
 demuxer = new module.TlvDemuxer({
   onMseInit(init) { initSegments.set(init.type, init); },
   onMseSegment(segment) { mediaSegments.get(segment.type).push(segment.data); },
+  onPlaybackAccessUnitView(unit) {
+    playbackAccessUnits += 1;
+    if (unit.codec !== 'ttml') assert.equal(unit.data.byteLength, 0);
+  },
   onTrack(track) {
     if (track.kind === 'video' && videoTrack === null) {
       videoTrack = track.trackId;
@@ -54,6 +59,7 @@ function boxType(data, offset = 0) {
 }
 
 assert.deepEqual(fatalErrors, []);
+assert.ok(playbackAccessUnits > 0, 'missing sparse playback access-unit callbacks');
 for (const type of ['video', 'audio']) {
   const init = initSegments.get(type);
   assert.ok(init, `missing ${type} init segment`);

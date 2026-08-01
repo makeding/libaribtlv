@@ -316,6 +316,11 @@ declare namespace createTlvDemuxModule {
     onLayoutConfiguration?: (layout: LayoutConfiguration) => void;
     onAccessUnit?: (unit: AccessUnit) => void;
     onAccessUnitView?: (unit: AccessUnit) => void;
+    /**
+     * Callback-lifetime TTML payloads plus payload-free HEVC RAP/discontinuity
+     * and AAC discontinuity events, intended for browser playback control.
+     */
+    onPlaybackAccessUnitView?: (unit: AccessUnit) => void;
     onError?: (error: DemuxError) => void;
     onBroadcastClock?: (clock: BroadcastClock) => void;
     onEventInfo?: (event: EventInfo) => void;

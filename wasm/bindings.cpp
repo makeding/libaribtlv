@@ -572,6 +572,18 @@ public:
     void onAccessUnit(tlvdemux::AccessUnit&& unit) override {
         if (index_active_) recording_index_.observe(unit);
         if (mse_enabled_) mse_remuxer_.push(unit);
+        const bool playback_event = unit.codec == tlvdemux::Codec::Ttml ||
+            (unit.codec == tlvdemux::Codec::Hevc &&
+             (unit.random_access || unit.discontinuity)) ||
+            (unit.codec == tlvdemux::Codec::AacLatm && unit.discontinuity);
+        if (has_callback("onPlaybackAccessUnitView") && playback_event) {
+            const auto data = unit.codec == tlvdemux::Codec::Ttml
+                ? view_bytes(unit.data)
+                : val::global("Uint8Array").new_(0);
+            auto event = access_unit_event(unit, data);
+            event.set("dataLifetime", std::string("callback"));
+            emit("onPlaybackAccessUnitView", event);
+        }
         if (has_callback("onAccessUnitView")) {
             auto event = access_unit_event(unit, view_bytes(unit.data));
             event.set("dataLifetime", std::string("callback"));

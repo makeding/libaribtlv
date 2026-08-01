@@ -1,6 +1,7 @@
 importScripts('./demux-worker-protocol.js');
 
 const protocol = globalThis.TlvDemuxWorkerProtocol;
+const applicationDrainBatch = 32;
 const objects = new Map();
 let modulePromise = null;
 let operationQueue = Promise.resolve();
@@ -73,6 +74,8 @@ function createDemuxer(module, objectId, options) {
   const record = {
     type: 'demuxer',
     instance: null,
+    applicationDrainScheduled: false,
+    applicationDrainError: null,
     selection: {
       videoPacketId: options.videoPacketId ?? null,
       audioPacketId: options.audioPacketId ?? null,
@@ -118,7 +121,7 @@ function createDemuxer(module, objectId, options) {
       });
     },
     onApplicationResourcesReset: event('onApplicationResourcesReset'),
-    onAccessUnitView(unit) {
+    onPlaybackAccessUnitView(unit) {
       transferAccessUnit(objectId, unit);
     },
     onError: event('onError'),
@@ -126,10 +129,33 @@ function createDemuxer(module, objectId, options) {
   return record;
 }
 
-function drainApplications(record) {
+function scheduleApplicationDrain(record) {
+  if (record.applicationDrainScheduled) return;
+  record.applicationDrainScheduled = true;
+  setTimeout(() => {
+    operationQueue = operationQueue.then(() => {
+      record.applicationDrainScheduled = false;
+      if (objects.get(record.objectId) !== record) return;
+      try {
+        drainApplications(record, false);
+      } catch (error) {
+        record.applicationDrainError = error;
+      }
+    });
+  }, 0);
+}
+
+function drainApplications(record, exhaustive) {
   if (record.type !== 'demuxer') return;
-  while (record.instance.drainApplicationResources(256)) {
-    // Application decompression and assembly deliberately remain in the worker.
+  let more = record.instance.drainApplicationResources(applicationDrainBatch);
+  if (exhaustive) {
+    while (more) {
+      more = record.instance.drainApplicationResources(applicationDrainBatch);
+    }
+  } else if (more) {
+    // Application decompression remains in the worker, but yields between
+    // batches so a large carousel cannot indefinitely delay media input.
+    scheduleApplicationDrain(record);
   }
 }
 
@@ -155,6 +181,7 @@ async function createObject(message) {
   } else {
     throw new Error(`unknown worker object type: ${message.objectType}`);
   }
+  record.objectId = message.objectId;
   objects.set(message.objectId, record);
   postMessage({ type: protocol.result, requestId: message.requestId, value: true });
 }
@@ -172,6 +199,7 @@ function configureSelection(record, options) {
 async function invokeObject(message) {
   const record = objects.get(message.objectId);
   if (!record) throw new Error(`worker object ${message.objectId} does not exist`);
+  if (record.applicationDrainError) throw record.applicationDrainError;
   let value;
   if (message.method === 'configureTrackSelection') {
     if (record.type !== 'demuxer') throw new Error('track selection requires a demuxer');
@@ -183,7 +211,7 @@ async function invokeObject(message) {
     }
     value = method.apply(record.instance, message.args || []);
     if (message.method === 'push' || message.method === 'flush') {
-      drainApplications(record);
+      drainApplications(record, message.method === 'flush');
     }
   }
   postMessage({ type: protocol.result, requestId: message.requestId, value });

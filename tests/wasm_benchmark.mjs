@@ -58,10 +58,12 @@ function benchmark(remux) {
       const count = readSync(descriptor, chunk, 0, length, position);
       if (count === 0) break;
       assert.equal(demuxer.push(chunk.subarray(0, count)), true);
+      while (demuxer.drainApplicationResources(256)) {}
       position += count;
       maximumWasmHeap = Math.max(maximumWasmHeap, module.HEAPU8.byteLength);
     }
     demuxer.flush();
+    while (demuxer.drainApplicationResources(256)) {}
   } finally {
     closeSync(descriptor);
     demuxer.delete();

@@ -1,5 +1,6 @@
 import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
-import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-plane-v1';
+import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-plane-v4';
+import { coalesceReadableStream } from './live-stream.mjs';
 import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js';
 
 const MiB = 1024n * 1024n;
@@ -8,7 +9,10 @@ const FORWARD_BUFFER_HIGH_SECONDS = 15;
 const FORWARD_BUFFER_LOW_SECONDS = 8;
 const LIVE_STARTUP_BUFFER_SECONDS = 0.5;
 const BACK_BUFFER_SECONDS = 8;
+const BACK_BUFFER_TRIM_GRANULARITY_SECONDS = 2;
 const SOURCE_QUEUE_HIGH_BYTES = 4 * 1024 * 1024;
+const LIVE_PUSH_TARGET_BYTES = 512 * 1024;
+const LIVE_PUSH_MAX_DELAY_MS = 25;
 const MIN_SEEK_PREROLL_BYTES = 16n * MiB;
 const MAX_SEEK_PREROLL_BYTES = 128n * MiB;
 const SEEK_PREROLL_US = 8000000n;
@@ -308,15 +312,10 @@ function liveRemoteSource(rawUrl, signal) {
         throw new Error(`Live HTTP リクエストに失敗しました: ${response.status}`);
       }
       const reader = response.body.getReader();
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value?.byteLength) yield value;
-        }
-      } finally {
-        reader.releaseLock();
-      }
+      yield* coalesceReadableStream(reader, {
+        targetBytes: LIVE_PUSH_TARGET_BYTES,
+        maxDelayMilliseconds: LIVE_PUSH_MAX_DELAY_MS,
+      });
     },
   };
 }
@@ -367,6 +366,7 @@ class AppendQueue {
     this.error = null;
     this.retryTimer = null;
     this.trimBeforeTime = null;
+    this.forceTrim = false;
     this.state = 'running';
     this.onUpdateEnd = onUpdateEnd;
     this.sourceBuffer.addEventListener('updateend', () => {
@@ -408,12 +408,13 @@ class AppendQueue {
     if (this.trimBeforeTime !== null && ranges.length) {
       const removeEnd = this.trimBeforeTime;
       const start = ranges[0].start;
-      if (removeEnd > start + 0.25) {
-        this.trimBeforeTime = null;
+      const force = this.forceTrim;
+      this.trimBeforeTime = null;
+      this.forceTrim = false;
+      if (force || removeEnd > start + BACK_BUFFER_TRIM_GRANULARITY_SECONDS) {
         this.sourceBuffer.remove(start, removeEnd);
         return;
       }
-      this.trimBeforeTime = null;
     }
     if (!this.queue.length) return;
     if (this.bufferedAhead() >= FORWARD_BUFFER_HIGH_SECONDS) {
@@ -428,7 +429,7 @@ class AppendQueue {
       this.queue.unshift(data);
       this.currentBytes = 0;
       if (error.name === 'QuotaExceededError') {
-        this.trimBefore(this.mediaElement.currentTime - BACK_BUFFER_SECONDS);
+        this.trimBefore(this.mediaElement.currentTime - BACK_BUFFER_SECONDS, true);
         this.scheduleRetry();
       } else {
         this.error = error;
@@ -454,10 +455,17 @@ class AppendQueue {
       return snapshotTimeRanges(this.mediaElement.buffered);
     }
   }
-  trimBefore(time) {
+  trimBefore(time, force = false) {
     if (time <= 0 || this.state !== 'running') return;
+    if (!force && this.trimBeforeTime === null) {
+      const ranges = this.bufferedRanges();
+      if (!ranges.length || time <= ranges[0].start + BACK_BUFFER_TRIM_GRANULARITY_SECONDS) {
+        return;
+      }
+    }
     this.trimBeforeTime = this.trimBeforeTime === null
       ? time : Math.max(this.trimBeforeTime, time);
+    this.forceTrim = this.forceTrim || force;
     this.scheduleRetry();
   }
   scheduleRetry() {
@@ -487,6 +495,7 @@ class AppendQueue {
     if (this.retryTimer !== null) clearTimeout(this.retryTimer);
     this.retryTimer = null;
     this.trimBeforeTime = null;
+    this.forceTrim = false;
     this.queue = [];
     this.queuedBytes = this.currentBytes;
     if (!this.sourceBuffer.updating) {
@@ -510,6 +519,7 @@ class AppendQueue {
     this.queue = [];
     this.queuedBytes = 0;
     this.currentBytes = 0;
+    this.forceTrim = false;
     this.resolveWaiters();
   }
   resolveWaiters() {
@@ -1105,7 +1115,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     selectSubtitleTrack(track);
     appendLog(`字幕切替 packet_id=0x${packetId.toString(16)}`);
   };
-  await demuxer.startIndex(liveMode);
+  if (!liveMode) await demuxer.startIndex(false);
   elements.mediaInfo.textContent = 'tlvdemux';
   elements.probeState.textContent = 'バッファリング中';
 

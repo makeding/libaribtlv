@@ -20,12 +20,19 @@ of per-access-unit callbacks on the UI thread.
 | Shared byte utilities | `src/mse/common.hpp` | Bounded byte/bit readers and append helpers. |
 
 The worker receives each input `ArrayBuffer` by transfer, so the main thread
-does not retain or clone a full MMTS chunk. Media access units normally stay
-inside WASM: HEVC and AAC data are converted into fMP4 in the worker, and only
-complete MSE segments cross back. TTML access units and application files are
-the exceptions because their consumers run on the main thread. HEVC RAP and
-discontinuity metadata, and AAC discontinuity metadata, are forwarded without
-the corresponding elementary-stream payload.
+does not retain or clone a full MMTS chunk. Small live-network chunks are
+coalesced up to 512 KiB with a 25 ms latency bound before transfer. Media access
+units normally stay inside WASM: HEVC and AAC data are converted into fMP4 in
+the worker, and only complete MSE segments cross back. TTML access units and
+application files are the exceptions because their consumers run on the main
+thread. The sparse `onPlaybackAccessUnitView` callback forwards HEVC RAP and
+discontinuity metadata and AAC discontinuity metadata without their
+elementary-stream payload, avoiding a JS object for every ordinary media AU.
+
+Application-resource assembly drains in bounded worker batches between media
+pushes and exhaustively at flush. Non-seekable live playback does not build a
+recording index; otherwise its RAP vector would grow for the lifetime of the
+stream without providing a usable seek target.
 
 Within the remuxer, Annex-B parsing uses non-owning NAL views. The final sample
 buffer is reserved once and filled directly. Media-segment construction also
@@ -43,9 +50,10 @@ npm run benchmark:wasm -- \
   build-wasm/tlvdemux.js demo/bsp4k-lag-1.mmts 162000000
 ```
 
-The benchmark intentionally consumes callbacks but performs no decoding or
-`SourceBuffer.appendBuffer()`. It isolates demux/remux cost from the browser and
-prints JSON suitable for saving and comparing in CI. On the 162 MB BSP4K sample
+The benchmark intentionally consumes callbacks, drains application resources
+like the worker, but performs no decoding or `SourceBuffer.appendBuffer()`. It
+isolates demux/remux cost from the browser and prints JSON suitable for saving
+and comparing in CI. On the 162 MB BSP4K sample
 used during the worker/remux split, repeated release runs measured 655--839
 MiB/s for demux and 465--502 MiB/s for demux plus MSE. The same machine measured
 about 400 MiB/s for the pre-split MSE path, a roughly 16--25% improvement.
