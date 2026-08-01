@@ -8,6 +8,73 @@ const KEYBOARD_KEYS = {
 };
 const VFS_PREFIX = '/data-broadcast/';
 
+export function usesWebKitMediaPlaneFallback(userAgent = globalThis.navigator?.userAgent ?? '') {
+  return /AppleWebKit\//.test(userAgent) &&
+    !/(?:Chrome|Chromium|Edg|OPR)\//.test(userAgent);
+}
+
+/**
+ * WebKit fallback for the browser prototype. Safari does not reliably expose
+ * an external video plane through a transparent iframe, so keep the video
+ * between the application's background and foreground UI by adopting it into
+ * the broadcast object. Chromium deliberately stays on the external adapter:
+ * adopting an MSE-connected video there closes its MediaSource.
+ */
+export class WebKitObjectMediaPlaneAdapter {
+  renderMode = 'in-object';
+
+  constructor(video) {
+    this.video = video;
+    this.normalParent = video.parentElement;
+    this.normalNextSibling = video.nextSibling;
+    this.normalStyle = video.getAttribute('style');
+  }
+
+  mountMediaPlane(object, plane) {
+    this.apply(object, plane);
+  }
+
+  updateMediaPlane(object, plane) {
+    this.apply(object, plane);
+  }
+
+  unmountMediaPlane(reason) {
+    this.restore(reason === 'application-exit' || reason === 'host-destroy');
+  }
+
+  apply(object, plane) {
+    if (this.video.parentElement !== object) object.append(this.video);
+    Object.assign(this.video.style, {
+      position: 'static',
+      width: '100%',
+      height: '100%',
+      maxWidth: 'none',
+      maxHeight: 'none',
+      display: 'block',
+      visibility: plane.visible ? 'visible' : 'hidden',
+      objectFit: 'contain',
+      background: '#080b09',
+      pointerEvents: 'none',
+    });
+    this.video.style.removeProperty('left');
+    this.video.style.removeProperty('top');
+    this.video.style.removeProperty('z-index');
+  }
+
+  restore(visible) {
+    if (this.normalParent && this.video.parentElement !== this.normalParent) {
+      if (this.normalNextSibling?.parentNode === this.normalParent) {
+        this.normalParent.insertBefore(this.video, this.normalNextSibling);
+      } else {
+        this.normalParent.append(this.video);
+      }
+    }
+    if (this.normalStyle === null) this.video.removeAttribute('style');
+    else this.video.setAttribute('style', this.normalStyle);
+    if (!visible) this.video.style.visibility = 'hidden';
+  }
+}
+
 export function createDemoProgramInfo(now = Date.now()) {
   const startTime = new Date(now - 60 * 1000);
   // Keep the no-EIT fallback explicitly receiver/demo-owned. A carousel path
@@ -114,6 +181,8 @@ export class DataBroadcastController {
     if (!window.ARIBHTML5?.BehindIframeMediaPlaneAdapter) {
       throw new Error('libaribhtml5 media-plane adapter が読み込まれていません');
     }
+    iframe.tabIndex = -1;
+    iframe.style.pointerEvents = 'none';
     Object.assign(mediaPlane.style, { position: 'relative', overflow: 'hidden' });
     Object.assign(video.style, {
       display: 'block', width: '100%', height: '100%', objectFit: 'contain', background: '#080b09',
@@ -122,10 +191,16 @@ export class DataBroadcastController {
     if (subtitleOverlay) Object.assign(subtitleOverlay.style, {
       position: 'absolute', zIndex: '1', inset: '0', pointerEvents: 'none', overflow: 'hidden',
     });
-    this.mediaPlaneAdapter = new window.ARIBHTML5.BehindIframeMediaPlaneAdapter({
-      surface: videoSurface,
-      keepVisible: false,
-    });
+    this.usesWebKitMediaPlaneFallback = usesWebKitMediaPlaneFallback();
+    this.mediaPlaneAdapter = this.usesWebKitMediaPlaneFallback
+      ? new WebKitObjectMediaPlaneAdapter(video)
+      : new window.ARIBHTML5.BehindIframeMediaPlaneAdapter({
+          surface: videoSurface,
+          keepVisible: false,
+        });
+    viewport.dataset.mediaPlane = this.usesWebKitMediaPlaneFallback
+      ? 'in-object-webkit'
+      : 'external';
     this.host = new window.ARIBHTML5.AribReceiverHost({
       iframe,
       viewport,

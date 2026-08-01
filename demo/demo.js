@@ -1,5 +1,5 @@
 import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
-import { DataBroadcastController } from './data-broadcast.js?v=caption-v1';
+import { DataBroadcastController } from './data-broadcast.js?v=webkit-media-plane-v1';
 import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js';
 
 const MiB = 1024n * 1024n;

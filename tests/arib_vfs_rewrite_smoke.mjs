@@ -17,6 +17,7 @@ const controllerContext = {
 vm.runInNewContext(`${controllerSource.replace(/^export /gm, '')}
 this.createDemoProgramInfo = createDemoProgramInfo;
 this.createProgramInfoFromEvents = createProgramInfoFromEvents;
+this.usesWebKitMediaPlaneFallback = usesWebKitMediaPlaneFallback;
 this.broadcastClockChanged = DataBroadcastController.prototype.broadcastClockChanged;
 this.visibleApplication = DataBroadcastController.prototype.visibleApplication;
 this.maintenanceApplication = DataBroadcastController.prototype.maintenanceApplication;
@@ -24,6 +25,15 @@ this.ensureResourceAvailable = DataBroadcastController.prototype.ensureResourceA
 this.recoverApplicationFailure = DataBroadcastController.prototype.recoverApplicationFailure;
 this.loadApplication = DataBroadcastController.prototype.loadApplication;
 `, controllerContext);
+assert.equal(controllerContext.usesWebKitMediaPlaneFallback(
+  'Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 Version/18.6 Safari/605.1.15',
+), true);
+assert.equal(controllerContext.usesWebKitMediaPlaneFallback(
+  'Mozilla/5.0 (Macintosh) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36',
+), false);
+assert.equal(controllerContext.usesWebKitMediaPlaneFallback(
+  'Mozilla/5.0 (iPad) AppleWebKit/605.1.15 CriOS/140.0 Mobile/15E148 Safari/604.1',
+), true);
 const now = Date.UTC(2026, 6, 31, 12, 0, 0);
 const program = controllerContext.createDemoProgramInfo(now);
 assert.equal(program.duration, 30 * 60 * 1000);
