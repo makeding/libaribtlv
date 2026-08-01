@@ -125,6 +125,8 @@ declare namespace createTlvDemuxModule {
   interface AccessUnit {
     trackId: bigint;
     codec: Codec;
+    componentTag: number;
+    subtitleTimingMode: number | null;
     data: Uint8Array;
     ptsValue: bigint;
     ptsTimescale: number;
@@ -280,6 +282,7 @@ declare namespace createTlvDemuxModule {
     selectService(contextId?: number | null): void;
     selectTrack(kind: TrackKind, trackId?: bigint | null): void;
     setMseOutputEnabled(enabled: boolean): void;
+    setSubtitlePassthroughEnabled(enabled: boolean): void;
     drainApplicationResources(maxEvents: number): boolean;
     startIndex(growing: boolean): void;
     finalizeIndex(): boolean;

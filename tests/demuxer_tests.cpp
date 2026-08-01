@@ -998,6 +998,9 @@ void test_codec_output_and_timeline() {
     check(subtitle != sink.access_units.end() &&
               subtitle->data == std::vector<std::uint8_t>({'a', 'b', 'c'}),
           "TTML document was not separated from its resource subsamples");
+    check(subtitle != sink.access_units.end() && subtitle->component_tag == 0x1230 &&
+              subtitle->subtitle_timing_mode == std::optional<std::uint8_t>{2},
+          "TTML access unit omitted component and timing metadata");
     check(subtitle != sink.access_units.end() && subtitle->subtitle_resources.size() == 1 &&
               subtitle->subtitle_resources[0].subsample_number == 1 &&
               subtitle->subtitle_resources[0].data_type == 1 &&
@@ -1005,6 +1008,19 @@ void test_codec_output_and_timeline() {
           "TTML resource subsample metadata was not preserved");
     check(video->pts.value == 0 && video->dts.value == 0,
           "first selected media timestamp was not normalized to zero");
+
+    TestSink passthrough_sink;
+    tlvdemux::Demuxer passthrough_demuxer(passthrough_sink);
+    passthrough_demuxer.selectTrack(tlvdemux::TrackKind::Subtitle,
+                                    std::numeric_limits<std::uint64_t>::max());
+    passthrough_demuxer.setSubtitlePassthroughEnabled(true);
+    passthrough_demuxer.push(stream.data(), stream.size());
+    passthrough_demuxer.flush();
+    check(std::any_of(passthrough_sink.access_units.begin(),
+                      passthrough_sink.access_units.end(), [](const auto& unit) {
+                          return unit.codec == tlvdemux::Codec::Ttml;
+                      }),
+          "subtitle passthrough did not bypass selected-track filtering");
 }
 
 void test_timestamp_overflow_rejection() {

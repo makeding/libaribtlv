@@ -1734,6 +1734,10 @@ void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_seq
     AccessUnit unit;
     unit.track_id = track.stable_track_id;
     unit.codec = track.info.codec;
+    unit.component_tag = track.info.component_tag;
+    if (track.info.subtitle.has_value()) {
+        unit.subtitle_timing_mode = track.info.subtitle->timing_mode;
+    }
     unit.data = std::move(data);
     unit.subtitle_resources = std::move(subtitle_resources);
     unit.pts = Timestamp{pts_offset, track.info.timescale};

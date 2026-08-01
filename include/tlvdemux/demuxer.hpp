@@ -55,6 +55,7 @@ public:
     void reposition(RepositionOptions);
     void selectService(std::optional<std::uint32_t> context_id);
     void selectTrack(TrackKind kind, std::optional<std::uint64_t> track_id);
+    void setSubtitlePassthroughEnabled(bool enabled);
     std::optional<BroadcastClock> broadcastClock() const;
 
 private:

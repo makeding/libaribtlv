@@ -353,6 +353,10 @@ public:
         mse_remuxer_.setOutputEnabled(enabled);
     }
 
+    void setSubtitlePassthroughEnabled(const bool enabled) {
+        demuxer_.setSubtitlePassthroughEnabled(enabled);
+    }
+
     bool drainApplicationResources(std::size_t max_events) {
         if (max_events == 0) max_events = application_events_.size();
         while (max_events-- != 0 && !application_events_.empty()) {
@@ -625,6 +629,10 @@ private:
         auto event = val::object();
         event.set("trackId", unit.track_id);
         event.set("codec", std::string(codec_name(unit.codec)));
+        event.set("componentTag", unit.component_tag);
+        event.set("subtitleTimingMode", unit.subtitle_timing_mode.has_value()
+                                            ? val(*unit.subtitle_timing_mode)
+                                            : val::null());
         event.set("data", data);
         event.set("ptsValue", unit.pts.value);
         event.set("ptsTimescale", unit.pts.timescale);
@@ -758,6 +766,7 @@ EMSCRIPTEN_BINDINGS(tlvdemux_wasm) {
         .function("selectService", &WasmDemuxer::selectService)
         .function("selectTrack", &WasmDemuxer::selectTrack)
         .function("setMseOutputEnabled", &WasmDemuxer::setMseOutputEnabled)
+        .function("setSubtitlePassthroughEnabled", &WasmDemuxer::setSubtitlePassthroughEnabled)
         .function("drainApplicationResources", &WasmDemuxer::drainApplicationResources)
         .function("startIndex", &WasmDemuxer::startIndex)
         .function("finalizeIndex", &WasmDemuxer::finalizeIndex)

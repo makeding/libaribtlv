@@ -296,6 +296,8 @@ struct SubtitleResource {
 struct AccessUnit {
     std::uint64_t track_id = 0;
     Codec codec = Codec::Hevc;
+    std::uint16_t component_tag = 0;
+    std::optional<std::uint8_t> subtitle_timing_mode;
     std::vector<std::uint8_t> data;
     std::vector<SubtitleResource> subtitle_resources;
     Timestamp pts;

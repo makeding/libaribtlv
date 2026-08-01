@@ -162,6 +162,10 @@ public:
         if (kind == TrackKind::Video) last_clock_mpu_sequence_.reset();
     }
 
+    void set_subtitle_passthrough_enabled(const bool enabled) {
+        subtitle_passthrough_enabled_ = enabled;
+    }
+
     std::optional<BroadcastClock> broadcast_clock() const { return broadcast_clock_; }
 
 private:
@@ -443,11 +447,13 @@ private:
         const auto track_info = current_tracks_.find(unit.track_id);
         if (unit.track_id == 0 || track_info == current_tracks_.end()) return;
         const auto kind_index = static_cast<std::size_t>(track_info->second.kind);
-        if (selected_tracks_[kind_index].has_value() &&
+        const bool bypass_selection = subtitle_passthrough_enabled_ &&
+                                      track_info->second.kind == TrackKind::Subtitle;
+        if (!bypass_selection && selected_tracks_[kind_index].has_value() &&
             *selected_tracks_[kind_index] != unit.track_id) {
             return;
         }
-        if (selection_pending_[kind_index]) {
+        if (!bypass_selection && selection_pending_[kind_index]) {
             if (unit.input_offset < selection_boundaries_[kind_index]) return;
             if (selection_wait_for_rap_[kind_index] && !unit.random_access) return;
             unit.discontinuity = true;
@@ -554,6 +560,7 @@ private:
     std::array<std::uint64_t, 3> selection_boundaries_{};
     std::array<bool, 3> selection_pending_{};
     std::array<bool, 3> selection_wait_for_rap_{};
+    bool subtitle_passthrough_enabled_ = false;
     std::uint64_t input_end_offset_ = 0;
     std::unordered_map<std::uint32_t, std::vector<std::uint8_t>> services_;
     std::unordered_map<std::string, std::uint64_t> track_ids_;
@@ -611,6 +618,10 @@ void Demuxer::selectService(std::optional<std::uint32_t> context_id) {
 
 void Demuxer::selectTrack(const TrackKind kind, std::optional<std::uint64_t> track_id) {
     impl_->select_track(kind, track_id);
+}
+
+void Demuxer::setSubtitlePassthroughEnabled(const bool enabled) {
+    impl_->set_subtitle_passthrough_enabled(enabled);
 }
 
 std::optional<BroadcastClock> Demuxer::broadcastClock() const {
