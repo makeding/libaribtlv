@@ -524,7 +524,40 @@ bool parse_application_descriptors(ByteReader& reader, ApplicationInfo& applicat
         }
         const std::uint8_t* payload = nullptr;
         if (!reader.read_view(length, payload)) return false;
-        if (tag == 0x802b) {
+        if (tag == 0x8029) {
+            ByteReader descriptor(payload, length);
+            std::uint8_t profiles_length = 0;
+            if (!descriptor.read_u8(profiles_length) || profiles_length % 5 != 0 ||
+                profiles_length > descriptor.remaining()) {
+                return false;
+            }
+            ByteReader profiles(payload + 1, profiles_length);
+            while (profiles.remaining() != 0) {
+                ApplicationInfo::Profile profile;
+                if (!profiles.read_u16(profile.application_profile) ||
+                    !profiles.read_u8(profile.version_major) ||
+                    !profiles.read_u8(profile.version_minor) ||
+                    !profiles.read_u8(profile.version_micro)) {
+                    return false;
+                }
+                application.profiles.push_back(profile);
+            }
+            if (!descriptor.skip(profiles_length)) return false;
+            std::uint8_t flags = 0;
+            if (!descriptor.read_u8(flags) ||
+                !descriptor.read_u8(application.application_priority)) {
+                return false;
+            }
+            application.application_descriptor_present = true;
+            application.service_bound = (flags & 0x80U) != 0;
+            application.visibility = static_cast<std::uint8_t>((flags >> 5U) & 0x03U);
+            application.present_application_priority = (flags & 0x01U) != 0;
+            while (descriptor.remaining() != 0) {
+                std::uint8_t label = 0;
+                if (!descriptor.read_u8(label)) return false;
+                application.transport_protocol_labels.push_back(label);
+            }
+        } else if (tag == 0x802b) {
             application.entry_path.assign(reinterpret_cast<const char*>(payload), length);
         } else if (tag == 0x802a && length >= 3) {
             const auto protocol_id = read_be16(payload);

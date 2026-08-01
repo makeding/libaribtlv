@@ -334,6 +334,13 @@ private:
         const auto found = applications_.find(key);
         if (found != applications_.end() && found->second.version == info.version &&
             found->second.control_code == info.control_code &&
+            found->second.application_descriptor_present == info.application_descriptor_present &&
+            found->second.profiles == info.profiles &&
+            found->second.service_bound == info.service_bound &&
+            found->second.visibility == info.visibility &&
+            found->second.present_application_priority == info.present_application_priority &&
+            found->second.application_priority == info.application_priority &&
+            found->second.transport_protocol_labels == info.transport_protocol_labels &&
             found->second.entry_path == info.entry_path &&
             found->second.transport_urls == info.transport_urls) {
             return;

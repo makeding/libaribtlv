@@ -196,6 +196,15 @@ struct StreamEvent {
 };
 
 struct ApplicationInfo {
+    struct Profile {
+        std::uint16_t application_profile = 0;
+        std::uint8_t version_major = 0;
+        std::uint8_t version_minor = 0;
+        std::uint8_t version_micro = 0;
+
+        bool operator==(const Profile&) const = default;
+    };
+
     std::uint32_t context_id = 0;
     std::uint16_t source_packet_id = 0;
     std::uint16_t application_type = 0;
@@ -203,6 +212,13 @@ struct ApplicationInfo {
     std::uint32_t application_id = 0;
     std::uint8_t control_code = 0;
     std::uint8_t version = 0;
+    bool application_descriptor_present = false;
+    std::vector<Profile> profiles;
+    bool service_bound = false;
+    std::uint8_t visibility = 0x03;
+    bool present_application_priority = false;
+    std::uint8_t application_priority = 0;
+    std::vector<std::uint8_t> transport_protocol_labels;
     std::string entry_path;
     std::vector<std::string> transport_urls;
 };

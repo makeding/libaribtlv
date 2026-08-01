@@ -711,6 +711,30 @@ private:
         event.set("applicationId", state.application.application_id);
         event.set("controlCode", state.application.control_code);
         event.set("version", state.application.version);
+        event.set("applicationDescriptorPresent",
+                  state.application.application_descriptor_present);
+        event.set("serviceBound", state.application.service_bound);
+        event.set("visibility", state.application.visibility);
+        event.set("presentApplicationPriority",
+                  state.application.present_application_priority);
+        event.set("applicationPriority", state.application.application_priority);
+        auto profiles = val::array();
+        for (std::size_t index = 0; index < state.application.profiles.size(); ++index) {
+            const auto& profile = state.application.profiles[index];
+            auto value = val::object();
+            value.set("applicationProfile", profile.application_profile);
+            value.set("versionMajor", profile.version_major);
+            value.set("versionMinor", profile.version_minor);
+            value.set("versionMicro", profile.version_micro);
+            profiles.set(index, value);
+        }
+        event.set("profiles", profiles);
+        auto labels = val::array();
+        for (std::size_t index = 0;
+             index < state.application.transport_protocol_labels.size(); ++index) {
+            labels.set(index, state.application.transport_protocol_labels[index]);
+        }
+        event.set("transportProtocolLabels", labels);
         event.set("entryPath", state.application.entry_path);
         auto urls = val::array();
         for (std::size_t index = 0;

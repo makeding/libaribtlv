@@ -381,6 +381,9 @@ std::vector<std::uint8_t> audio_discovery_message() {
 
 std::vector<std::uint8_t> application_control_message() {
     std::vector<std::uint8_t> descriptors;
+    descriptor(descriptors, 0x8029,
+               {0x05, 0x00, 0x01, 0x01, 0x02, 0x03,
+                0xe1, 0x7f, 0x05});
     std::vector<std::uint8_t> transport{0x00, 0x05, 0x01, 0x05};
     transport.insert(transport.end(), {'/', 'a', 'p', 'p', '/'});
     transport.push_back(0);
@@ -769,6 +772,18 @@ void test_application_and_data_transmission_signalling() {
               sink.applications[0].application_id == 0x01020304 &&
               sink.applications[0].control_code == 0x01 &&
               sink.applications[0].version == 3 &&
+              sink.applications[0].application_descriptor_present &&
+              sink.applications[0].profiles.size() == 1 &&
+              sink.applications[0].profiles[0].application_profile == 0x0001 &&
+              sink.applications[0].profiles[0].version_major == 1 &&
+              sink.applications[0].profiles[0].version_minor == 2 &&
+              sink.applications[0].profiles[0].version_micro == 3 &&
+              sink.applications[0].service_bound &&
+              sink.applications[0].visibility == 0x03 &&
+              sink.applications[0].present_application_priority &&
+              sink.applications[0].application_priority == 0x7f &&
+              sink.applications[0].transport_protocol_labels ==
+                  std::vector<std::uint8_t>{0x05} &&
               sink.applications[0].entry_path == "index.html" &&
               sink.applications[0].transport_urls.size() == 1 &&
               sink.applications[0].transport_urls[0] == "/app/",

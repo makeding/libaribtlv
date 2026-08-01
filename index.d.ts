@@ -203,6 +203,19 @@ declare namespace createTlvDemuxModule {
     applicationId: number;
     controlCode: number;
     version: number;
+    applicationDescriptorPresent: boolean;
+    profiles: Array<{
+      applicationProfile: number;
+      versionMajor: number;
+      versionMinor: number;
+      versionMicro: number;
+    }>;
+    serviceBound: boolean;
+    /** MH-application descriptor visibility: 0/1 hidden from users, 3 visible. */
+    visibility: number;
+    presentApplicationPriority: boolean;
+    applicationPriority: number;
+    transportProtocolLabels: number[];
     entryPath: string;
     transportUrls: string[];
     state: ApplicationCollectionState;
