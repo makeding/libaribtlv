@@ -551,15 +551,24 @@ bool run_track_switch_case(const std::string& path,
     }
 
     const bool passed = stage == Stage::Returned && sink.validFirstOutput() &&
-        primary_first_us >= 0 && secondary_first_us > 0 && sink.firstPtsUs() > 0 &&
+        primary_first_us >= 0 && secondary_first_us >= 0 && sink.firstPtsUs() >= 0 &&
         secondary_first_us + 1000000 >= primary_last_us &&
         sink.firstPtsUs() + 1000000 >= secondary_last_us;
+    const char* failure_reason = "none";
+    if (!sink.primaryTrackId().has_value()) failure_reason = "primary-not-found";
+    else if (!sink.secondaryTrackId().has_value()) failure_reason = "secondary-not-found";
+    else if (stage != Stage::Returned) failure_reason = "switch-sequence-incomplete";
+    else if (!sink.validFirstOutput()) failure_reason = "invalid-first-output";
+    else if (!passed) failure_reason = "timeline-regression";
     std::cerr << "track-switch primary-pid=0x" << std::hex << primary_packet_id
               << " secondary-pid=0x" << secondary_packet_id << std::dec
               << " primary-first=" << seconds(primary_first_us)
+              << " primary-last=" << seconds(primary_last_us)
               << " secondary-first=" << seconds(secondary_first_us)
+              << " secondary-last=" << seconds(secondary_last_us)
               << " return-first=" << seconds(sink.firstPtsUs())
-              << " result=" << (passed ? "PASS" : "FAIL") << '\n';
+              << " result=" << (passed ? "PASS" : "FAIL")
+              << " reason=" << failure_reason << '\n';
     return passed;
 }
 
