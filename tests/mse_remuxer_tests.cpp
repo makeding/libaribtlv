@@ -313,8 +313,55 @@ void test_audio_drops_non_advancing_dts() {
           "the two non-advancing samples were papered over with a fallback duration instead of dropped");
 }
 
+struct ReorderedFrame { std::int64_t dts, pts; bool keyframe; };
 
+std::vector<ReorderedFrame> build_reordered_frames(const int groups, const std::int64_t dts_step) {
+    std::vector<ReorderedFrame> frames{{0, 0, true}};
+    for (int g = 0; g < groups; ++g) {
+        const auto base = dts_step * (3 * g + 1);
+        frames.push_back({base, base + 2 * dts_step, false});
+        frames.push_back({base + dts_step, base, false});
+        frames.push_back({base + 2 * dts_step, base + dts_step, false});
+    }
+    return frames;
+}
 
+void test_video_fragments_do_not_overlap_in_composition_time() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+
+    const auto frames = build_reordered_frames(10, 100000);
+    bool first = true;
+    for (const auto& frame : frames) {
+        remuxer.push(hevc_unit(2, frame.dts, frame.pts, frame.keyframe, first));
+        first = false;
+    }
+    remuxer.flush();
+
+    const auto segments = segments_of(sink.segments, "video");
+    check(segments.size() >= 2, "reordered video push should have spanned multiple fragments");
+
+    std::vector<std::pair<std::int64_t, std::int64_t>> intervals;
+    for (const auto& segment : segments) {
+        std::int64_t dts = std::int64_t(segment.tfdt);
+        auto min_pts = std::numeric_limits<std::int64_t>::max();
+        auto max_end = std::numeric_limits<std::int64_t>::min();
+        for (const auto& sample : segment.samples) {
+            const auto pts = dts + sample.composition_offset;
+            min_pts = std::min(min_pts, pts);
+            max_end = std::max(max_end, pts + std::int64_t(sample.duration));
+            dts += std::int64_t(sample.duration);
+        }
+        intervals.emplace_back(min_pts, max_end);
+    }
+    for (std::size_t i = 0; i + 1 < intervals.size(); ++i) {
+        check(intervals[i].second <= intervals[i + 1].first,
+              "fragment " + std::to_string(i) +
+                  " composition interval overlaps the next fragment's, which Firefox's "
+                  "CtsComparator would misinterpret as evicting already-buffered frames");
+    }
+}
 
 // A track with a fixed, monotonically increasing DTS step but a monotonically
 // DECREASING PTS never offers safe_prefix() a cut point. Every ready sample's
@@ -326,6 +373,45 @@ void test_audio_drops_non_advancing_dts() {
 // pts_of_latest_sample`, which is false as soon as more than one sample has
 // been pushed (pts_of_latest_sample < pts_0 by then). Only BaseMuxer::enqueue's
 // unconditional queue-duration bound can ever emit for such a stream.
+void test_video_queue_bound_forces_emit_without_safe_cut() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+
+    // Video track timescale defaults to 1000000, so the periodic-emit
+    // threshold is 1000000 / kFragmentDurationDivisor(4) = 250000us and the
+    // forced queue-duration bound is 8x that = 2000000us.
+    constexpr std::int64_t dts_step = 70000;
+    constexpr std::int64_t pts_step = 70000;
+    constexpr std::int64_t initial_pts = 3000000;
+    constexpr int sample_count = 35;
+
+    for (int i = 0; i < sample_count; ++i) {
+        const auto dts = dts_step * i;
+        const auto pts = initial_pts - pts_step * i;
+        check(pts >= 0, "test setup: PTS must stay non-negative for the whole run");
+        remuxer.push(hevc_unit(2, dts, pts, i == 0, i == 0));
+    }
+
+    // Captured before flush(): if the bound never fired, nothing would have
+    // been emitted yet and this would be empty.
+    const auto segments_before_flush = segments_of(sink.segments, "video");
+    check(!segments_before_flush.empty(),
+          "a stream with no safe composition cut point must still be bounded by "
+          "the forced queue-duration emit, not accumulate everything until flush()");
+
+    constexpr std::uint64_t bound_us = 2000000;
+    std::uint64_t first_segment_duration = 0;
+    for (const auto& sample : segments_before_flush.front().samples) {
+        first_segment_duration += sample.duration;
+    }
+    check(first_segment_duration >= bound_us,
+          "the forced emit fired before the queue reached its duration bound");
+    check(first_segment_duration < bound_us + std::uint64_t(dts_step),
+          "the queue grew past its duration bound by more than a single sample");
+
+    remuxer.flush();
+}
 
 void test_audio_channel_limit() {
     TestSink sink;
@@ -354,5 +440,7 @@ int main() {
     test_audio_channel_limit();
     test_unlimited_22_2_channel_count();
     test_audio_drops_non_advancing_dts();
+    test_video_fragments_do_not_overlap_in_composition_time();
+    test_video_queue_bound_forces_emit_without_safe_cut();
     std::cout << "mse remuxer tests passed\n";
 }

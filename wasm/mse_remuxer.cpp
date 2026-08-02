@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -41,6 +42,10 @@ using emscripten::val;
 #endif
 
 constexpr std::uint32_t kFragmentDurationDivisor = 4;
+// Firefox's MoofParser only bridges cross-moof composition gaps under 1us
+// (dom/media/mp4/MoofParser.cpp), so a fragment can only be cut where the
+// queue has a genuinely safe prefix. Bound how long we wait for one.
+constexpr std::uint32_t kQueueDurationBoundMultiplier = 8;
 
 Bytes u32(const std::uint64_t value) {
     return {static_cast<std::uint8_t>(value >> 24U),
@@ -119,7 +124,7 @@ public:
             ready_.push_back(std::move(*pending_));
             pending_.reset();
         }
-        emit();
+        emit(true);
     }
 
 protected:
@@ -144,18 +149,51 @@ protected:
             ready_.push_back(std::move(*pending_));
         }
         pending_ = std::move(sample);
-        if (track_ && ready_duration_ >=
-                std::max<std::uint32_t>(1, track_->timescale / kFragmentDurationDivisor)) {
-            emit();
-        }
+        if (!track_) return;
+        const auto threshold = std::max<std::uint32_t>(1, track_->timescale / kFragmentDurationDivisor);
+        if (ready_duration_ >= threshold) emit(false);
+        if (ready_duration_ >= std::uint64_t(threshold) * kQueueDurationBoundMultiplier) emit(true);
     }
 
-    void emit() {
+    // Longest prefix of ready_ whose composition interval cannot overlap
+    // anything still queued after it (rest of ready_, plus pending_). Cutting
+    // a fragment there is safe: Firefox's CtsComparator reorders each moof's
+    // samples by composition time, so a cut mid reorder-group would make this
+    // fragment's interval overlap the next one and evict already-buffered frames.
+    std::size_t safe_prefix() const {
+        const auto count = ready_.size();
+        if (count == 0) return 0;
+        std::vector<std::int64_t> min_from(count + 1);
+        min_from[count] = pending_ ? pending_->pts : std::numeric_limits<std::int64_t>::max();
+        for (std::size_t index = count; index-- > 0;) {
+            min_from[index] = std::min(ready_[index].pts, min_from[index + 1]);
+        }
+        std::size_t safe = 0;
+        std::int64_t prefix_end = std::numeric_limits<std::int64_t>::min();
+        for (std::size_t index = 0; index < count; ++index) {
+            prefix_end = std::max(prefix_end,
+                                  ready_[index].pts + static_cast<std::int64_t>(ready_[index].duration));
+            if (prefix_end <= min_from[index + 1]) safe = index + 1;
+        }
+        return safe;
+    }
+
+    void emit(const bool force) {
         if (!track_ || ready_.empty()) return;
-        auto segment = media_segment(*track_, ready_, sequence_++);
-        output_.segment(type_, std::move(segment));
-        ready_.clear();
-        ready_duration_ = 0;
+        const auto count = force ? ready_.size() : safe_prefix();
+        if (count == 0) return;
+        std::uint64_t emitted_duration = 0;
+        for (std::size_t index = 0; index < count; ++index) {
+            emitted_duration += ready_[index].duration;
+        }
+        std::vector<Sample> segment;
+        segment.reserve(count);
+        for (std::size_t index = 0; index < count; ++index) {
+            segment.push_back(std::move(ready_[index]));
+        }
+        output_.segment(type_, media_segment(*track_, segment, sequence_++));
+        ready_.erase(ready_.begin(), ready_.begin() + static_cast<std::ptrdiff_t>(count));
+        ready_duration_ -= emitted_duration;
     }
 
     std::optional<Mp4Track> track_;
