@@ -213,8 +213,11 @@ public:
     explicit HevcMuxer(Output& output) : BaseMuxer("video", output), output_(output) {}
 
     bool started() const noexcept { return started_; }
+    // AacMuxer has its own (sample-rate) track timescale, so it needs this
+    // shared offset in microseconds regardless of the video track timescale.
     std::optional<std::int64_t> timeline_offset_us() const noexcept {
-        return timeline_offset_us_;
+        if (!timeline_offset_ticks_) return std::nullopt;
+        return scaled(*timeline_offset_ticks_, track_->timescale, 1000000);
     }
 
     void reset() {
@@ -223,7 +226,7 @@ public:
         track_.reset();
         started_ = false;
         no_rasl_output_ = false;
-        timeline_offset_us_.reset();
+        timeline_offset_ticks_.reset();
     }
 
     void push(const tlvdemux::AccessUnit& unit, const bool output_enabled) {
@@ -231,7 +234,7 @@ public:
             reset_samples();
             started_ = false;
             no_rasl_output_ = false;
-            timeline_offset_us_.reset();
+            timeline_offset_ticks_.reset();
         }
         const auto nalus = annex_b_views(unit.data);
         for (const auto& nalu : nalus) {
@@ -249,6 +252,13 @@ public:
             track.height = config.height;
             track.codec = config.codec;
             track.config = config.hvcc;
+            // Adopt the stream's own timescale so DTS/PTS stay exact integers
+            // (e.g. 180000's 3003-tick frame interval is not an integer number
+            // of microseconds, and the resulting rounding drift can make a
+            // fragment's composition interval overlap the next one). A
+            // timescale of 1 means the stream never signalled one; keep the
+            // 1000000 default rather than build a 1 Hz MP4 track.
+            if (unit.dts.timescale > 1) track.timescale = unit.dts.timescale;
             set_track(std::move(track));
         }
         if (!track_) return;
@@ -266,8 +276,8 @@ public:
         if (!started_) {
             if (irap < 0) return;
             started_ = true;
-            const auto first_dts_us = scaled(unit.dts.value, unit.dts.timescale, 1000000);
-            timeline_offset_us_ = std::max<std::int64_t>(0, -first_dts_us);
+            const auto first_dts = scaled(unit.dts.value, unit.dts.timescale, track_->timescale);
+            timeline_offset_ticks_ = std::max<std::int64_t>(0, -first_dts);
             // The first CRA starts a fresh decode sequence, so its leading RASL
             // pictures cannot reference pre-CRA pictures that were not emitted.
             no_rasl_output_ = irap == 21;
@@ -290,9 +300,9 @@ public:
             append(data, unit.data.data() + nalu.offset, nalu.size);
         }
         if (data.empty()) return;
-        const auto offset = timeline_offset_us_.value_or(0);
-        const auto dts = scaled(unit.dts.value, unit.dts.timescale, 1000000) + offset;
-        const auto pts = scaled(unit.pts.value, unit.pts.timescale, 1000000) + offset;
+        const auto offset = timeline_offset_ticks_.value_or(0);
+        const auto dts = scaled(unit.dts.value, unit.dts.timescale, track_->timescale) + offset;
+        const auto pts = scaled(unit.pts.value, unit.pts.timescale, track_->timescale) + offset;
         if (dts < 0) return;
         enqueue({std::move(data), dts, pts, 0, irap >= 0});
     }
@@ -302,13 +312,19 @@ private:
         return nalu.type != 32 && nalu.type != 33 && nalu.type != 34 && nalu.type != 35;
     }
 
-    std::uint32_t default_duration() const override { return 33367; }
+    // 33367 at a 1e6 timescale is the ~29.97fps default this stood in for;
+    // scale it to whatever timescale the track actually adopted above.
+    std::uint32_t default_duration() const override {
+        return track_ ? static_cast<std::uint32_t>(std::llround(
+                            33367.0 * track_->timescale / 1000000.0))
+                      : 33367;
+    }
 
     Output& output_;
     std::map<int, Bytes> parameter_sets_;
     bool started_ = false;
     bool no_rasl_output_ = false;
-    std::optional<std::int64_t> timeline_offset_us_;
+    std::optional<std::int64_t> timeline_offset_ticks_;
 };
 
 class AacMuxer final : public BaseMuxer {

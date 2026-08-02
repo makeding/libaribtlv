@@ -162,6 +162,18 @@ ParsedSegment parse_segment(const std::vector<std::uint8_t>& data) {
     return result;
 }
 
+std::uint32_t mdhd_timescale(const std::vector<std::uint8_t>& init_segment) {
+    const auto moov = find_box(init_segment, 0, init_segment.size(), "moov");
+    check(moov.has_value(), "init segment is missing a moov box");
+    const auto trak = find_box(init_segment, moov->payload_start, moov->payload_end, "trak");
+    check(trak.has_value(), "moov is missing a trak box");
+    const auto mdia = find_box(init_segment, trak->payload_start, trak->payload_end, "mdia");
+    check(mdia.has_value(), "trak is missing a mdia box");
+    const auto mdhd = find_box(init_segment, mdia->payload_start, mdia->payload_end, "mdhd");
+    check(mdhd.has_value(), "mdia is missing a mdhd box");
+    return read_u32(init_segment, mdhd->payload_start + 12);  // version/flags(4) + creation/modification time(8)
+}
+
 std::vector<ParsedSegment> segments_of(const std::vector<tlvdemux::MseMediaSegment>& segments,
                                        const std::string& type) {
     std::vector<ParsedSegment> out;
@@ -252,13 +264,14 @@ std::vector<std::uint8_t> video_access_unit_data(const bool include_parameter_se
 
 tlvdemux::AccessUnit hevc_unit(const std::uint64_t track_id, const std::int64_t dts_value,
                                const std::int64_t pts_value, const bool keyframe,
-                               const bool include_parameter_sets) {
+                               const bool include_parameter_sets,
+                               const std::uint32_t timescale = 1000000) {
     tlvdemux::AccessUnit unit;
     unit.track_id = track_id;
     unit.codec = tlvdemux::Codec::Hevc;
     unit.data = video_access_unit_data(include_parameter_sets, keyframe);
-    unit.dts = {dts_value, 1000000};
-    unit.pts = {pts_value, 1000000};
+    unit.dts = {dts_value, timescale};
+    unit.pts = {pts_value, timescale};
     unit.random_access = keyframe;
     return unit;
 }
@@ -363,6 +376,56 @@ void test_video_fragments_do_not_overlap_in_composition_time() {
     }
 }
 
+// Real broadcast video (see demo/bsp4k-lag-3.mmts) runs at timescale 180000
+// with a 3003-tick frame interval -- 16683.33us, which does not divide the
+// MP4 track timescale evenly. Pins the fix that makes the video track adopt
+// unit.dts.timescale instead of hardcoding 1000000, so samples never round
+// through an inexact microsecond conversion.
+void test_video_fragments_do_not_overlap_with_broadcast_timescale() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+
+    constexpr std::uint32_t broadcast_timescale = 180000;
+    constexpr std::int64_t frame_ticks = 3003;
+
+    const auto frames = build_reordered_frames(80, frame_ticks);
+    bool first = true;
+    for (const auto& frame : frames) {
+        remuxer.push(hevc_unit(2, frame.dts, frame.pts, frame.keyframe, first, broadcast_timescale));
+        first = false;
+    }
+    remuxer.flush();
+
+    check(sink.inits.size() == 1, "video push should have produced exactly one init segment");
+    check(mdhd_timescale(sink.inits.front().data) == broadcast_timescale,
+          "mdhd timescale must track the stream's own timescale, not a hardcoded default");
+
+    const auto segments = segments_of(sink.segments, "video");
+    check(segments.size() >= 2, "reordered video push should have spanned multiple fragments");
+
+    std::vector<std::pair<std::int64_t, std::int64_t>> intervals;
+    for (const auto& segment : segments) {
+        std::int64_t dts = std::int64_t(segment.tfdt);
+        auto min_pts = std::numeric_limits<std::int64_t>::max();
+        auto max_end = std::numeric_limits<std::int64_t>::min();
+        for (const auto& sample : segment.samples) {
+            const auto pts = dts + sample.composition_offset;
+            min_pts = std::min(min_pts, pts);
+            max_end = std::max(max_end, pts + std::int64_t(sample.duration));
+            dts += std::int64_t(sample.duration);
+        }
+        intervals.emplace_back(min_pts, max_end);
+    }
+    for (std::size_t i = 0; i + 1 < intervals.size(); ++i) {
+        check(intervals[i].second <= intervals[i + 1].first,
+              "fragment " + std::to_string(i) +
+                  " composition interval overlaps the next fragment's under a broadcast "
+                  "timescale, which Firefox's CtsComparator would misinterpret as evicting "
+                  "already-buffered frames");
+    }
+}
+
 // A track with a fixed, monotonically increasing DTS step but a monotonically
 // DECREASING PTS never offers safe_prefix() a cut point. Every ready sample's
 // duration is the constant DTS step, so its composition end is pts_0 + step --
@@ -441,6 +504,7 @@ int main() {
     test_unlimited_22_2_channel_count();
     test_audio_drops_non_advancing_dts();
     test_video_fragments_do_not_overlap_in_composition_time();
+    test_video_fragments_do_not_overlap_with_broadcast_timescale();
     test_video_queue_bound_forces_emit_without_safe_cut();
     std::cout << "mse remuxer tests passed\n";
 }
