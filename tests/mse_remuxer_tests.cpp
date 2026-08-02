@@ -181,6 +181,20 @@ std::vector<ParsedSegment> segments_of(const std::vector<tlvdemux::MseMediaSegme
     return out;
 }
 
+// Reconstructs each sample's composition timestamp (tfdt + running dts sum +
+// composition_offset) across a run of segments, in emission order.
+std::vector<std::int64_t> composition_timestamps(const std::vector<ParsedSegment>& segments) {
+    std::vector<std::int64_t> out;
+    for (const auto& segment : segments) {
+        std::int64_t dts = std::int64_t(segment.tfdt);
+        for (const auto& sample : segment.samples) {
+            out.push_back(dts + sample.composition_offset);
+            dts += std::int64_t(sample.duration);
+        }
+    }
+    return out;
+}
+
 // ---- HEVC Annex B synthesis: only what parse_sps() in mse_remuxer.cpp
 // actually reads, plus the NAL headers/types the muxer inspects. ----
 
@@ -248,7 +262,13 @@ std::vector<std::uint8_t> annex_b_wrap(const std::vector<std::uint8_t>& nalu) {
     return out;
 }
 
-std::vector<std::uint8_t> video_access_unit_data(const bool include_parameter_sets, const bool keyframe) {
+// vcl_types gives one VCL NAL per entry (so a test can drive RASL/RADL/BLA/CRA
+// mixes directly); trailing_nal optionally appends a non-VCL NAL such as
+// EOS_NUT after them, and an empty vcl_types with a trailing_nal builds an
+// access unit that carries only that marker NAL.
+std::vector<std::uint8_t> video_access_unit_data(const bool include_parameter_sets,
+                                                  const std::vector<unsigned>& vcl_types,
+                                                  const std::optional<unsigned> trailing_nal = std::nullopt) {
     std::vector<std::uint8_t> out;
     if (include_parameter_sets) {
         for (const auto& nalu : {annex_b_wrap(make_simple_nal(32, {0xab, 0xcd})),   // VPS
@@ -257,9 +277,19 @@ std::vector<std::uint8_t> video_access_unit_data(const bool include_parameter_se
             out.insert(out.end(), nalu.begin(), nalu.end());
         }
     }
-    const auto vcl = annex_b_wrap(make_simple_nal(keyframe ? 19 : 1, {0x80}));  // IDR_W_RADL / TRAIL_R
-    out.insert(out.end(), vcl.begin(), vcl.end());
+    for (const auto type : vcl_types) {
+        const auto vcl = annex_b_wrap(make_simple_nal(type, {0x80}));
+        out.insert(out.end(), vcl.begin(), vcl.end());
+    }
+    if (trailing_nal) {
+        const auto nalu = annex_b_wrap(make_simple_nal(*trailing_nal, {}));
+        out.insert(out.end(), nalu.begin(), nalu.end());
+    }
     return out;
+}
+
+std::vector<std::uint8_t> video_access_unit_data(const bool include_parameter_sets, const bool keyframe) {
+    return video_access_unit_data(include_parameter_sets, std::vector<unsigned>{keyframe ? 19u : 1u});  // IDR_W_RADL / TRAIL_R
 }
 
 tlvdemux::AccessUnit hevc_unit(const std::uint64_t track_id, const std::int64_t dts_value,
@@ -273,6 +303,22 @@ tlvdemux::AccessUnit hevc_unit(const std::uint64_t track_id, const std::int64_t 
     unit.dts = {dts_value, timescale};
     unit.pts = {pts_value, timescale};
     unit.random_access = keyframe;
+    return unit;
+}
+
+tlvdemux::AccessUnit hevc_unit(const std::uint64_t track_id, const std::int64_t dts_value,
+                               const std::int64_t pts_value, const std::vector<unsigned>& vcl_types,
+                               const bool include_parameter_sets,
+                               const std::optional<unsigned> trailing_nal = std::nullopt,
+                               const std::uint32_t timescale = 1000000) {
+    tlvdemux::AccessUnit unit;
+    unit.track_id = track_id;
+    unit.codec = tlvdemux::Codec::Hevc;
+    unit.data = video_access_unit_data(include_parameter_sets, vcl_types, trailing_nal);
+    unit.dts = {dts_value, timescale};
+    unit.pts = {pts_value, timescale};
+    unit.random_access = std::any_of(vcl_types.begin(), vcl_types.end(),
+                                      [](const unsigned type) { return type >= 16 && type <= 21; });
     return unit;
 }
 
@@ -476,6 +522,95 @@ void test_video_queue_bound_forces_emit_without_safe_cut() {
     remuxer.flush();
 }
 
+// ITU-T H.265 8.1.3 / RFC 7798 1.1.4: NoRaslOutputFlag is 1 for a mid-stream
+// BLA regardless of what came before it, so its RASL cannot be decoded.
+void test_mid_stream_bla_drops_rasl() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+
+    constexpr std::int64_t step = 100000;
+    remuxer.push(hevc_unit(2, 0, 0, std::vector<unsigned>{21}, true));              // CRA opens the sequence
+    remuxer.push(hevc_unit(2, step, step, std::vector<unsigned>{1}, false));        // trailing picture closes the initial window
+    remuxer.push(hevc_unit(2, 2 * step, 2 * step, std::vector<unsigned>{1}, false));
+    remuxer.push(hevc_unit(2, 3 * step, 3 * step, std::vector<unsigned>{17}, false));  // mid-stream BLA
+    remuxer.push(hevc_unit(2, 4 * step, 4 * step, std::vector<unsigned>{9}, false));   // its RASL: must be dropped
+    remuxer.push(hevc_unit(2, 5 * step, 5 * step, std::vector<unsigned>{1}, false));   // first trailing picture closes the window
+    remuxer.flush();
+
+    const auto segments = segments_of(sink.segments, "video");
+    const std::vector<std::int64_t> expected{0, step, 2 * step, 3 * step, 5 * step};
+    check(composition_timestamps(segments) == expected,
+          "a mid-stream BLA's RASL access unit was not dropped");
+}
+
+// A CRA only gets NoRaslOutputFlag=1 when it opens a fresh coded video
+// sequence, which an EOS/EOB NAL in a preceding access unit also triggers.
+void test_cra_after_eos_drops_rasl() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+
+    constexpr std::int64_t step = 100000;
+    remuxer.push(hevc_unit(2, 0, 0, std::vector<unsigned>{21}, true));              // CRA opens the sequence
+    remuxer.push(hevc_unit(2, step, step, std::vector<unsigned>{1}, false));        // trailing picture closes the initial window
+    remuxer.push(hevc_unit(2, 2 * step, 2 * step, std::vector<unsigned>{1}, false));
+    remuxer.push(hevc_unit(2, 3 * step, 3 * step, std::vector<unsigned>{}, false, 36u));  // EOS_NUT-only access unit
+    remuxer.push(hevc_unit(2, 4 * step, 4 * step, std::vector<unsigned>{21}, false));     // CRA following the EOS
+    remuxer.push(hevc_unit(2, 5 * step, 5 * step, std::vector<unsigned>{9}, false));      // its RASL: must be dropped
+    remuxer.push(hevc_unit(2, 6 * step, 6 * step, std::vector<unsigned>{1}, false));      // first trailing picture closes the window
+    remuxer.flush();
+
+    const auto segments = segments_of(sink.segments, "video");
+    const std::vector<std::int64_t> expected{0, step, 2 * step, 4 * step, 6 * step};
+    check(composition_timestamps(segments) == expected,
+          "a CRA that follows an end-of-sequence NAL did not drop its RASL");
+}
+
+// A plain mid-stream CRA -- not the first access unit and not preceded by an
+// EOS/EOB -- never gets NoRaslOutputFlag=1, so its RASL is decodable and must
+// reach the sample stream. Regression guard against over-dropping.
+void test_plain_mid_stream_cra_keeps_rasl() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+
+    constexpr std::int64_t step = 100000;
+    remuxer.push(hevc_unit(2, 0, 0, std::vector<unsigned>{21}, true));              // CRA opens the sequence
+    remuxer.push(hevc_unit(2, step, step, std::vector<unsigned>{1}, false));        // trailing picture closes the initial window
+    remuxer.push(hevc_unit(2, 2 * step, 2 * step, std::vector<unsigned>{1}, false));
+    remuxer.push(hevc_unit(2, 3 * step, 3 * step, std::vector<unsigned>{21}, false));  // plain mid-stream CRA
+    remuxer.push(hevc_unit(2, 4 * step, 4 * step, std::vector<unsigned>{9}, false));   // its RASL: must survive
+    remuxer.push(hevc_unit(2, 5 * step, 5 * step, std::vector<unsigned>{1}, false));
+    remuxer.flush();
+
+    const auto segments = segments_of(sink.segments, "video");
+    const std::vector<std::int64_t> expected{0, step, 2 * step, 3 * step, 4 * step, 5 * step};
+    check(composition_timestamps(segments) == expected,
+          "a plain mid-stream CRA's RASL was dropped even though NoRaslOutputFlag was never armed for it");
+}
+
+// RASL must precede RADL in presentation order but not necessarily in
+// decoding order, so a RADL of the same IRAP can arrive first. It is leading
+// and decodable, so it must not end the drop window the IRAP armed.
+void test_radl_does_not_reopen_gate() {
+    TestSink sink;
+    tlvdemux::MseRemuxer remuxer(sink);
+    remuxer.selectTrack(tlvdemux::TrackKind::Video, 2);
+
+    constexpr std::int64_t step = 100000;
+    remuxer.push(hevc_unit(2, 0, 0, std::vector<unsigned>{21}, true));               // CRA opens the sequence, arms the latch
+    remuxer.push(hevc_unit(2, step, step, std::vector<unsigned>{6}, false));         // RADL: leading, must not reopen the gate
+    remuxer.push(hevc_unit(2, 2 * step, 2 * step, std::vector<unsigned>{9}, false)); // RASL: still dropped
+    remuxer.push(hevc_unit(2, 3 * step, 3 * step, std::vector<unsigned>{1}, false)); // first trailing picture closes the window
+    remuxer.flush();
+
+    const auto segments = segments_of(sink.segments, "video");
+    const std::vector<std::int64_t> expected{0, step, 3 * step};
+    check(composition_timestamps(segments) == expected,
+          "a RADL access unit reopened the RASL drop window before the first trailing picture");
+}
+
 void test_audio_channel_limit() {
     TestSink sink;
     tlvdemux::MseRemuxer remuxer(sink, tlvdemux::MseOptions{6});
@@ -506,5 +641,9 @@ int main() {
     test_video_fragments_do_not_overlap_in_composition_time();
     test_video_fragments_do_not_overlap_with_broadcast_timescale();
     test_video_queue_bound_forces_emit_without_safe_cut();
+    test_mid_stream_bla_drops_rasl();
+    test_cra_after_eos_drops_rasl();
+    test_plain_mid_stream_cra_keeps_rasl();
+    test_radl_does_not_reopen_gate();
     std::cout << "mse remuxer tests passed\n";
 }

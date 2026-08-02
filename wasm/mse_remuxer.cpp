@@ -226,6 +226,7 @@ public:
         track_.reset();
         started_ = false;
         no_rasl_output_ = false;
+        sequence_start_ = true;
         timeline_offset_ticks_.reset();
     }
 
@@ -234,6 +235,7 @@ public:
             reset_samples();
             started_ = false;
             no_rasl_output_ = false;
+            sequence_start_ = true;
             timeline_offset_ticks_.reset();
         }
         const auto nalus = annex_b_views(unit.data);
@@ -265,27 +267,48 @@ public:
 
         bool has_vcl = false;
         bool only_rasl_vcl = true;
+        bool all_leading = true;
+        bool has_eos = false;
         int irap = -1;
         for (const auto& nalu : nalus) {
-            if (nalu.type < 0 || nalu.type > 31) continue;
-            has_vcl = true;
-            only_rasl_vcl = only_rasl_vcl && (nalu.type == 8 || nalu.type == 9);
-            if (nalu.type >= 16 && nalu.type <= 21 && irap < 0) irap = nalu.type;
+            if (nalu.type >= 0 && nalu.type <= 31) {
+                has_vcl = true;
+                only_rasl_vcl = only_rasl_vcl && (nalu.type == 8 || nalu.type == 9);
+                all_leading = all_leading && (nalu.type >= 6 && nalu.type <= 9);
+                if (nalu.type >= 16 && nalu.type <= 21 && irap < 0) irap = nalu.type;
+            } else if (nalu.type == 36 || nalu.type == 37) {
+                has_eos = true;
+            }
         }
-        if (!has_vcl) return;
+        if (!has_vcl) {
+            // An EOS/EOB-only access unit carries no picture, but still ends
+            // the coded video sequence for whichever IRAP follows it.
+            if (has_eos) sequence_start_ = true;
+            return;
+        }
         if (!started_) {
             if (irap < 0) return;
             started_ = true;
             const auto first_dts = scaled(unit.dts.value, unit.dts.timescale, track_->timescale);
             timeline_offset_ticks_ = std::max<std::int64_t>(0, -first_dts);
-            // The first CRA starts a fresh decode sequence, so its leading RASL
-            // pictures cannot reference pre-CRA pictures that were not emitted.
-            no_rasl_output_ = irap == 21;
             output_.video_start(irap, unit.random_access);
+        }
+        // HEVC 8.1.3: NoRaslOutputFlag is 1 for every IDR/BLA access unit, and for
+        // a CRA that opens a fresh coded video sequence (the first access unit in
+        // the bitstream, or the first one after an EOS/EOB NAL); HandleCraAsBlaFlag
+        // is an external decoder input, not derivable from the bitstream, and is
+        // ignored. While it holds, RASL pictures reference data the decoder never
+        // received and are dropped. RADL pictures are leading but decodable, so
+        // they pass through without closing the window; the window instead ends at
+        // the first trailing (non-leading) access unit that follows the IRAP.
+        if (irap >= 0) {
+            no_rasl_output_ = (irap >= 16 && irap <= 20) || sequence_start_;
+            sequence_start_ = false;
         } else if (no_rasl_output_) {
             if (only_rasl_vcl) return;
-            no_rasl_output_ = false;
+            if (!all_leading) no_rasl_output_ = false;
         }
+        if (has_eos) sequence_start_ = true;
         if (!output_enabled) return;
 
         std::size_t output_size = 0;
@@ -324,6 +347,7 @@ private:
     std::map<int, Bytes> parameter_sets_;
     bool started_ = false;
     bool no_rasl_output_ = false;
+    bool sequence_start_ = true;
     std::optional<std::int64_t> timeline_offset_ticks_;
 };
 
