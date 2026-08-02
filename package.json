@@ -38,12 +38,19 @@
       "require": "./dist/tlvdemux.js",
       "default": "./dist/tlvdemux.js"
     },
+    "./mse-append-queue": {
+      "types": "./mse-append-queue.d.ts",
+      "import": "./mse-append-queue.mjs",
+      "default": "./mse-append-queue.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "dist/",
     "docs/performance.md",
     "index.d.ts",
+    "mse-append-queue.d.ts",
+    "mse-append-queue.mjs",
     "README.md",
     "README.ja.md",
     "LICENSE"
@@ -56,7 +63,7 @@
     "build:package": "cmake -E make_directory dist && cmake -E copy_if_different build-wasm/tlvdemux.js dist/tlvdemux.js",
     "build": "npm run build:wasm && npm run build:package",
     "benchmark:wasm": "node tests/wasm_benchmark.mjs",
-    "test": "node tests/live_stream_coalescing.mjs && node tests/wasm_smoke.mjs dist/tlvdemux.js",
+    "test": "node tests/live_stream_coalescing.mjs && node tests/mse_append_queue.mjs && node tests/wasm_smoke.mjs dist/tlvdemux.js",
     "prepack": "npm run build && npm test"
   }
 }

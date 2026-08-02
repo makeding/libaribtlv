@@ -78,6 +78,18 @@ while (Date.now() < deadline) {
       error: error ? { code: error.code, message: error.message } : null,
       ranges,
       status: document.getElementById('probeState')?.textContent,
+      queues: [...(globalThis.__tlvdemuxDebugQueues?.entries() || [])].map(([type, queue]) => ({
+        type,
+        state: queue.state,
+        updating: queue.sourceBuffer.updating,
+        queuedBytes: queue.queuedBytes,
+        currentBytes: queue.currentBytes,
+        queueLength: queue.queue.length,
+        waiters: queue.waiters.length,
+        retryPending: queue.retryTimer !== null,
+        ahead: queue.bufferedAhead(),
+        error: queue.error?.message || null,
+      })),
       logTail: document.getElementById('log')?.textContent.split('\\n').slice(-8),
     };
   })()`);

@@ -2,6 +2,7 @@ import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
 import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-plane-v4';
 import { coalesceReadableStream } from './live-stream.mjs';
 import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js';
+import { MseAppendQueue } from '../mse-append-queue.mjs';
 
 const MiB = 1024n * 1024n;
 const PLAYBACK_CHUNK = 2n * MiB;
@@ -9,7 +10,6 @@ const FORWARD_BUFFER_HIGH_SECONDS = 15;
 const FORWARD_BUFFER_LOW_SECONDS = 8;
 const LIVE_STARTUP_BUFFER_SECONDS = 0.5;
 const BACK_BUFFER_SECONDS = 8;
-const BACK_BUFFER_TRIM_GRANULARITY_SECONDS = 2;
 const SOURCE_QUEUE_HIGH_BYTES = 4 * 1024 * 1024;
 const LIVE_PUSH_TARGET_BYTES = 512 * 1024;
 const LIVE_PUSH_MAX_DELAY_MS = 25;
@@ -328,14 +328,6 @@ async function selectedSource(signal, liveMode) {
   throw new Error('ローカル MMTS ファイルまたは HTTP URL を指定してください');
 }
 
-function snapshotTimeRanges(ranges) {
-  const result = [];
-  for (let index = 0; index < ranges.length; index += 1) {
-    result.push({ start: ranges.start(index), end: ranges.end(index) });
-  }
-  return result;
-}
-
 function intersectBufferedRanges(left, right) {
   const result = [];
   let leftIndex = 0;
@@ -348,189 +340,6 @@ function intersectBufferedRanges(left, right) {
     else rightIndex += 1;
   }
   return result;
-}
-
-class AppendQueue {
-  constructor(mediaSource, mediaElement, mime, onUpdateEnd = null) {
-    if (!BrowserMediaSource?.isTypeSupported(mime)) {
-      throw new Error(`このブラウザーは ${mime} に対応していません`);
-    }
-    this.mediaElement = mediaElement;
-    this.mediaSource = mediaSource;
-    this.mime = mime;
-    this.sourceBuffer = mediaSource.addSourceBuffer(mime);
-    this.queue = [];
-    this.queuedBytes = 0;
-    this.currentBytes = 0;
-    this.waiters = [];
-    this.error = null;
-    this.retryTimer = null;
-    this.trimBeforeTime = null;
-    this.forceTrim = false;
-    this.state = 'running';
-    this.onUpdateEnd = onUpdateEnd;
-    this.sourceBuffer.addEventListener('updateend', () => {
-      this.queuedBytes -= this.currentBytes;
-      this.currentBytes = 0;
-      try {
-        if (this.state === 'quiescing') this.state = 'idle';
-        else this.pump();
-        this.onUpdateEnd?.();
-      } catch (error) {
-        this.error = error;
-      } finally {
-        this.resolveWaiters();
-      }
-    });
-    this.sourceBuffer.addEventListener('error', () => {
-      this.error = new Error(mediaErrorMessage(this.mediaElement.error) || `SourceBuffer エラー: ${mime}`);
-      this.resolveWaiters();
-    });
-  }
-  append(data) {
-    if (this.error) throw this.error;
-    if (this.state !== 'running') {
-      throw new DOMException(`SourceBuffer キューは ${this.state} 状態です`, 'InvalidStateError');
-    }
-    this.queue.push(data);
-    this.queuedBytes += data.byteLength;
-    this.pump();
-  }
-  pump() {
-    if (this.error || this.state !== 'running' || this.sourceBuffer.updating) return;
-    const mediaFailure = mediaErrorMessage(this.mediaElement.error);
-    if (mediaFailure) {
-      this.error = new Error(mediaFailure);
-      this.resolveWaiters();
-      return;
-    }
-    const ranges = this.bufferedRanges();
-    if (this.trimBeforeTime !== null && ranges.length) {
-      const removeEnd = this.trimBeforeTime;
-      const start = ranges[0].start;
-      const force = this.forceTrim;
-      this.trimBeforeTime = null;
-      this.forceTrim = false;
-      if (force || removeEnd > start + BACK_BUFFER_TRIM_GRANULARITY_SECONDS) {
-        this.sourceBuffer.remove(start, removeEnd);
-        return;
-      }
-    }
-    if (!this.queue.length) return;
-    if (this.bufferedAhead() >= FORWARD_BUFFER_HIGH_SECONDS) {
-      this.scheduleRetry();
-      return;
-    }
-    const data = this.queue.shift();
-    this.currentBytes = data.byteLength;
-    try {
-      this.sourceBuffer.appendBuffer(data);
-    } catch (error) {
-      this.queue.unshift(data);
-      this.currentBytes = 0;
-      if (error.name === 'QuotaExceededError') {
-        this.trimBefore(this.mediaElement.currentTime - BACK_BUFFER_SECONDS, true);
-        this.scheduleRetry();
-      } else {
-        this.error = error;
-        this.resolveWaiters();
-      }
-    }
-  }
-  bufferedAhead() {
-    const ranges = this.bufferedRanges();
-    const time = this.mediaElement.currentTime;
-    for (let index = 0; index < ranges.length; index += 1) {
-      if (ranges[index].start <= time + 0.1 && ranges[index].end >= time) {
-        return ranges[index].end - time;
-      }
-    }
-    return 0;
-  }
-  bufferedRanges() {
-    try {
-      return snapshotTimeRanges(this.sourceBuffer.buffered);
-    } catch (error) {
-      if (error.name !== 'InvalidStateError') throw error;
-      return snapshotTimeRanges(this.mediaElement.buffered);
-    }
-  }
-  trimBefore(time, force = false) {
-    if (time <= 0 || this.state !== 'running') return;
-    if (!force && this.trimBeforeTime === null) {
-      const ranges = this.bufferedRanges();
-      if (!ranges.length || time <= ranges[0].start + BACK_BUFFER_TRIM_GRANULARITY_SECONDS) {
-        return;
-      }
-    }
-    this.trimBeforeTime = this.trimBeforeTime === null
-      ? time : Math.max(this.trimBeforeTime, time);
-    this.forceTrim = this.forceTrim || force;
-    this.scheduleRetry();
-  }
-  scheduleRetry() {
-    if (this.retryTimer !== null) return;
-    this.retryTimer = setTimeout(() => {
-      this.retryTimer = null;
-      this.pump();
-    }, 250);
-  }
-  waitBelow(limit) {
-    if (this.error) return Promise.reject(this.error);
-    if (this.queuedBytes <= limit) return Promise.resolve();
-    return new Promise((resolve, reject) => this.waiters.push({ limit, idle: false, resolve, reject }));
-  }
-  isIdle() {
-    return !this.sourceBuffer.updating && this.queuedBytes === 0 &&
-      this.queue.length === 0 && this.trimBeforeTime === null;
-  }
-  waitIdle() {
-    if (this.error) return Promise.reject(this.error);
-    if (this.isIdle()) return Promise.resolve();
-    return new Promise((resolve, reject) => this.waiters.push({ idle: true, resolve, reject }));
-  }
-  async quiesce() {
-    if (this.error) throw this.error;
-    this.state = 'quiescing';
-    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
-    this.retryTimer = null;
-    this.trimBeforeTime = null;
-    this.forceTrim = false;
-    this.queue = [];
-    this.queuedBytes = this.currentBytes;
-    if (!this.sourceBuffer.updating) {
-      this.currentBytes = 0;
-      this.queuedBytes = 0;
-      this.state = 'idle';
-    }
-    this.resolveWaiters();
-    await this.waitIdle();
-  }
-  resume() {
-    if (this.error || this.state === 'destroyed') return;
-    this.state = 'running';
-    this.pump();
-  }
-  destroy() {
-    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
-    this.retryTimer = null;
-    this.state = 'destroyed';
-    this.error = this.error || new Error('SourceBuffer キューを停止しました');
-    this.queue = [];
-    this.queuedBytes = 0;
-    this.currentBytes = 0;
-    this.forceTrim = false;
-    this.resolveWaiters();
-  }
-  resolveWaiters() {
-    const pending = this.waiters;
-    this.waiters = [];
-    for (const waiter of pending) {
-      if (this.error) waiter.reject(this.error);
-      else if (waiter.idle ? this.isIdle() : this.queuedBytes <= waiter.limit) waiter.resolve();
-      else this.waiters.push(waiter);
-    }
-  }
 }
 
 function once(target, event) {
@@ -738,6 +547,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       throw new Error('このブラウザーは Media Source Extensions に対応していません');
     }
     activeQueueByType = new Map();
+    globalThis.__tlvdemuxDebugQueues = activeQueueByType;
     const fresh = new BrowserMediaSource();
     // Register before attaching the object URL. WebKit may transition to open
     // while load()/play() is running, before code after those calls resumes.
@@ -884,7 +694,11 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
         throw new Error(`シーク中に ${type} codec が変化しました: ${queue.mime} -> ${init.mime}`);
       }
       if (!queue) {
-        queue = new AppendQueue(mediaSource, elements.video, init.mime, maybeStartPlayback);
+        queue = new MseAppendQueue(mediaSource, elements.video, init.mime, maybeStartPlayback, {
+          backBufferSeconds: BACK_BUFFER_SECONDS,
+          forwardBufferHighSeconds: FORWARD_BUFFER_HIGH_SECONDS,
+          getMediaError: media => mediaErrorMessage(media.error),
+        });
         activeQueueByType.set(type, queue);
         activeQueues.push(queue);
       }

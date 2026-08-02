@@ -18,6 +18,7 @@
 #include <map>
 #include <optional>
 #include <random>
+#include <set>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -161,13 +162,18 @@ class Probe final : public tlvdemux::Sink, public tlvdemux::MseSink {
 public:
     Probe(const std::size_t maximum_access_units, const bool skip_leading_rasl,
           const double playback_rate, const std::size_t inflight_frames,
-          const bool prepend_parameter_sets_on_irap, const bool mse_pipeline)
-        : maximum_access_units_(maximum_access_units),
+          const bool prepend_parameter_sets_on_irap, const bool mse_pipeline,
+          const bool timeline_only, const std::optional<std::uint16_t> audio_packet_id,
+          const bool require_hardware)
+        : wanted_audio_packet_id_(audio_packet_id),
+          maximum_access_units_(maximum_access_units),
           skip_leading_rasl_(skip_leading_rasl),
           playback_rate_(playback_rate),
           inflight_frames_(inflight_frames),
           prepend_parameter_sets_on_irap_(prepend_parameter_sets_on_irap),
-          mse_pipeline_(mse_pipeline), mse_remuxer_(*this) {}
+          mse_pipeline_(mse_pipeline), timeline_only_(timeline_only),
+          require_hardware_(require_hardware),
+          mse_remuxer_(*this) {}
 
     ~Probe() override {
         finish();
@@ -185,12 +191,34 @@ public:
                                                         track.track_id);
             std::cerr << "video track packet_id=0x" << std::hex << track.packet_id << std::dec
                       << " timescale=" << track.timescale << '\n';
+        } else if (mse_pipeline_ && !audio_track_.has_value() &&
+                   track.kind == tlvdemux::TrackKind::Audio && track.audio.has_value() &&
+                   tlvdemux::audio_channel_count(track.audio->channel_layout) <= 6 &&
+                   (!wanted_audio_packet_id_.has_value() ||
+                    track.packet_id == *wanted_audio_packet_id_)) {
+            audio_track_ = track.track_id;
+            mse_remuxer_.selectTrack(tlvdemux::TrackKind::Audio, track.track_id);
+            std::cerr << "audio track packet_id=0x" << std::hex << track.packet_id << std::dec
+                      << " timescale=" << track.timescale << '\n';
         }
     }
 
     void onAccessUnit(tlvdemux::AccessUnit&& unit) override {
-        if (done_ || !video_track_.has_value() || unit.track_id != *video_track_ ||
+        if (done_) return;
+        if (mse_pipeline_ && audio_track_.has_value() && unit.track_id == *audio_track_ &&
+            unit.codec == tlvdemux::Codec::AacLatm) {
+            mse_remuxer_.push(unit);
+            return;
+        }
+        if (!video_track_.has_value() || unit.track_id != *video_track_ ||
             unit.codec != tlvdemux::Codec::Hevc) return;
+
+        if (unit.discontinuity) {
+            std::cerr << "video discontinuity pts=" << seconds(unit.pts)
+                      << " dts=" << seconds(unit.dts)
+                      << " rap=" << (unit.random_access ? 1 : 0)
+                      << " input_offset=" << unit.input_offset << '\n';
+        }
 
         if (mse_pipeline_) {
             mse_remuxer_.push(unit);
@@ -239,6 +267,10 @@ public:
     }
 
     void onError(const tlvdemux::Error& error) override {
+        if (error.code == tlvdemux::ErrorCode::Discontinuity) {
+            std::cerr << "demux discontinuity @" << error.input_offset
+                      << ": " << error.message << '\n';
+        }
         if (!error.recoverable) {
             std::cerr << "demux error @" << error.input_offset << ": " << error.message << '\n';
             pipeline_ok_ = false;
@@ -247,6 +279,12 @@ public:
     }
 
     void onMseInit(tlvdemux::MseTrackInit&& init) override {
+        if (init.type == "audio") {
+            audio_timescale_ = init.sample_rate;
+            std::cerr << "mse init " << init.mime << " sample_rate=" << init.sample_rate
+                      << " channels=" << init.channels << '\n';
+            return;
+        }
         if (init.type != "video") return;
         const auto hvcc = find_box_signature(init.data, "hvcC");
         if (!hvcc || hvcc->payload + 23 > hvcc->offset + hvcc->size) {
@@ -301,9 +339,10 @@ public:
     }
 
     void onMseSegment(tlvdemux::MseMediaSegment&& segment) override {
-        if (segment.type != "video" || done_) return;
+        if (done_) return;
         try {
-            decode_mse_segment(segment.data);
+            if (segment.type == "video") decode_mse_segment(segment.data);
+            else if (segment.type == "audio") validate_audio_mse_segment(segment.data);
         } catch (const std::exception& error) {
             fail_pipeline(error.what());
         }
@@ -316,10 +355,18 @@ public:
 
     bool done() const { return done_; }
     bool ok() const {
-        return pipeline_ok_ && callback_status_.load() == noErr && decoded_count_.load() != 0;
+        return pipeline_ok_ && callback_status_.load() == noErr &&
+            (timeline_only_ ? access_unit_count_ != 0 : decoded_count_.load() != 0);
     }
     OSStatus callback_status() const { return callback_status_.load(); }
     std::size_t decoded_count() const { return decoded_count_.load(); }
+    std::size_t timeline_gap_count() const { return timeline_gap_count_; }
+    std::uint64_t largest_timeline_gap_us() const { return largest_timeline_gap_us_; }
+    std::size_t audio_sample_count() const { return audio_sample_count_; }
+    std::size_t audio_timeline_gap_count() const { return audio_timeline_gap_count_; }
+    std::uint64_t largest_audio_timeline_gap() const { return largest_audio_timeline_gap_; }
+    std::size_t mse_pps_sample_count() const { return mse_pps_sample_count_; }
+    std::size_t mse_pps_variant_count() const { return mse_pps_variants_.size(); }
 
     void finish() {
         if (mse_pipeline_ && !mse_flushed_) {
@@ -404,18 +451,21 @@ private:
         }
         decoder_parameter_sets_ = parameter_sets_;
 
-        const void* decoder_keys[] = {
-            kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
-        };
-        const void* decoder_values[] = {kCFBooleanTrue};
-        const auto decoder_specification = CFDictionaryCreate(
-            kCFAllocatorDefault, decoder_keys, decoder_values, 1,
-            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        CFDictionaryRef decoder_specification = nullptr;
+        if (require_hardware_) {
+            const void* decoder_keys[] = {
+                kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
+            };
+            const void* decoder_values[] = {kCFBooleanTrue};
+            decoder_specification = CFDictionaryCreate(
+                kCFAllocatorDefault, decoder_keys, decoder_values, 1,
+                &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        }
         VTDecompressionOutputCallbackRecord callback{&Probe::output_callback, this};
         status = VTDecompressionSessionCreate(kCFAllocatorDefault, format_,
                                                decoder_specification, nullptr,
                                                &callback, &session_);
-        CFRelease(decoder_specification);
+        if (decoder_specification != nullptr) CFRelease(decoder_specification);
         if (status != noErr) {
             std::cerr << "VTDecompressionSessionCreate: " << status << '\n';
             done_ = true;
@@ -497,8 +547,8 @@ private:
         });
         std::size_t first_original = 0;
         if (prepend_parameter_sets_on_irap_ && has_irap) {
-            // Chromium inserts hvcC immediately after an initial AUD, then keeps
-            // any in-band parameter sets already present in an hev1 sample.
+            // Make the hvcC parameter sets available at the random-access
+            // sample while retaining any in-band updates in the access unit.
             if (!nals.empty() && nals.front().type == 35) {
                 if (!append_nal(sample, nals.front().data, nals.front().size)) return paramErr;
                 first_original = 1;
@@ -578,6 +628,16 @@ private:
                 "MSE decode timeline overlap: tfdt=" + std::to_string(dts) +
                 " previous_end=" + std::to_string(*previous_mse_decode_end_));
         }
+        if (previous_mse_decode_end_.has_value() && dts > *previous_mse_decode_end_) {
+            const auto gap = dts - *previous_mse_decode_end_;
+            ++timeline_gap_count_;
+            largest_timeline_gap_us_ = std::max(largest_timeline_gap_us_, gap);
+            std::cerr << "mse timeline gap fragment=" << (mse_fragment_count_ + 1)
+                      << " previous_end="
+                      << (static_cast<double>(*previous_mse_decode_end_) / 1000000.0)
+                      << " next_dts=" << (static_cast<double>(dts) / 1000000.0)
+                      << " gap=" << (static_cast<double>(gap) / 1000000.0) << '\n';
+        }
         ++mse_fragment_count_;
         for (std::uint32_t sample_index = 0; sample_index < sample_count; ++sample_index) {
             if (entry + 16 > trun->offset + trun->size)
@@ -596,6 +656,20 @@ private:
             const auto nals = split_length_prefixed(data.data() + payload_position, size,
                                                      mse_nal_length_size_);
             if (nals.empty()) throw std::runtime_error("invalid length-prefixed HEVC sample");
+            bool has_inband_pps = false;
+            for (const auto& nal : nals) {
+                if (nal.type != 34) continue;
+                has_inband_pps = true;
+                const bool inserted =
+                    mse_pps_variants_.emplace(nal.data, nal.data + nal.size).second;
+                if (inserted) {
+                    std::cerr << "mse pps variant=" << mse_pps_variants_.size()
+                              << " first_dts="
+                              << (static_cast<double>(dts) / 1000000.0)
+                              << " size=" << nal.size << '\n';
+                }
+            }
+            if (has_inband_pps) ++mse_pps_sample_count_;
 
             const bool metadata_sync = (flags & 0x00010000U) == 0;
             const auto depends_on = static_cast<std::uint8_t>((flags >> 24U) & 3U);
@@ -609,9 +683,21 @@ private:
                           << " bitstream=" << (bitstream_keyframe ? 1 : 0) << '\n';
             }
 
-            // Chromium's HEVCBitstreamConverter injects hvcC parameter sets at
-            // coded keyframes (after an initial AUD). Its VT accelerator then
-            // consumes those parameter sets and submits only VCL NAL units.
+            if (timeline_only_) {
+                ++access_unit_count_;
+                payload_position += size;
+                dts += duration;
+                if (access_unit_count_ >= maximum_access_units_) {
+                    done_ = true;
+                    previous_mse_decode_end_ = dts;
+                    return;
+                }
+                continue;
+            }
+
+            // Model decoder input for hvc1: make the hvcC parameter sets
+            // available at a coded keyframe while retaining any in-band
+            // updates from the media sample.
             std::vector<std::vector<std::uint8_t>> injected;
             std::vector<NalUnit> converted;
             std::size_t first_original = 0;
@@ -636,10 +722,10 @@ private:
             }
             std::vector<std::uint8_t> vt_sample;
             for (const auto& nal : converted) {
-                if (nal.type <= 31 && !append_nal(vt_sample, nal.data, nal.size))
+                if (nal.type != 35 && !append_nal(vt_sample, nal.data, nal.size))
                     throw std::runtime_error("HEVC NAL is too large");
             }
-            if (vt_sample.empty()) throw std::runtime_error("HEVC sample has no VCL NAL");
+            if (vt_sample.empty()) throw std::runtime_error("HEVC sample is empty");
 
             const auto pts_signed = static_cast<std::int64_t>(dts) + composition_offset;
             if (pts_signed < 0) throw std::runtime_error("negative MSE presentation timestamp");
@@ -671,6 +757,65 @@ private:
         previous_mse_decode_end_ = dts;
     }
 
+    void validate_audio_mse_segment(const std::vector<std::uint8_t>& data) {
+        const auto top = child_boxes(data, 0, data.size());
+        const auto moof = box_of_type(top, "moof");
+        const auto mdat = box_of_type(top, "mdat");
+        if (!moof || !mdat) throw std::runtime_error("audio segment requires moof and mdat");
+        const auto moof_children = child_boxes(data, moof->payload,
+                                               moof->offset + moof->size);
+        const auto traf = box_of_type(moof_children, "traf");
+        if (!traf) throw std::runtime_error("audio moof has no traf");
+        const auto traf_children = child_boxes(data, traf->payload,
+                                               traf->offset + traf->size);
+        const auto tfdt = box_of_type(traf_children, "tfdt");
+        const auto trun = box_of_type(traf_children, "trun");
+        if (!tfdt || !trun) throw std::runtime_error("audio traf requires tfdt and trun");
+        if (tfdt->payload + 12 > tfdt->offset + tfdt->size ||
+            trun->payload + 12 > trun->offset + trun->size) {
+            throw std::runtime_error("truncated audio tfdt/trun");
+        }
+        if (data[tfdt->payload] != 1) {
+            throw std::runtime_error("audio tfdt is not version 1");
+        }
+        auto dts = be64(data.data() + tfdt->payload + 4);
+        const auto sample_count = be32(data.data() + trun->payload + 4);
+        auto entry = trun->payload + 12;
+        const auto timescale = audio_timescale_ == 0 ? 1U : audio_timescale_;
+        if (previous_audio_decode_end_.has_value()) {
+            if (dts < *previous_audio_decode_end_) {
+                throw std::runtime_error(
+                    "audio MSE timeline overlap: tfdt=" + std::to_string(dts) +
+                    " previous_end=" + std::to_string(*previous_audio_decode_end_));
+            }
+            if (dts > *previous_audio_decode_end_) {
+                const auto gap = dts - *previous_audio_decode_end_;
+                ++audio_timeline_gap_count_;
+                largest_audio_timeline_gap_ = std::max(largest_audio_timeline_gap_, gap);
+                std::cerr << "audio timeline gap fragment=" << (audio_fragment_count_ + 1)
+                          << " previous_end="
+                          << (static_cast<double>(*previous_audio_decode_end_) / timescale)
+                          << " next_dts=" << (static_cast<double>(dts) / timescale)
+                          << " gap=" << (static_cast<double>(gap) / timescale) << '\n';
+            }
+        }
+        ++audio_fragment_count_;
+        for (std::uint32_t index = 0; index < sample_count; ++index) {
+            if (entry + 16 > trun->offset + trun->size) {
+                throw std::runtime_error("truncated audio trun sample table");
+            }
+            const auto duration = be32(data.data() + entry);
+            const auto size = be32(data.data() + entry + 4);
+            if (duration == 0 || size == 0) {
+                throw std::runtime_error("invalid audio sample duration or size");
+            }
+            entry += 16;
+            dts += duration;
+            ++audio_sample_count_;
+        }
+        previous_audio_decode_end_ = dts;
+    }
+
     static void output_callback(void* context, void*, const OSStatus status,
                                 VTDecodeInfoFlags flags, CVImageBufferRef,
                                 CMTime presentation_time, CMTime) {
@@ -682,6 +827,8 @@ private:
     }
 
     std::optional<std::uint64_t> video_track_;
+    std::optional<std::uint64_t> audio_track_;
+    std::optional<std::uint16_t> wanted_audio_packet_id_;
     std::array<std::vector<std::uint8_t>, 3> parameter_sets_;
     std::array<std::vector<std::uint8_t>, 3> decoder_parameter_sets_;
     CMVideoFormatDescriptionRef format_ = nullptr;
@@ -699,12 +846,24 @@ private:
     std::optional<double> first_dts_seconds_;
     std::chrono::steady_clock::time_point pacing_started_{};
     bool mse_pipeline_ = false;
+    bool timeline_only_ = false;
+    bool require_hardware_ = true;
     bool mse_flushed_ = false;
     bool pipeline_ok_ = true;
     std::uint8_t mse_nal_length_size_ = 4;
     std::array<std::vector<std::uint8_t>, 3> mse_config_parameter_sets_;
     std::optional<std::uint64_t> previous_mse_decode_end_;
     std::size_t mse_fragment_count_ = 0;
+    std::size_t timeline_gap_count_ = 0;
+    std::uint64_t largest_timeline_gap_us_ = 0;
+    std::size_t mse_pps_sample_count_ = 0;
+    std::set<std::vector<std::uint8_t>> mse_pps_variants_;
+    std::uint32_t audio_timescale_ = 0;
+    std::optional<std::uint64_t> previous_audio_decode_end_;
+    std::size_t audio_fragment_count_ = 0;
+    std::size_t audio_sample_count_ = 0;
+    std::size_t audio_timeline_gap_count_ = 0;
+    std::uint64_t largest_audio_timeline_gap_ = 0;
     tlvdemux::MseRemuxer mse_remuxer_;
     bool done_ = false;
 };
@@ -718,6 +877,9 @@ struct Options {
     bool prepend_parameter_sets_on_irap = false;
     bool skip_leading_rasl = false;
     bool mse_pipeline = false;
+    bool timeline_only = false;
+    bool require_hardware = true;
+    std::optional<std::uint16_t> audio_packet_id;
     std::size_t random_seeks = 0;
     std::uint64_t seed = 0x544c564d5345ULL;
 };
@@ -738,6 +900,13 @@ Options parse_options(const int argc, char** argv) {
             options.skip_leading_rasl = true;
         } else if (argument == "--mse") {
             options.mse_pipeline = true;
+        } else if (argument == "--timeline-only") {
+            options.timeline_only = true;
+        } else if (argument == "--allow-software") {
+            options.require_hardware = false;
+        } else if (argument == "--audio-packet-id") {
+            options.audio_packet_id = static_cast<std::uint16_t>(
+                std::strtoul(value("--audio-packet-id").c_str(), nullptr, 0));
         } else if (argument == "--random-seeks") {
             options.random_seeks = static_cast<std::size_t>(
                 std::strtoull(value("--random-seeks").c_str(), nullptr, 0));
@@ -776,7 +945,12 @@ Options parse_options(const int argc, char** argv) {
                      "[--max-au N] [--offset BYTES] [--rate X] "
                      "[--inflight N] [--skip-leading-rasl] "
                      "[--prepend-parameter-sets-on-irap] [--mse] "
+                     "[--timeline-only] [--audio-packet-id ID] [--allow-software] "
                      "[--random-seeks N] [--seed N]\n";
+        std::exit(2);
+    }
+    if (options.timeline_only && !options.mse_pipeline) {
+        std::cerr << "--timeline-only requires --mse\n";
         std::exit(2);
     }
     return options;
@@ -794,7 +968,9 @@ bool run_probe(const Options& options, const std::uint64_t offset,
 
     Probe probe(options.maximum_access_units, options.skip_leading_rasl,
                 options.playback_rate, options.inflight_frames,
-                options.prepend_parameter_sets_on_irap, options.mse_pipeline);
+                options.prepend_parameter_sets_on_irap, options.mse_pipeline,
+                options.timeline_only, options.audio_packet_id,
+                options.require_hardware);
     auto limits = tlvdemux::Limits{};
     limits.collect_application_resources = false;
     tlvdemux::Demuxer demuxer(probe, limits);
@@ -817,7 +993,14 @@ bool run_probe(const Options& options, const std::uint64_t offset,
     if (!probe.done()) demuxer.flush();
     probe.finish();
     std::cerr << "decoded=" << probe.decoded_count()
-              << " final_status=" << probe.callback_status() << '\n';
+              << " final_status=" << probe.callback_status()
+              << " timeline_gaps=" << probe.timeline_gap_count()
+              << " largest_gap_us=" << probe.largest_timeline_gap_us()
+              << " audio_samples=" << probe.audio_sample_count()
+              << " audio_timeline_gaps=" << probe.audio_timeline_gap_count()
+              << " largest_audio_gap=" << probe.largest_audio_timeline_gap()
+              << " pps_samples=" << probe.mse_pps_sample_count()
+              << " pps_variants=" << probe.mse_pps_variant_count() << '\n';
     return probe.ok();
 }
 
