@@ -678,6 +678,12 @@ void test_viewer_participation_notifications() {
           "descriptor-less viewer-participation EMT identity was not exposed");
     check(sink.stream_events.empty(),
           "viewer-participation notification leaked into application StreamEvent");
+
+    demuxer.reset();
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+    check(sink.viewer_participation_notifications.size() == 4,
+          "full reset retained viewer-participation deduplication state");
 }
 
 void test_global_packet_state_budget() {
@@ -861,6 +867,19 @@ void test_track_discovery_and_deduplication() {
     check(sink.tracks.size() == 6 && sink.tracks[3].track_id == stable_id &&
               sink.layouts.size() == 2,
           "reset changed a track's Demuxer-lifetime stable identity");
+}
+
+void test_service_selection_clears_layout_state() {
+    const auto data = discovery_stream();
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(data.data(), data.size());
+    demuxer.flush();
+    demuxer.selectService(1);
+    demuxer.push(data.data(), data.size());
+    demuxer.flush();
+    check(sink.layouts.size() == 2,
+          "service selection retained stale layout deduplication state");
 }
 
 void test_application_and_data_transmission_signalling() {
@@ -1513,6 +1532,7 @@ int main() {
     test_signalling_fragmentation_aggregation_and_m2();
     test_global_packet_state_budget();
     test_track_discovery_and_deduplication();
+    test_service_selection_clears_layout_state();
     test_application_and_data_transmission_signalling();
     test_mh_eit_program_events();
     test_emt_stream_events();

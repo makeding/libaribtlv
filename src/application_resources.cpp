@@ -68,6 +68,7 @@ struct MpuKey {
         return std::tie(context, component, sequence) <
                std::tie(other.context, other.component, other.sequence);
     }
+    bool operator==(const MpuKey&) const = default;
 };
 
 struct ItemKey {
@@ -77,6 +78,7 @@ struct ItemKey {
         return std::tie(mpu.context, mpu.component, mpu.sequence, item) <
                std::tie(other.mpu.context, other.mpu.component, other.mpu.sequence, other.item);
     }
+    bool operator==(const ItemKey&) const = default;
 };
 
 struct MpuMap {
@@ -423,7 +425,7 @@ private:
         }
 
         published_[key] = signature;
-        published_paths_[{key.mpu.context, target.path}] = target.version;
+        published_paths_[{key.mpu.context, target.path}] = key;
         ApplicationResource resource;
         resource.context_id = key.mpu.context;
         resource.component_tag = key.mpu.component;
@@ -492,10 +494,14 @@ private:
         for (auto it = published_.begin(); it != published_.end();) {
             if (!(it->first.mpu < key) && !(key < it->first.mpu)) {
                 const auto path = it->second.path;
-                published_paths_.erase({key.context, path});
-                sink_.onApplicationResourceRemoved(ApplicationResourceRemoval{
-                    key.context, key.component, it->second.transaction_id,
-                    it->second.download_id, key.sequence, it->first.item, path});
+                const auto path_entry = published_paths_.find({key.context, path});
+                if (path_entry != published_paths_.end() &&
+                    path_entry->second == it->first) {
+                    published_paths_.erase(path_entry);
+                    sink_.onApplicationResourceRemoved(ApplicationResourceRemoval{
+                        key.context, key.component, it->second.transaction_id,
+                        it->second.download_id, key.sequence, it->first.item, path});
+                }
                 it = published_.erase(it);
             } else {
                 ++it;
@@ -524,7 +530,7 @@ private:
     std::map<ItemKey, FileTarget> item_paths_;
     std::map<ItemKey, DataUnit> pending_;
     std::map<ItemKey, PublishedItem> published_;
-    std::map<std::pair<std::uint32_t, std::string>, std::uint8_t> published_paths_;
+    std::map<std::pair<std::uint32_t, std::string>, ItemKey> published_paths_;
     std::unordered_map<std::string, ApplicationState> applications_;
     std::size_t pending_bytes_ = 0;
 };
