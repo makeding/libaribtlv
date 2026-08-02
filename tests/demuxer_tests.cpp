@@ -284,17 +284,19 @@ void append_u64(std::vector<std::uint8_t>& value, const std::uint64_t number) {
 void timing_descriptors(std::vector<std::uint8_t>& value,
                         const std::uint32_t mpu_sequence,
                         const std::uint32_t timescale,
-                        const std::uint8_t au_count = 1) {
+                        const std::uint8_t au_count = 1,
+                        const std::uint64_t mpu_presentation_time = 100ULL << 32U,
+                        const std::uint8_t leap_indicator = 0) {
     std::vector<std::uint8_t> timestamp;
     append_u32(timestamp, mpu_sequence);
-    append_u64(timestamp, 100ULL << 32U);
+    append_u64(timestamp, mpu_presentation_time);
     descriptor(value, 0x0001, timestamp);
 
     std::vector<std::uint8_t> extended{0x03};
     append_u32(extended, timescale);
     append_u16(extended, 3000);
     append_u32(extended, mpu_sequence);
-    extended.push_back(0);
+    extended.push_back(static_cast<std::uint8_t>(leap_indicator << 6U));
     append_u16(extended, 0);
     extended.push_back(au_count);
     for (std::uint16_t index = 0; index < au_count; ++index) append_u16(extended, 0);
@@ -463,6 +465,32 @@ std::vector<std::uint8_t> audio_discovery_message_with_offsets(
     descriptor(descriptors, 0x8014,
                {0xf3, 0x03, 0x01, 0x10, 0x11, 0xff, 0x5f, 'j', 'p', 'n'});
     per_au_timing_descriptors(descriptors, mpu_sequence, 180000, dts_pts_offsets, pts_offsets);
+
+    std::vector<std::uint8_t> mpt_body{0xfc, 2, 0x00, 0x66, 0x00, 0x00, 1};
+    asset(mpt_body, 0xf310, "mp4a", descriptors);
+    std::vector<std::uint8_t> mpt{0x20, 8};
+    append_u16(mpt, mpt_body.size());
+    mpt.insert(mpt.end(), mpt_body.begin(), mpt_body.end());
+
+    std::vector<std::uint8_t> pa{0x00, 0x00, 0x00};
+    append_u32(pa, 1 + mpt.size());
+    pa.push_back(0);
+    pa.insert(pa.end(), mpt.begin(), mpt.end());
+    return pa;
+}
+
+// Sibling of audio_discovery_message_with_offsets() that lets a fixture pick
+// the MPU's mpu_presentation_time and mpu_presentation_time_leap_indicator
+// directly, for exercising the leap-second correction in emit_access_unit().
+std::vector<std::uint8_t> audio_discovery_message_with_leap(
+    const std::uint32_t mpu_sequence, const std::uint64_t mpu_presentation_time,
+    const std::uint8_t leap_indicator) {
+    std::vector<std::uint8_t> descriptors;
+    descriptor(descriptors, 0x8011, {0x01, 0x10});
+    descriptor(descriptors, 0x8014,
+               {0xf3, 0x03, 0x01, 0x10, 0x11, 0xff, 0x5f, 'j', 'p', 'n'});
+    timing_descriptors(descriptors, mpu_sequence, 180000, 1, mpu_presentation_time,
+                       leap_indicator);
 
     std::vector<std::uint8_t> mpt_body{0xfc, 2, 0x00, 0x66, 0x00, 0x00, 1};
     asset(mpt_body, 0xf310, "mp4a", descriptors);
@@ -2211,6 +2239,149 @@ void test_sample_number_change_starts_a_new_access_unit() {
           "second access unit did not carry its own descriptor entry");
 }
 
+void test_leap_second_insertion_corrects_presentation_timeline() {
+    // MPU1 is normal (100s, indicator 0). MPU2 enters the leap window (101s,
+    // indicator 1, "the day before"). MPU3 repeats MPU2's wire
+    // mpu_presentation_time (101s again, the inserted duplicate second) but
+    // is where the indicator switches 1->0, so it is where TR-B39 Appendix 1
+    // section 2.1 says the +1s correction begins. MPU4 (102s, indicator 0) proves
+    // the correction persists past the transition MPU.
+    auto stream =
+        signalling_tlv(1, 0, audio_discovery_message_with_leap(1, 100ULL << 32U, 0));
+    const auto mpu2 =
+        signalling_tlv(2, 0, audio_discovery_message_with_leap(2, 101ULL << 32U, 1));
+    const auto mpu3 =
+        signalling_tlv(3, 0, audio_discovery_message_with_leap(3, 101ULL << 32U, 0));
+    const auto mpu4 =
+        signalling_tlv(4, 0, audio_discovery_message_with_leap(4, 102ULL << 32U, 0));
+
+    std::uint32_t sequence = 1;
+    const auto add_mfu = [&](const std::uint32_t mpu_sequence,
+                             const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf310, sequence++, 100U << 16U, false, mpu_payload(mpu_sequence, mfu)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_mfu(1, {0x11, 0x22});
+    stream.insert(stream.end(), mpu2.begin(), mpu2.end());
+    add_mfu(2, {0x33, 0x44});
+    stream.insert(stream.end(), mpu3.begin(), mpu3.end());
+    add_mfu(3, {0x55, 0x66});
+    stream.insert(stream.end(), mpu4.begin(), mpu4.end());
+    add_mfu(4, {0x77, 0x88});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+
+    std::vector<const tlvdemux::AccessUnit*> audio;
+    for (const auto& unit : sink.access_units) {
+        if (unit.codec == tlvdemux::Codec::AacLatm) audio.push_back(&unit);
+    }
+    check(audio.size() == 4, "leap-second insertion test did not produce four AAC access units");
+    check(audio[0]->pts.value == 0 && audio[0]->dts.value == 0,
+          "first access unit was not normalized to the presentation-timeline origin");
+    check(audio[1]->pts.value == 180000 && audio[1]->dts.value == 180000,
+          "step before the transition was not the normal one-second inter-MPU step");
+    check(audio[2]->pts.value == 360000 && audio[2]->dts.value == 360000,
+          "leap-second insertion was not corrected away at the 1->0 transition MPU");
+    check(audio[3]->pts.value == 540000 && audio[3]->dts.value == 540000,
+          "the +1s leap correction did not persist past the transition MPU");
+}
+
+void test_leap_second_deletion_corrects_presentation_timeline() {
+    // MPU1 is normal (100s, indicator 0). MPU2 enters the deletion window
+    // (101s, indicator 2). MPU3 jumps straight to 103s -- 102s is the
+    // deleted wire second -- and is where the indicator switches 2->0, so
+    // TR-B39 Appendix 1 section 2.2 says the -1s correction begins there. MPU4
+    // (104s, indicator 0) proves the correction persists.
+    auto stream =
+        signalling_tlv(1, 0, audio_discovery_message_with_leap(1, 100ULL << 32U, 0));
+    const auto mpu2 =
+        signalling_tlv(2, 0, audio_discovery_message_with_leap(2, 101ULL << 32U, 2));
+    const auto mpu3 =
+        signalling_tlv(3, 0, audio_discovery_message_with_leap(3, 103ULL << 32U, 0));
+    const auto mpu4 =
+        signalling_tlv(4, 0, audio_discovery_message_with_leap(4, 104ULL << 32U, 0));
+
+    std::uint32_t sequence = 1;
+    const auto add_mfu = [&](const std::uint32_t mpu_sequence,
+                             const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf310, sequence++, 100U << 16U, false, mpu_payload(mpu_sequence, mfu)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_mfu(1, {0x11, 0x22});
+    stream.insert(stream.end(), mpu2.begin(), mpu2.end());
+    add_mfu(2, {0x33, 0x44});
+    stream.insert(stream.end(), mpu3.begin(), mpu3.end());
+    add_mfu(3, {0x55, 0x66});
+    stream.insert(stream.end(), mpu4.begin(), mpu4.end());
+    add_mfu(4, {0x77, 0x88});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+
+    std::vector<const tlvdemux::AccessUnit*> audio;
+    for (const auto& unit : sink.access_units) {
+        if (unit.codec == tlvdemux::Codec::AacLatm) audio.push_back(&unit);
+    }
+    check(audio.size() == 4, "leap-second deletion test did not produce four AAC access units");
+    check(audio[0]->pts.value == 0 && audio[0]->dts.value == 0,
+          "first access unit was not normalized to the presentation-timeline origin");
+    check(audio[1]->pts.value == 180000 && audio[1]->dts.value == 180000,
+          "step before the transition was not the normal one-second inter-MPU step");
+    check(audio[2]->pts.value == 360000 && audio[2]->dts.value == 360000,
+          "leap-second deletion's two-second jump was not corrected at the 2->0 transition MPU");
+    check(audio[3]->pts.value == 540000 && audio[3]->dts.value == 540000,
+          "the -1s leap correction did not persist past the transition MPU");
+}
+
+void test_leap_indicator_zero_is_inert() {
+    // The indicator stays 0 throughout, so the correction must never engage:
+    // the emitted timing must match plain, unadjusted mpu_presentation_time
+    // arithmetic exactly.
+    auto stream =
+        signalling_tlv(1, 0, audio_discovery_message_with_leap(1, 100ULL << 32U, 0));
+    const auto mpu2 =
+        signalling_tlv(2, 0, audio_discovery_message_with_leap(2, 101ULL << 32U, 0));
+    const auto mpu3 =
+        signalling_tlv(3, 0, audio_discovery_message_with_leap(3, 102ULL << 32U, 0));
+
+    std::uint32_t sequence = 1;
+    const auto add_mfu = [&](const std::uint32_t mpu_sequence,
+                             const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf310, sequence++, 100U << 16U, false, mpu_payload(mpu_sequence, mfu)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_mfu(1, {0x11, 0x22});
+    stream.insert(stream.end(), mpu2.begin(), mpu2.end());
+    add_mfu(2, {0x33, 0x44});
+    stream.insert(stream.end(), mpu3.begin(), mpu3.end());
+    add_mfu(3, {0x55, 0x66});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+
+    std::vector<const tlvdemux::AccessUnit*> audio;
+    for (const auto& unit : sink.access_units) {
+        if (unit.codec == tlvdemux::Codec::AacLatm) audio.push_back(&unit);
+    }
+    check(audio.size() == 3, "leap-indicator-zero test did not produce three AAC access units");
+    check(audio[0]->pts.value == 0 && audio[0]->dts.value == 0,
+          "leap indicator 0 changed the first access unit's timing");
+    check(audio[1]->pts.value == 180000 && audio[1]->dts.value == 180000,
+          "leap indicator 0 changed the second access unit's timing");
+    check(audio[2]->pts.value == 360000 && audio[2]->dts.value == 360000,
+          "leap indicator 0 changed the third access unit's timing");
+}
+
 } // namespace
 
 int main() {
@@ -2251,6 +2422,9 @@ int main() {
     test_aac_extended_timestamp_indexed_by_sample_number();
     test_out_of_order_sample_number_is_dropped();
     test_sample_number_change_starts_a_new_access_unit();
+    test_leap_second_insertion_corrects_presentation_timeline();
+    test_leap_second_deletion_corrects_presentation_timeline();
+    test_leap_indicator_zero_is_inert();
     std::cout << "all tests passed\n";
     return 0;
 }

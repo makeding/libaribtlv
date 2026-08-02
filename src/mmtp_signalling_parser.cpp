@@ -252,8 +252,8 @@ bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata) {
                     !values.read_u16(decoding_offset) || !values.read_u8(au_count)) {
                     return false;
                 }
-                (void)leap_and_reserved;
                 ExtendedTimestampMapping timing;
+                timing.leap_indicator = static_cast<std::uint8_t>((leap_and_reserved >> 6U) & 0x03U);
                 timing.decoding_time_offset = decoding_offset;
                 timing.dts_pts_offsets.reserve(au_count);
                 timing.pts_offsets.reserve(au_count);

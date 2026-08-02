@@ -62,6 +62,15 @@ void MmtpParser::install_track(TrackInfo info, AssetMetadata metadata,
         state.pending_hevc = {};
         state.media = {};
     }
+    // The leap indicator is codec-agnostic (any MPU extended timestamp
+    // descriptor may carry it), so this reset is not limited to video. A
+    // stale previous_leap_indicator carried across a codec change would let
+    // the transition test fire on a stream that never had a leap second.
+    if (first_install || codec_changed) {
+        state.previous_leap_indicator = 0;
+        state.leap_ntp_offset = 0;
+        state.leap_examined_mpu.reset();
+    }
 }
 
 bool MmtpParser::append_media(TrackState& track, const std::uint8_t* data,
@@ -458,7 +467,29 @@ void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_seq
             return;
         }
         track.last_emitted_dts = dts_offset;
-        ntp = timestamp->second.ntp;
+        // TR-B39 Appendix 1 Chapter 2 (no receiver clock leap adjustment):
+        // watch mpu_presentation_time_leap_indicator transitions once per MPU
+        // and fold them into a persistent, cumulative correction of the NTP
+        // anchor. Per-AU dts/pts offsets above are transmitted without leap
+        // adjustment and are left untouched.
+        if (!track.leap_examined_mpu.has_value() || *track.leap_examined_mpu != mpu_sequence) {
+            const auto leap_indicator = extended->second.leap_indicator;
+            if (track.previous_leap_indicator == 1 && leap_indicator == 0) {
+                track.leap_ntp_offset += std::int64_t{1} << 32U;
+            } else if (track.previous_leap_indicator == 2 && leap_indicator == 0) {
+                track.leap_ntp_offset -= std::int64_t{1} << 32U;
+            }
+            track.previous_leap_indicator = leap_indicator;
+            track.leap_examined_mpu = mpu_sequence;
+        }
+        // Deliberately corrects unit.source_ntp too, not just the media
+        // timeline: TR-B39 Appendix 1 section 2.1 documents this model as
+        // leaving the receiver a full second "asynchronous with respect to
+        // the sending system clock" by design, so the broadcast clock must
+        // carry the same offset as the presentation timeline it is derived
+        // from.
+        ntp = static_cast<std::uint64_t>(
+            static_cast<std::int64_t>(timestamp->second.ntp) + track.leap_ntp_offset);
     } else if (track.info.codec == Codec::Ttml && latest_full_ntp_.has_value()) {
         const auto delivery = track.delivery_timestamps.find(mpu_sequence);
         if (delivery == track.delivery_timestamps.end()) {
@@ -732,6 +763,9 @@ void MmtpParser::parse_mpu(const std::uint16_t packet_id,
         track.current_mpu_sequence = mpu_sequence;
         track.au_index = 0;
         track.last_emitted_dts.reset();
+        // The cumulative leap offset persists for the service; only the
+        // once-per-MPU examination guard advances here.
+        track.leap_examined_mpu.reset();
     }
 
     const auto* body = data + 8;
