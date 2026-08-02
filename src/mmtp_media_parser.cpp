@@ -421,6 +421,20 @@ void MmtpParser::consume_complete_mfu(TrackState& track,
                      output_restart_offset, 0, std::move(resources));
 }
 
+// ARIB STD-B60 §7.4.3.5: mpu_presentation_time is the PTS of the first access unit in
+// *presentation* order. ARIB STD-B60 §7.4.3.35 / TR-B39 v2.5-E1 §34.1.3.10 Table 34.1-71
+// define the MPU extended timestamp descriptor fields used below:
+//   mpu_presentation_time      PTS of the first access unit in presentation order
+//   mpu_decoding_time_offset   |DTS(first in decode order) - mpu_presentation_time|
+//   dts_pts_offset[i]          PTS(i) - DTS(i), array indexed in decode order
+//   pts_offset[j]              PTS gap to the immediately preceding access unit in
+//                              presentation order
+// dts_offset below sums pts_offset over a *decode-order* prefix even though pts_offset
+// is a presentation-order interval. That is only sound because Table 34.1-72 fixes
+// pts_offset_type at '01', replicating one default_pts_offset across every access unit
+// in the MPU: a prefix sum of a constant does not depend on the summation order, so the
+// decode-order and presentation-order prefixes coincide. ExtendedTimestampMapping::
+// uniform_pts_offsets guards the pts_offset_type == 2 case where that no longer holds.
 void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_sequence,
                                   std::vector<std::uint8_t> data,
                                   const bool random_access,

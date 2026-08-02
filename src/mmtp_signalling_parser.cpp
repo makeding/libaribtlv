@@ -131,7 +131,8 @@ std::uint32_t audio_sample_rate(const std::uint8_t code) {
     }
 }
 
-bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata) {
+bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata,
+                       const ErrorCallback& on_error, const std::uint64_t input_offset) {
     while (reader.remaining() != 0) {
         std::uint16_t tag = 0;
         std::uint32_t length = 0;
@@ -230,6 +231,8 @@ bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata) {
             metadata.ttml = subtitle.format == 0;
             metadata.subtitle = subtitle;
         } else if (tag == 0x8026 && length >= 1) {
+            // ARIB STD-B60 §7.4.3.35 / TR-B39 v2.5-E1 §34.1.3.10 Table 34.1-71: MPU
+            // extended timestamp descriptor.
             ByteReader values(payload, length);
             std::uint8_t flags = 0;
             if (!values.read_u8(flags)) return false;
@@ -242,7 +245,18 @@ bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata) {
             }
             std::uint16_t default_pts_offset = 0;
             if (pts_offset_type == 1 && !values.read_u16(default_pts_offset)) return false;
-            if (pts_offset_type == 0) continue;
+            if (pts_offset_type == 0) {
+                on_error(ErrorCode::UnsupportedFeature, input_offset, true,
+                         "mpu_extended_timestamp_descriptor omits dts_pts_offset/pts_offset "
+                         "(pts_offset_type 0); its access units will have no timestamp mapping");
+                continue;
+            }
+            if (pts_offset_type == 3) {
+                on_error(ErrorCode::UnsupportedFeature, input_offset, true,
+                         "mpu_extended_timestamp_descriptor: pts_offset_type 3 is reserved by "
+                         "TR-B39 Table 34.1-72 and defines no pts_offset semantics; skipping it");
+                continue;
+            }
             while (values.remaining() != 0) {
                 std::uint32_t sequence = 0;
                 std::uint8_t leap_and_reserved = 0;
@@ -1207,7 +1221,7 @@ bool MmtpParser::parse_mpt(const std::uint8_t* data, const std::size_t size,
         }
         AssetMetadata metadata;
         ByteReader descriptor_reader(descriptors, descriptors_length);
-        if (!parse_descriptors(descriptor_reader, metadata)) return false;
+        if (!parse_descriptors(descriptor_reader, metadata, on_error_, input_offset)) return false;
         if (!packet_id.has_value()) continue;
 
         const std::string asset_type(reinterpret_cast<const char*>(asset_type_data), 4);
