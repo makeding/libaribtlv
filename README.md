@@ -127,6 +127,36 @@ the parser:
   ending MSE. WASM objects must finally be released with `delete()`; in native
   code the `Sink` must outlive the `Demuxer`.
 
+### Browser MSE queue
+
+Browser integrations can reuse the SourceBuffer state machine shipped by the
+package instead of duplicating append, trim, retry and worker-backpressure
+logic in each player:
+
+```js
+import {
+  MseAppendQueue,
+  finalizeMseMediaSource,
+} from 'tlvdemux/mse-append-queue';
+
+const videoQueue = new MseAppendQueue(mediaSource, video, videoMime);
+videoQueue.append(initSegment);
+videoQueue.append(mediaSegment);
+await videoQueue.waitBelow(4 * 1024 * 1024);
+
+await finalizeMseMediaSource(mediaSource, [videoQueue, audioQueue], {
+  // Enable only when the demuxer reported an incomplete physical input tail.
+  truncateToCommonEnd: incompleteInputTail,
+});
+```
+
+The queue counts both pending and in-flight bytes, recomputes ownership after
+every `updateend`, serializes `appendBuffer()` and `remove()`, retries Chromium
+quota pressure, and rejects detached or failed SourceBuffers. The finalizer
+waits for both tracks before `endOfStream()`; for a physically truncated input
+it can first remove an unmatched A/V tail and finish on the last common coded
+frame. It does not hide malformed-input errors or truncate complete recordings.
+
 ## Data-broadcast applications and virtual files
 
 Application-resource collection is enabled by default. While media access units

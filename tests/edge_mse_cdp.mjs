@@ -48,6 +48,11 @@ const evaluate = async (expression, awaitPromise = false) => {
 if (sourceUrl) {
   await evaluate(`localStorage.setItem('tlvdemux.demo.httpUrl', ${JSON.stringify(sourceUrl)})`);
 }
+await evaluate(`(() => {
+  const url = new URL(location.href);
+  url.searchParams.set('tlvdemuxDebug', '1');
+  history.replaceState(null, '', url);
+})()`);
 await call('Page.reload', { ignoreCache: true });
 await new Promise(resolve => setTimeout(resolve, 500));
 await evaluate(`new Promise((resolve, reject) => {

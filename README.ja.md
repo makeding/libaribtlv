@@ -124,6 +124,36 @@ parser を消去する別名ではなく、それぞれ異なる境界を表し�
   なってから MSE を終了してください。WASM object は最後に `delete()` で解放する必要が
   あります。native code では `Sink` が `Demuxer` より長く生存する必要があります。
 
+### ブラウザー用 MSE queue
+
+ブラウザー統合では、append、trim、retry、worker backpressure の状態機械を player
+ごとに複製せず、package に含まれる SourceBuffer queue を利用できます。
+
+```js
+import {
+  MseAppendQueue,
+  finalizeMseMediaSource,
+} from 'tlvdemux/mse-append-queue';
+
+const videoQueue = new MseAppendQueue(mediaSource, video, videoMime);
+videoQueue.append(initSegment);
+videoQueue.append(mediaSegment);
+await videoQueue.waitBelow(4 * 1024 * 1024);
+
+await finalizeMseMediaSource(mediaSource, [videoQueue, audioQueue], {
+  // demuxer が物理的に不完全な input tail を通知した場合だけ有効にします。
+  truncateToCommonEnd: incompleteInputTail,
+});
+```
+
+queue は pending と append 中の byte をともに数え、`updateend` ごとに所有 byte 数を
+再計算します。`appendBuffer()` と `remove()` を直列化し、Chromium の quota pressure
+を自動で trim／retry し、切り離された、または失敗した SourceBuffer をエラーとして
+扱います。finalizer は両 track が空になるのを待ってから `endOfStream()` を呼びます。
+物理的に切れた input の場合だけ、対応する音声のない映像末尾などを先に除去し、最後の
+共通 coded frame で安全に終了できます。不正 input の error を隠したり、完全な録画を
+短くしたりはしません。
+
 ## データ放送アプリケーションと仮想ファイル
 
 アプリケーションリソースの収集はデフォルトで有効です。demuxer はメディアの

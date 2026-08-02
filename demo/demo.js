@@ -24,6 +24,7 @@ const SHORT_RECORDING_THRESHOLD_SECONDS = 60;
 const URL_STORAGE_KEY = 'tlvdemux.demo.httpUrl';
 const AUDIO_STORAGE_KEY = 'tlvdemux.demo.audioPacketId';
 const SUBTITLE_STORAGE_KEY = 'tlvdemux.demo.subtitlePacketId';
+const EXPOSE_DEBUG_QUEUES = new URLSearchParams(location.search).has('tlvdemuxDebug');
 const elements = Object.fromEntries([
   'wasmStatus', 'fileInput', 'urlInput', 'initialRange', 'maxRange',
   'videoPacketId', 'probeButton', 'cancelButton', 'clearButton',
@@ -547,7 +548,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       throw new Error('このブラウザーは Media Source Extensions に対応していません');
     }
     activeQueueByType = new Map();
-    globalThis.__tlvdemuxDebugQueues = activeQueueByType;
+    if (EXPOSE_DEBUG_QUEUES) globalThis.__tlvdemuxDebugQueues = activeQueueByType;
     const fresh = new BrowserMediaSource();
     // Register before attaching the object URL. WebKit may transition to open
     // while load()/play() is running, before code after those calls resumes.
