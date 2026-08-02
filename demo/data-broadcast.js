@@ -301,6 +301,9 @@ export class DataBroadcastController {
         this.captionSubscriptions = new Set(subscription.componentTags);
         this.captionSubscriptionListener([...this.captionSubscriptions]);
       },
+      onViewerParticipation: () => {
+        this.setStatus('視聴者参加型データ放送', 'データボタンで操作できます');
+      },
     });
     window.__ARIB_HTML5_INSTALL__ = target => this.installRuntime(target);
     window.addEventListener('keydown', this.handleKeyboard);
@@ -341,6 +344,7 @@ export class DataBroadcastController {
     this.captionSubscriptionListener([]);
     this.host.clearBroadcastClock();
     this.host.clearProgramInfo();
+    this.host.resetViewerParticipationNotifications?.();
     this.programEvents.clear();
     this.readyResourceCount = 0;
     this.htmlCatalogueSignatures.clear();
@@ -651,6 +655,7 @@ export class DataBroadcastController {
 
   setVisible(visible) {
     this.visible = visible;
+    this.host.setApplicationInputActive?.(visible);
     if (!visible) this.host.exitApplication();
     this.viewport.classList.toggle('data-broadcast-visible', visible);
     this.video.controls = !visible;
@@ -673,7 +678,12 @@ export class DataBroadcastController {
       return;
     }
     if (!this.visible) return;
+    this.host.setApplicationInputActive?.(true);
     this.host.dispatchKey(code);
+  }
+
+  viewerParticipationChanged(notification) {
+    this.host.notifyViewerParticipationCorner?.(notification);
   }
 
   handleKeyboard = event => {

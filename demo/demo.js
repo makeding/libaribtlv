@@ -1004,6 +1004,9 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
       try { dataBroadcast.eventInformationChanged(event); }
       catch (error) { callbackError = error; }
     },
+    onViewerParticipationNotification(notification) {
+      dataBroadcast.viewerParticipationChanged(notification);
+    },
     onApplicationResourceView(resource) {
       try { dataBroadcast.resourceChanged(resource); }
       catch (error) { callbackError = error; }
