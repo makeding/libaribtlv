@@ -80,12 +80,17 @@ while (Date.now() < deadline) {
     const video = document.getElementById('video');
     ${requestedPlaybackRate === null ? '' : `video.playbackRate = ${requestedPlaybackRate};`}
     const error = video.error;
+    const quality = video.getVideoPlaybackQuality?.();
     const ranges = [];
     for (let i = 0; i < video.buffered.length; i++) ranges.push([video.buffered.start(i), video.buffered.end(i)]);
     return {
       currentTime: video.currentTime,
+      duration: video.duration,
+      ended: video.ended,
       paused: video.paused,
       playbackRate: video.playbackRate,
+      totalVideoFrames: quality?.totalVideoFrames ?? null,
+      droppedVideoFrames: quality?.droppedVideoFrames ?? null,
       error: error ? { code: error.code, message: error.message } : null,
       ranges,
       status: document.getElementById('probeState')?.textContent,
