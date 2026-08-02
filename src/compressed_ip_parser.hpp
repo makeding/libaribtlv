@@ -27,6 +27,8 @@ public:
     using ViewerParticipationCallback =
         std::function<void(ViewerParticipationNotification)>;
     using ApplicationCallback = std::function<void(ApplicationInfo)>;
+    using MptSnapshotCallback = std::function<void(MptSnapshot)>;
+    using MhAitSnapshotCallback = std::function<void(MhAitSnapshot)>;
     using DataTransmissionCallback = std::function<void(DataTransmissionTable)>;
     using DataDirectoryCallback = std::function<void(DataDirectoryTable)>;
     using DataAssetManagementCallback = std::function<void(DataAssetManagementTable)>;
@@ -35,7 +37,7 @@ public:
                        AccessUnitCallback, ApplicationServiceCallback,
                        LayoutCallback, DataAssetCallback, DataUnitCallback, SignallingCallback, EventCallback,
                        StreamEventCallback, ViewerParticipationCallback,
-                       ApplicationCallback,
+                       ApplicationCallback, MptSnapshotCallback, MhAitSnapshotCallback,
                        DataTransmissionCallback, DataDirectoryCallback,
                        DataAssetManagementCallback, ErrorCallback);
 
@@ -62,6 +64,8 @@ private:
     StreamEventCallback on_stream_event_;
     ViewerParticipationCallback on_viewer_participation_;
     ApplicationCallback on_application_;
+    MptSnapshotCallback on_mpt_snapshot_;
+    MhAitSnapshotCallback on_mh_ait_snapshot_;
     DataTransmissionCallback on_data_transmission_;
     DataDirectoryCallback on_data_directory_;
     DataAssetManagementCallback on_data_asset_management_;

@@ -59,6 +59,8 @@ public:
                   viewer_participation(std::move(notification));
               },
               [this](ApplicationInfo info) { application(std::move(info)); },
+              [this](MptSnapshot snapshot) { mpt_snapshot(std::move(snapshot)); },
+              [this](MhAitSnapshot snapshot) { mh_ait_snapshot(std::move(snapshot)); },
               [this](DataTransmissionTable table) { data_transmission(std::move(table)); },
               [this](DataDirectoryTable table) { data_directory(std::move(table)); },
               [this](DataAssetManagementTable table) { data_asset_management(std::move(table)); },
@@ -93,6 +95,8 @@ public:
     }
 
     void reset() {
+        sink_.onServiceStateReset(
+            ServiceStateReset{selected_service_, ServiceStateResetReason::FullReset});
         tlv_.reset();
         ip_.reset();
         if (limits_.collect_application_resources) application_resources_.reset();
@@ -118,6 +122,8 @@ public:
     }
 
     void select_service(std::optional<std::uint32_t> context_id) {
+        sink_.onServiceStateReset(
+            ServiceStateReset{selected_service_, ServiceStateResetReason::ServiceSelection});
         selected_service_ = context_id;
         ip_.select_service(context_id);
         if (limits_.collect_application_resources) application_resources_.reset();
@@ -156,6 +162,8 @@ private:
         data_transmission_tables_.clear();
         data_directory_versions_.clear();
         data_asset_management_versions_.clear();
+        mpt_snapshots_.clear();
+        mh_ait_snapshots_.clear();
     }
 
     void clear_timeline_state() {
@@ -216,6 +224,56 @@ private:
                left.presentation_regions == right.presentation_regions;
     }
 
+    static bool same_application_service(const ApplicationServiceInfo& left,
+                                         const ApplicationServiceInfo& right) {
+        if (left.context_id != right.context_id ||
+            left.application_format != right.application_format ||
+            left.document_resolution != right.document_resolution ||
+            left.default_ait != right.default_ait ||
+            left.has_data_transmission_messages != right.has_data_transmission_messages ||
+            left.ait_packet_id != right.ait_packet_id ||
+            left.data_transmission_packet_id != right.data_transmission_packet_id ||
+            left.event_message_locations.size() != right.event_message_locations.size()) {
+            return false;
+        }
+        for (std::size_t index = 0; index < left.event_message_locations.size(); ++index) {
+            if (left.event_message_locations[index].event_message_tag !=
+                    right.event_message_locations[index].event_message_tag ||
+                left.event_message_locations[index].packet_id !=
+                    right.event_message_locations[index].packet_id) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static bool same_data_asset(const DataAssetInfo& left, const DataAssetInfo& right) {
+        return left.context_id == right.context_id && left.packet_id == right.packet_id &&
+            left.asset_id == right.asset_id && left.asset_type == right.asset_type &&
+            left.component_tag == right.component_tag &&
+            left.presentation_regions == right.presentation_regions;
+    }
+
+    static bool same_application(const ApplicationInfo& left, const ApplicationInfo& right) {
+        return left.context_id == right.context_id &&
+            left.source_packet_id == right.source_packet_id &&
+            left.application_type == right.application_type &&
+            left.organization_id == right.organization_id &&
+            left.application_id == right.application_id &&
+            left.control_code == right.control_code && left.version == right.version &&
+            left.current_next == right.current_next &&
+            left.section_number == right.section_number &&
+            left.last_section_number == right.last_section_number &&
+            left.application_descriptor_present == right.application_descriptor_present &&
+            left.profiles == right.profiles && left.service_bound == right.service_bound &&
+            left.visibility == right.visibility &&
+            left.present_application_priority == right.present_application_priority &&
+            left.application_priority == right.application_priority &&
+            left.transport_protocol_labels == right.transport_protocol_labels &&
+            left.transports == right.transports && left.entry_path == right.entry_path &&
+            left.transport_urls == right.transport_urls;
+    }
+
     void service(ServiceInfo info) {
         if (selected_service_.has_value() && *selected_service_ != info.context_id) {
             return;
@@ -249,13 +307,209 @@ private:
             id = track_ids_.emplace(std::move(identity), next_track_id_++).first;
         }
         info.track_id = id->second;
-        const auto current = current_tracks_.find(info.track_id);
-        if (current != current_tracks_.end() && same_track(current->second, info)) {
-            return info.track_id;
-        }
-        current_tracks_[info.track_id] = info;
-        sink_.onTrack(info);
         return info.track_id;
+    }
+
+    void mpt_snapshot(MptSnapshot snapshot) {
+        if (selected_service_.has_value() && *selected_service_ != snapshot.context_id) return;
+        const auto previous = mpt_snapshots_.find(snapshot.context_id);
+        bool unchanged = previous != mpt_snapshots_.end() &&
+            previous->second.version == snapshot.version &&
+            previous->second.mode == snapshot.mode &&
+            previous->second.package_id == snapshot.package_id &&
+            previous->second.application_services.size() == snapshot.application_services.size() &&
+            previous->second.tracks.size() == snapshot.tracks.size() &&
+            previous->second.data_assets.size() == snapshot.data_assets.size();
+        if (unchanged) {
+            for (std::size_t index = 0; index < snapshot.application_services.size(); ++index) {
+                if (!same_application_service(previous->second.application_services[index],
+                                              snapshot.application_services[index])) {
+                    unchanged = false;
+                    break;
+                }
+            }
+        }
+        if (unchanged) {
+            for (std::size_t index = 0; index < snapshot.tracks.size(); ++index) {
+                if (!same_track(previous->second.tracks[index], snapshot.tracks[index])) {
+                    unchanged = false;
+                    break;
+                }
+            }
+        }
+        if (unchanged) {
+            for (std::size_t index = 0; index < snapshot.data_assets.size(); ++index) {
+                if (!same_data_asset(previous->second.data_assets[index],
+                                     snapshot.data_assets[index])) {
+                    unchanged = false;
+                    break;
+                }
+            }
+        }
+        if (unchanged) return;
+
+        sink_.onMptSnapshot(snapshot);
+        for (auto it = current_tracks_.begin(); it != current_tracks_.end();) {
+            if (it->second.context_id != snapshot.context_id) {
+                ++it;
+                continue;
+            }
+            const auto found = std::find_if(snapshot.tracks.begin(), snapshot.tracks.end(),
+                                            [id = it->first](const auto& value) {
+                                                return value.track_id == id;
+                                            });
+            if (found == snapshot.tracks.end()) {
+                sink_.onTrackRemoved(it->second);
+                it = current_tracks_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (const auto& info : snapshot.tracks) {
+            const auto found = current_tracks_.find(info.track_id);
+            if (found == current_tracks_.end() || !same_track(found->second, info)) {
+                current_tracks_[info.track_id] = info;
+                sink_.onTrack(info);
+            }
+        }
+
+        std::vector<ApplicationServiceInfo> old_services;
+        for (auto it = application_services_.begin(); it != application_services_.end();) {
+            if (it->second.context_id == snapshot.context_id) {
+                old_services.push_back(it->second);
+                it = application_services_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (const auto& old : old_services) {
+            if (std::none_of(snapshot.application_services.begin(),
+                             snapshot.application_services.end(), [&](const auto& value) {
+                                 return same_application_service(old, value);
+                             })) {
+                sink_.onApplicationServiceRemoved(old);
+                if (old.ait_packet_id.has_value()) retire_mh_ait_source(
+                    snapshot.context_id, *old.ait_packet_id);
+            }
+        }
+        for (std::size_t index = 0; index < snapshot.application_services.size(); ++index) {
+            const auto& info = snapshot.application_services[index];
+            application_services_[std::to_string(snapshot.context_id) + ':' +
+                                  std::to_string(index)] = info;
+            if (std::none_of(old_services.begin(), old_services.end(), [&](const auto& value) {
+                    return same_application_service(value, info);
+                })) sink_.onApplicationService(info);
+        }
+
+        std::vector<DataAssetInfo> old_assets;
+        for (auto it = data_assets_.begin(); it != data_assets_.end();) {
+            if (it->second.context_id == snapshot.context_id) {
+                old_assets.push_back(it->second);
+                it = data_assets_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (const auto& old : old_assets) {
+            if (std::none_of(snapshot.data_assets.begin(), snapshot.data_assets.end(),
+                             [&](const auto& value) { return same_data_asset(old, value); })) {
+                sink_.onDataAssetRemoved(old);
+            }
+        }
+        for (std::size_t index = 0; index < snapshot.data_assets.size(); ++index) {
+            const auto& info = snapshot.data_assets[index];
+            data_assets_[std::to_string(snapshot.context_id) + ':' +
+                         std::to_string(index)] = info;
+            if (std::none_of(old_assets.begin(), old_assets.end(),
+                             [&](const auto& value) { return same_data_asset(value, info); })) {
+                sink_.onDataAsset(info);
+            }
+        }
+        mpt_snapshots_[snapshot.context_id] = std::move(snapshot);
+    }
+
+    void retire_mh_ait_source(const std::uint32_t context_id,
+                              const std::uint16_t source_packet_id) {
+        for (auto it = mh_ait_snapshots_.begin(); it != mh_ait_snapshots_.end();) {
+            if (it->second.context_id != context_id ||
+                it->second.source_packet_id != source_packet_id) {
+                ++it;
+                continue;
+            }
+            for (const auto& application_info : it->second.applications) {
+                const auto key = std::to_string(application_info.context_id) + ':' +
+                    std::to_string(application_info.source_packet_id) + ':' +
+                    std::to_string(application_info.application_type) + ':' +
+                    std::to_string(application_info.organization_id) + ':' +
+                    std::to_string(application_info.application_id);
+                applications_.erase(key);
+                sink_.onApplicationRemoved(application_info);
+            }
+            it = mh_ait_snapshots_.erase(it);
+        }
+    }
+
+    bool accepts_mh_ait(const MhAitSnapshot& snapshot) const {
+        const auto mpt = mpt_snapshots_.find(snapshot.context_id);
+        if (mpt == mpt_snapshots_.end()) return true;
+        return std::any_of(mpt->second.application_services.begin(),
+                           mpt->second.application_services.end(), [&](const auto& service) {
+                               return service.ait_packet_id == snapshot.source_packet_id;
+                           });
+    }
+
+    bool accepts_data_transmission(const std::uint32_t context_id,
+                                   const std::uint16_t packet_id) const {
+        const auto mpt = mpt_snapshots_.find(context_id);
+        if (mpt == mpt_snapshots_.end()) return true;
+        return std::any_of(mpt->second.application_services.begin(),
+                           mpt->second.application_services.end(), [&](const auto& service) {
+                               return service.has_data_transmission_messages &&
+                                   service.data_transmission_packet_id == packet_id;
+                           });
+    }
+
+    bool accepts_emt(const std::uint32_t context_id,
+                     const std::uint16_t packet_id) const {
+        const auto mpt = mpt_snapshots_.find(context_id);
+        if (mpt == mpt_snapshots_.end()) return true;
+        for (const auto& service : mpt->second.application_services) {
+            if (std::any_of(service.event_message_locations.begin(),
+                            service.event_message_locations.end(), [&](const auto& location) {
+                                return location.packet_id == packet_id;
+                            })) return true;
+        }
+        return false;
+    }
+
+    void mh_ait_snapshot(MhAitSnapshot snapshot) {
+        if (selected_service_.has_value() && *selected_service_ != snapshot.context_id) return;
+        if (!accepts_mh_ait(snapshot)) return;
+        sink_.onMhAitSnapshot(snapshot);
+        if (!snapshot.current_next) return;
+        const auto snapshot_key = std::to_string(snapshot.context_id) + ':' +
+            std::to_string(snapshot.source_packet_id) + ':' +
+            std::to_string(snapshot.application_type);
+        std::vector<ApplicationInfo> old_applications;
+        const auto previous = mh_ait_snapshots_.find(snapshot_key);
+        if (previous != mh_ait_snapshots_.end()) old_applications = previous->second.applications;
+        for (const auto& old : old_applications) {
+            if (std::none_of(snapshot.applications.begin(), snapshot.applications.end(),
+                             [&](const auto& value) {
+                                 return value.organization_id == old.organization_id &&
+                                     value.application_id == old.application_id;
+                             })) {
+                const auto key = std::to_string(old.context_id) + ':' +
+                    std::to_string(old.source_packet_id) + ':' +
+                    std::to_string(old.application_type) + ':' +
+                    std::to_string(old.organization_id) + ':' +
+                    std::to_string(old.application_id);
+                applications_.erase(key);
+                sink_.onApplicationRemoved(old);
+            }
+        }
+        for (const auto& info : snapshot.applications) application(info);
+        mh_ait_snapshots_[snapshot_key] = std::move(snapshot);
     }
 
     void application_service(ApplicationServiceInfo info) {
@@ -332,6 +586,7 @@ private:
 
     void stream_event(StreamEvent event) {
         if (selected_service_.has_value() && *selected_service_ != event.context_id) return;
+        if (!accepts_emt(event.context_id, event.source_packet_id)) return;
         if (!event.current_next) return;
         const auto key = std::to_string(event.context_id) + ':' +
             std::to_string(event.event_message_tag) + ':' +
@@ -352,6 +607,7 @@ private:
             *selected_service_ != notification.context_id) {
             return;
         }
+        if (!accepts_emt(notification.context_id, notification.source_packet_id)) return;
         if (!notification.current_next) return;
         const auto key = std::to_string(notification.context_id) + ':' +
             std::to_string(notification.source_packet_id) + ':' +
@@ -370,24 +626,11 @@ private:
     void application(ApplicationInfo info) {
         if (selected_service_.has_value() && *selected_service_ != info.context_id) return;
         const auto key = std::to_string(info.context_id) + ':' +
+            std::to_string(info.source_packet_id) + ':' +
             std::to_string(info.application_type) + ':' +
             std::to_string(info.organization_id) + ':' + std::to_string(info.application_id);
         const auto found = applications_.find(key);
-        if (found != applications_.end() && found->second.version == info.version &&
-            found->second.control_code == info.control_code &&
-            found->second.current_next == info.current_next &&
-            found->second.section_number == info.section_number &&
-            found->second.last_section_number == info.last_section_number &&
-            found->second.application_descriptor_present == info.application_descriptor_present &&
-            found->second.profiles == info.profiles &&
-            found->second.service_bound == info.service_bound &&
-            found->second.visibility == info.visibility &&
-            found->second.present_application_priority == info.present_application_priority &&
-            found->second.application_priority == info.application_priority &&
-            found->second.transport_protocol_labels == info.transport_protocol_labels &&
-            found->second.transports == info.transports &&
-            found->second.entry_path == info.entry_path &&
-            found->second.transport_urls == info.transport_urls) {
+        if (found != applications_.end() && same_application(found->second, info)) {
             return;
         }
         applications_[key] = info;
@@ -397,6 +640,7 @@ private:
 
     void data_transmission(DataTransmissionTable table) {
         if (selected_service_.has_value() && *selected_service_ != table.context_id) return;
+        if (!accepts_data_transmission(table.context_id, table.source_packet_id)) return;
         const auto key = std::to_string(table.context_id) + ':' +
             std::to_string(table.table_id) + ':' + std::to_string(table.session_id) + ':' +
             std::to_string(table.section_number);
@@ -628,6 +872,8 @@ private:
     std::unordered_map<std::string, DataTransmissionTable> data_transmission_tables_;
     std::unordered_map<std::string, std::uint8_t> data_directory_versions_;
     std::unordered_map<std::string, std::uint8_t> data_asset_management_versions_;
+    std::unordered_map<std::uint32_t, MptSnapshot> mpt_snapshots_;
+    std::unordered_map<std::string, MhAitSnapshot> mh_ait_snapshots_;
     std::uint64_t next_track_id_ = 1;
     std::unordered_map<std::string, std::uint64_t> error_counts_;
     std::uint64_t reposition_epoch_ = 0;

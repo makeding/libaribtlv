@@ -40,7 +40,7 @@ bool MmtpParser::parse_tables(const std::uint8_t* data, const std::size_t size,
             const std::uint8_t* table = nullptr;
             if (!tables.read_view(table_size, table)) return false;
             const bool valid = table_id == 0x20
-                ? parse_mpt(table, table_size, input_offset)
+                ? parse_mpt(table, table_size, packet_id, input_offset)
                 : table_id == 0x80
                     ? parse_package_list(table, table_size, input_offset)
                     : parse_lct(table, table_size, packet_id, input_offset);
@@ -139,6 +139,10 @@ bool MmtpParser::parse_emt(const std::uint8_t* data, const std::size_t size,
                            const std::uint16_t packet_id,
                            const std::uint64_t input_offset) {
     if (size < 12 || data[0] != 0xa6) return false;
+    if (!committed_mpt_raw_.empty() &&
+        event_message_tags_.find(packet_id) == event_message_tags_.end()) {
+        return true;
+    }
     const auto section_length = static_cast<std::size_t>(read_be16(data + 1) & 0x0fffU);
     if (section_length + 3 != size || section_length < 9) return false;
 

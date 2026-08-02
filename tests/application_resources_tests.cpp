@@ -1,5 +1,6 @@
 #include <tlvdemux/application_resources.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -77,13 +78,37 @@ std::vector<std::uint8_t> index_item(const std::uint32_t item_id,
     return value;
 }
 
-tlvdemux::DataDirectoryTable directory(const std::uint32_t context) {
+std::vector<std::uint8_t> two_index_items(const std::uint32_t first_item,
+                                          const std::string& first_name,
+                                          const std::uint32_t second_item,
+                                          const std::string& second_name,
+                                          const std::uint32_t size,
+                                          const std::uint8_t version) {
+    auto first = index_item(first_item, size, version, first_name, "text/plain");
+    const auto second = index_item(second_item, size, version, second_name, "text/plain");
+    first[1] = 2;
+    first.insert(first.end(), second.begin() + 2, second.end());
+    return first;
+}
+
+tlvdemux::DataDirectoryTable directory(const std::uint32_t context,
+                                       const std::uint8_t session = 0,
+                                       const std::uint8_t version = 0,
+                                       const std::uint8_t section = 0,
+                                       const std::uint8_t last_section = 0,
+                                       const std::uint16_t node_tag = 7,
+                                       const std::string& base_path = "/sh4/60/001",
+                                       const std::string& node_path = "top/source") {
     tlvdemux::DataDirectoryTable value;
     value.context_id = context;
-    value.base_path = "/sh4/60/001";
+    value.session_id = session;
+    value.version = version;
+    value.section_number = section;
+    value.last_section_number = last_section;
+    value.base_path = base_path;
     tlvdemux::DataDirectoryNode node;
-    node.node_tag = 7;
-    node.path = "top/source";
+    node.node_tag = node_tag;
+    node.path = node_path;
     value.directories.push_back(std::move(node));
     return value;
 }
@@ -91,18 +116,30 @@ tlvdemux::DataDirectoryTable directory(const std::uint32_t context) {
 tlvdemux::DataAssetManagementTable management(const std::uint32_t context,
                                                const std::uint32_t transaction,
                                                const std::uint32_t download,
-                                               const std::uint32_t sequence = 9) {
+                                               const std::uint32_t sequence = 9,
+                                               const std::uint8_t session = 0,
+                                               const std::uint8_t version = 0,
+                                               const std::uint8_t section = 0,
+                                               const std::uint8_t last_section = 0,
+                                               const std::uint16_t component = 0x40,
+                                               const std::uint16_t node_tag = 7,
+                                               const bool include_mpu = true) {
     tlvdemux::DataAssetManagementTable value;
     value.context_id = context;
+    value.session_id = session;
+    value.version = version;
+    value.section_number = section;
+    value.last_section_number = last_section;
     value.transaction_id = transaction;
-    value.component_tag = 0x40;
+    value.component_tag = component;
     value.download_id = download;
+    if (!include_mpu) return value;
     tlvdemux::DataAssetMpu mpu;
     mpu.sequence_number = sequence;
     mpu.index_item = true;
     mpu.index_item_id = 99;
     tlvdemux::DataAssetItem item;
-    item.node_tag = 7;
+    item.node_tag = node_tag;
     item.item_id = 5;
     mpu.items.push_back(std::move(item));
     value.mpus.push_back(std::move(mpu));
@@ -111,12 +148,15 @@ tlvdemux::DataAssetManagementTable management(const std::uint32_t context,
 
 tlvdemux::DataUnit unit(const std::uint32_t context, const std::uint32_t item,
                         std::vector<std::uint8_t> bytes,
-                        const std::uint32_t sequence = 9) {
+                        const std::uint32_t sequence = 9,
+                        const std::uint32_t download = 20,
+                        const std::uint16_t component = 0x40) {
     tlvdemux::DataUnit value;
     value.context_id = context;
-    value.component_tag = 0x40;
+    value.component_tag = component;
     value.mpu_sequence_number = sequence;
     value.item_id = item;
+    value.download_id = download;
     value.data = std::move(bytes);
     return value;
 }
@@ -173,19 +213,19 @@ void test_out_of_order_collection_and_update() {
     check(sink.resources.size() == 1, "carousel duplicate was emitted twice");
 
     const std::vector<std::uint8_t> second{'t', 'w', 'o'};
-    assembler.onDataAssetManagementTable(management(1, 11, 21));
+    assembler.onDataAssetManagementTable(management(1, 11, 21, 9, 0, 1));
     check(sink.removals.size() == 1 &&
               sink.removals[0].path == "sh4/60/001/top/source/index.html" &&
               !sink.states.back().entry_ready && sink.states.back().resource_count == 0,
           "resource replacement did not retire the old VFS path and readiness state");
     assembler.onDataUnit(unit(1, 99, index_item(5, second.size(), 2,
-        "index.html", "text/html")));
-    assembler.onDataUnit(unit(1, 5, second));
+        "index.html", "text/html"), 9, 21));
+    assembler.onDataUnit(unit(1, 5, second, 9, 21));
     check(sink.resources.size() == 2 && sink.resources.back().version == 2 &&
               sink.resources.back().data == second,
           "new application resource version was not published");
 
-    assembler.onDataAssetManagementTable(management(1, 11, 21, 10));
+    assembler.onDataAssetManagementTable(management(1, 11, 21, 10, 0, 2));
     check(sink.removals.size() == 2 &&
               sink.removals.back().mpu_sequence_number == 9,
           "new MPU version did not retire resources from the previous MPU version");
@@ -241,8 +281,8 @@ void test_compression_and_limit() {
     assembler.onDataDirectoryTable(directory(2));
     assembler.onDataAssetManagementTable(management(2, 1, 1));
     assembler.onDataUnit(unit(2, 99, index_item(5, compressed.size(), 1,
-        "index.html", "text/html", 0, source.size())));
-    assembler.onDataUnit(unit(2, 5, compressed));
+        "index.html", "text/html", 0, source.size()), 9, 1));
+    assembler.onDataUnit(unit(2, 5, compressed, 9, 1));
     check(sink.resources.size() == 1 && sink.resources[0].data == source,
           "zlib application resource was not decompressed");
 
@@ -253,11 +293,102 @@ void test_compression_and_limit() {
     limited.onDataDirectoryTable(directory(3));
     limited.onDataAssetManagementTable(management(3, 1, 1));
     limited.onDataUnit(unit(3, 99, index_item(5, source.size(), 1,
-        "index.html", "text/html")));
-    limited.onDataUnit(unit(3, 5, source));
+        "index.html", "text/html"), 9, 1));
+    limited.onDataUnit(unit(3, 5, source, 9, 1));
     check(limited_sink.resources.empty() && !limited_sink.errors.empty() &&
               limited_sink.errors.back().code == tlvdemux::ErrorCode::ResourceLimit,
           "resource size limit was not enforced");
+}
+
+void test_session_snapshot_and_reposition_lifecycle() {
+    TestSink sink;
+    tlvdemux::ApplicationResourceAssembler assembler(sink);
+    const std::vector<std::uint8_t> old_bytes{'o', 'l', 'd'};
+
+    assembler.onDataDirectoryTable(directory(10, 1, 1));
+    assembler.onDataAssetManagementTable(management(10, 30, 30, 9, 1, 1));
+    assembler.onDataUnit(unit(10, 99, index_item(5, old_bytes.size(), 1,
+        "old.html", "text/html"), 9, 30));
+    assembler.onDataUnit(unit(10, 5, old_bytes, 9, 30));
+    check(sink.resources.size() == 1, "initial active catalogue did not publish");
+
+    assembler.onDataDirectoryTable(directory(
+        10, 2, 2, 0, 1, 7, "/next", "first"));
+    assembler.onDataAssetManagementTable(management(10, 31, 31, 10, 2, 2));
+    check(sink.removals.empty(),
+          "partial new-session DDMT replaced the active catalogue");
+
+    assembler.dropTransientKeepActive();
+    assembler.onDataDirectoryTable(directory(
+        10, 2, 2, 1, 1, 8, "/next-extra", "second"));
+    check(sink.removals.empty(),
+          "post-reposition orphan section committed against discarded state");
+
+    assembler.onDataDirectoryTable(directory(
+        10, 2, 2, 0, 1, 7, "/next", "first"));
+    assembler.onDataAssetManagementTable(management(10, 31, 31, 10, 2, 2));
+    check(sink.removals.size() == 1 && sink.removals.back().path.ends_with("old.html"),
+          "complete same-session DDMT and DAMT pair did not retire old resources");
+}
+
+void test_same_session_single_table_update() {
+    TestSink sink;
+    tlvdemux::ApplicationResourceAssembler assembler(sink);
+    const std::vector<std::uint8_t> bytes{'o', 'k'};
+
+    assembler.onDataDirectoryTable(directory(11, 4, 3));
+    assembler.onDataAssetManagementTable(management(11, 40, 40, 9, 4, 3));
+    assembler.onDataUnit(unit(11, 99, index_item(5, bytes.size(), 1,
+        "index.html", "text/html"), 9, 40));
+    assembler.onDataUnit(unit(11, 5, bytes, 9, 40));
+    check(sink.resources.size() == 1, "same-session fixture did not publish");
+
+    assembler.onDataAssetManagementTable(management(11, 41, 41, 10, 4, 4));
+    check(sink.removals.size() == 1,
+          "complete same-session DAMT update did not reuse active DDMT");
+}
+
+void test_download_id_and_snapshot_diff() {
+    TestSink sink;
+    tlvdemux::ApplicationResourceAssembler assembler(sink);
+    const std::vector<std::uint8_t> bytes{'x'};
+
+    assembler.onDataDirectoryTable(directory(12, 5, 1));
+    auto flexible_management = management(12, 50, 50, 9, 5, 1);
+    flexible_management.mpus[0].items.clear();
+    flexible_management.mpus[0].info = {0, 0, 2, 0, 7};
+    assembler.onDataAssetManagementTable(flexible_management);
+    assembler.onDataUnit(unit(12, 99, index_item(5, bytes.size(), 1,
+        "wrong.html", "text/html"), 9, 49));
+    check(sink.resources.empty() && !sink.errors.empty(),
+          "mismatched data-unit download_id was accepted");
+    assembler.onDataUnit(unit(12, 99, index_item(5, bytes.size(), 1,
+        "right.html", "text/html"), 9, 50));
+    assembler.onDataUnit(unit(12, 5, bytes, 9, 50));
+    check(sink.resources.size() == 1 && sink.resources.back().path.ends_with("right.html"),
+          "matching data-unit download_id was not accepted");
+
+    assembler.onDataUnit(unit(12, 99,
+        two_index_items(5, "right.html", 6, "removed.txt", bytes.size(), 2),
+        9, 50));
+    assembler.onDataUnit(unit(12, 5, bytes, 9, 50));
+    assembler.onDataUnit(unit(12, 6, bytes, 9, 50));
+    check(sink.resources.size() == 3, "two-item MPU fixture did not publish both files");
+
+    assembler.onDataUnit(unit(12, 99, index_item(5, bytes.size(), 3,
+        "right.html", "text/html"), 9, 50));
+    check(std::any_of(sink.removals.begin(), sink.removals.end(), [](const auto& removal) {
+              return removal.item_id == 6 && removal.path.ends_with("removed.txt");
+          }), "new index did not delete an item absent from the active MPU");
+    assembler.onDataUnit(unit(12, 5, bytes, 9, 50));
+
+    const auto removals_before_catalogue = sink.removals.size();
+    assembler.onDataDirectoryTable(directory(
+        12, 5, 2, 0, 0, 8, "/replacement", "app"));
+    assembler.onDataAssetManagementTable(
+        management(12, 51, 51, 10, 5, 3, 0, 0, 0x41, 8));
+    check(sink.removals.size() > removals_before_catalogue,
+          "catalogue diff left resources from a removed node/component/MPU");
 }
 
 } // namespace
@@ -266,6 +397,9 @@ int main() {
     test_out_of_order_collection_and_update();
     test_virtual_resource_store();
     test_compression_and_limit();
+    test_session_snapshot_and_reposition_lifecycle();
+    test_same_session_single_table_update();
+    test_download_id_and_snapshot_diff();
     std::cout << "application resource tests passed\n";
     return 0;
 }

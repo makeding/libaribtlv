@@ -68,6 +68,8 @@ MmtpParser::MmtpParser(const std::uint32_t context_id, const Limits& limits,
                        StreamEventCallback on_stream_event,
                        ViewerParticipationCallback on_viewer_participation,
                        ApplicationCallback on_application,
+                       MptSnapshotCallback on_mpt_snapshot,
+                       MhAitSnapshotCallback on_mh_ait_snapshot,
                        DataTransmissionCallback on_data_transmission,
                        DataDirectoryCallback on_data_directory,
                        DataAssetManagementCallback on_data_asset_management,
@@ -83,6 +85,8 @@ MmtpParser::MmtpParser(const std::uint32_t context_id, const Limits& limits,
       on_stream_event_(std::move(on_stream_event)),
       on_viewer_participation_(std::move(on_viewer_participation)),
       on_application_(std::move(on_application)),
+      on_mpt_snapshot_(std::move(on_mpt_snapshot)),
+      on_mh_ait_snapshot_(std::move(on_mh_ait_snapshot)),
       on_data_transmission_(std::move(on_data_transmission)),
       on_data_directory_(std::move(on_data_directory)),
       on_data_asset_management_(std::move(on_data_asset_management)),
@@ -104,6 +108,11 @@ void MmtpParser::reset() {
     tracks_.clear();
     data_assets_.clear();
     event_message_tags_.clear();
+    ait_packet_ids_.clear();
+    data_transmission_packet_ids_.clear();
+    committed_mpt_raw_.clear();
+    mh_ait_staging_.clear();
+    committed_mh_ait_raw_.clear();
     latest_full_ntp_.reset();
 }
 

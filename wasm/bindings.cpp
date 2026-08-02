@@ -127,6 +127,15 @@ const char* application_lifecycle_state_name(
     return "unsupported";
 }
 
+const char* service_reset_reason_name(
+    const tlvdemux::ServiceStateResetReason reason) noexcept {
+    switch (reason) {
+    case tlvdemux::ServiceStateResetReason::FullReset: return "full-reset";
+    case tlvdemux::ServiceStateResetReason::ServiceSelection: return "service-selection";
+    }
+    return "full-reset";
+}
+
 val duration_value(const tlvdemux::DurationInfo duration) {
     if (duration.status == tlvdemux::DurationStatus::Unknown) return val::null();
     auto result = val::object();
@@ -170,6 +179,39 @@ val presentation_regions_value(
         result.set(index, region);
     }
     return result;
+}
+
+val track_info_value(const tlvdemux::TrackInfo& info) {
+    auto event = val::object();
+    event.set("trackId", info.track_id);
+    event.set("contextId", info.context_id);
+    event.set("packetId", info.packet_id);
+    event.set("kind", std::string(track_kind_name(info.kind)));
+    event.set("codec", std::string(codec_name(info.codec)));
+    event.set("language", info.language);
+    event.set("componentTag", info.component_tag);
+    event.set("timescale", info.timescale);
+    event.set("presentationRegions", presentation_regions_value(info.presentation_regions));
+    return event;
+}
+
+val application_info_value(const tlvdemux::ApplicationInfo& info) {
+    auto event = val::object();
+    event.set("contextId", info.context_id);
+    event.set("sourcePacketId", info.source_packet_id);
+    event.set("applicationType", info.application_type);
+    event.set("organizationId", info.organization_id);
+    event.set("applicationId", info.application_id);
+    event.set("controlCode", info.control_code);
+    event.set("version", info.version);
+    event.set("currentNext", info.current_next);
+    event.set("sectionNumber", info.section_number);
+    event.set("lastSectionNumber", info.last_section_number);
+    event.set("presentApplicationPriority", info.present_application_priority);
+    event.set("applicationPriority", info.application_priority);
+    event.set("entryPath", info.entry_path);
+    event.set("inputOffset", info.input_offset);
+    return event;
 }
 
 val layout_configuration_value(const tlvdemux::LayoutConfiguration& info) {
@@ -548,16 +590,7 @@ public:
     }
 
     void onTrack(const tlvdemux::TrackInfo& info) override {
-        auto event = val::object();
-        event.set("trackId", info.track_id);
-        event.set("contextId", info.context_id);
-        event.set("packetId", info.packet_id);
-        event.set("kind", std::string(track_kind_name(info.kind)));
-        event.set("codec", std::string(codec_name(info.codec)));
-        event.set("language", info.language);
-        event.set("componentTag", info.component_tag);
-        event.set("timescale", info.timescale);
-        event.set("presentationRegions", presentation_regions_value(info.presentation_regions));
+        auto event = track_info_value(info);
         if (info.audio.has_value()) {
             auto audio = val::object();
             audio.set("componentType", info.audio->component_type);
@@ -579,6 +612,101 @@ public:
             event.set("subtitle", subtitle);
         }
         emit("onTrack", event);
+    }
+
+    void onTrackRemoved(const tlvdemux::TrackInfo& info) override {
+        emit("onTrackRemoved", track_info_value(info));
+    }
+
+    void onApplicationServiceRemoved(
+        const tlvdemux::ApplicationServiceInfo& info) override {
+        auto event = val::object();
+        event.set("contextId", info.context_id);
+        event.set("aitPacketId", info.ait_packet_id.has_value()
+            ? val(*info.ait_packet_id) : val::null());
+        event.set("dataTransmissionPacketId", info.data_transmission_packet_id.has_value()
+            ? val(*info.data_transmission_packet_id) : val::null());
+        emit("onApplicationServiceRemoved", event);
+    }
+
+    void onDataAssetRemoved(const tlvdemux::DataAssetInfo& info) override {
+        auto event = val::object();
+        event.set("contextId", info.context_id);
+        event.set("packetId", info.packet_id);
+        event.set("componentTag", info.component_tag);
+        event.set("assetType", info.asset_type);
+        emit("onDataAssetRemoved", event);
+    }
+
+    void onApplicationRemoved(const tlvdemux::ApplicationInfo& info) override {
+        emit("onApplicationRemoved", application_info_value(info));
+    }
+
+    void onMptSnapshot(const tlvdemux::MptSnapshot& snapshot) override {
+        auto event = val::object();
+        event.set("contextId", snapshot.context_id);
+        event.set("sourcePacketId", snapshot.source_packet_id);
+        event.set("packageId", copy_bytes(snapshot.package_id));
+        event.set("version", snapshot.version);
+        event.set("mode", snapshot.mode);
+        event.set("inputOffset", snapshot.input_offset);
+        auto tracks = val::array();
+        for (std::size_t index = 0; index < snapshot.tracks.size(); ++index) {
+            tracks.set(index, track_info_value(snapshot.tracks[index]));
+        }
+        event.set("tracks", tracks);
+        auto services = val::array();
+        for (std::size_t index = 0; index < snapshot.application_services.size(); ++index) {
+            const auto& info = snapshot.application_services[index];
+            auto service = val::object();
+            service.set("contextId", info.context_id);
+            service.set("applicationFormat", info.application_format);
+            service.set("documentResolution", info.document_resolution);
+            service.set("defaultAit", info.default_ait);
+            service.set("aitPacketId", info.ait_packet_id.has_value()
+                ? val(*info.ait_packet_id) : val::null());
+            service.set("dataTransmissionPacketId", info.data_transmission_packet_id.has_value()
+                ? val(*info.data_transmission_packet_id) : val::null());
+            services.set(index, service);
+        }
+        event.set("applicationServices", services);
+        auto data_assets = val::array();
+        for (std::size_t index = 0; index < snapshot.data_assets.size(); ++index) {
+            const auto& info = snapshot.data_assets[index];
+            auto asset = val::object();
+            asset.set("contextId", info.context_id);
+            asset.set("packetId", info.packet_id);
+            asset.set("componentTag", info.component_tag);
+            asset.set("assetType", info.asset_type);
+            asset.set("presentationRegions", presentation_regions_value(info.presentation_regions));
+            data_assets.set(index, asset);
+        }
+        event.set("dataAssets", data_assets);
+        emit("onMptSnapshot", event);
+    }
+
+    void onMhAitSnapshot(const tlvdemux::MhAitSnapshot& snapshot) override {
+        auto event = val::object();
+        event.set("contextId", snapshot.context_id);
+        event.set("sourcePacketId", snapshot.source_packet_id);
+        event.set("applicationType", snapshot.application_type);
+        event.set("version", snapshot.version);
+        event.set("currentNext", snapshot.current_next);
+        event.set("inputOffset", snapshot.input_offset);
+        auto applications = val::array();
+        for (std::size_t index = 0; index < snapshot.applications.size(); ++index) {
+            applications.set(index, application_info_value(snapshot.applications[index]));
+        }
+        event.set("applications", applications);
+        emit("onMhAitSnapshot", event);
+    }
+
+    void onServiceStateReset(const tlvdemux::ServiceStateReset& reset) override {
+        auto event = val::object();
+        event.set("contextId", reset.context_id.has_value()
+            ? val(*reset.context_id) : val::null());
+        event.set("reason", std::string(service_reset_reason_name(reset.reason)));
+        emit("onServiceStateReset", event);
     }
 
     void onLayoutConfiguration(const tlvdemux::LayoutConfiguration& info) override {

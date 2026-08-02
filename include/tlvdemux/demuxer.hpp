@@ -28,11 +28,18 @@ public:
     virtual void onViewerParticipationNotification(
         const ViewerParticipationNotification&) {}
     virtual void onApplicationService(const ApplicationServiceInfo&) {}
+    virtual void onApplicationServiceRemoved(const ApplicationServiceInfo&) {}
     virtual void onLayoutConfiguration(const LayoutConfiguration&) {}
     virtual void onDataAsset(const DataAssetInfo&) {}
+    virtual void onDataAssetRemoved(const DataAssetInfo&) {}
     virtual void onDataUnit(DataUnit&&) {}
     virtual void onSignallingMessage(SignallingMessage&&) {}
     virtual void onApplication(const ApplicationInfo&) {}
+    virtual void onApplicationRemoved(const ApplicationInfo&) {}
+    virtual void onMptSnapshot(const MptSnapshot&) {}
+    virtual void onMhAitSnapshot(const MhAitSnapshot&) {}
+    virtual void onTrackRemoved(const TrackInfo&) {}
+    virtual void onServiceStateReset(const ServiceStateReset&) {}
     virtual void onDataTransmissionTable(DataTransmissionTable&&) {}
     virtual void onDataDirectoryTable(const DataDirectoryTable&) {}
     virtual void onDataAssetManagementTable(const DataAssetManagementTable&) {}

@@ -87,6 +87,7 @@ struct MpuMap {
     std::uint32_t index_item_id = 0;
     std::vector<std::uint16_t> node_tags;
     std::optional<std::uint16_t> mpu_node_tag;
+    bool operator==(const MpuMap&) const = default;
 };
 
 struct FileRecord {
@@ -106,6 +107,7 @@ struct FileTarget {
     std::uint8_t version = 0;
     std::uint8_t compression_type = 0xff;
     std::optional<std::uint32_t> original_size;
+    bool operator==(const FileTarget&) const = default;
 };
 
 struct PublishedItem {
@@ -113,6 +115,60 @@ struct PublishedItem {
     std::uint32_t download_id = 0;
     std::uint8_t version = 0;
     std::string path;
+};
+
+template <typename Table>
+struct SectionSet {
+    std::optional<std::uint8_t> version;
+    std::optional<std::uint8_t> last_section;
+    std::vector<std::optional<Table>> sections;
+
+    void add(const Table& table) {
+        if (!version.has_value() || *version != table.version ||
+            !last_section.has_value() || *last_section != table.last_section_number) {
+            version = table.version;
+            last_section = table.last_section_number;
+            sections.clear();
+            sections.resize(static_cast<std::size_t>(table.last_section_number) + 1U);
+        }
+        if (table.section_number > *last_section) return;
+        sections[table.section_number] = table;
+    }
+
+    bool complete() const {
+        return version.has_value() && last_section.has_value() && !sections.empty() &&
+            std::all_of(sections.begin(), sections.end(), [](const auto& section) {
+                return section.has_value();
+            });
+    }
+
+    std::vector<Table> values() const {
+        std::vector<Table> result;
+        result.reserve(sections.size());
+        for (const auto& section : sections) {
+            if (section.has_value()) result.push_back(*section);
+        }
+        return result;
+    }
+};
+
+struct ActiveCatalogue {
+    std::uint8_t session_id = 0;
+    std::uint8_t directory_version = 0;
+    std::uint8_t management_version = 0;
+    std::vector<DataDirectoryTable> directories;
+    std::vector<DataAssetManagementTable> management;
+};
+
+struct CandidateCatalogue {
+    std::uint8_t session_id = 0;
+    SectionSet<DataDirectoryTable> directories;
+    SectionSet<DataAssetManagementTable> management;
+};
+
+struct ContextCatalogueState {
+    std::optional<ActiveCatalogue> active;
+    std::map<std::uint8_t, CandidateCatalogue> candidates;
 };
 
 std::optional<std::string> safe_path(const std::string& value) {
@@ -220,58 +276,28 @@ public:
 
     void directory(const DataDirectoryTable& table) {
         if (!limits_.collect_application_resources) return;
-        for (const auto& directory : table.directories) {
-            const auto path = join_path(table.base_path, directory.path);
-            if (!path.has_value()) {
-                report(ErrorCode::MalformedInput, 0, true,
-                       "broadcast directory path escapes its virtual root");
-                continue;
-            }
-            node_paths_[{table.context_id, directory.node_tag}] = *path;
+        auto& state = catalogues_[table.context_id];
+        if (state.active.has_value() && state.active->session_id == table.session_id &&
+            state.active->directory_version == table.version) {
+            return;
         }
-        retry();
+        auto& candidate = state.candidates[table.session_id];
+        candidate.session_id = table.session_id;
+        candidate.directories.add(table);
+        try_commit_catalogue(table.context_id, table.session_id);
     }
 
     void management(const DataAssetManagementTable& table) {
         if (!limits_.collect_application_resources) return;
-        for (const auto& mpu : table.mpus) {
-            const MpuKey key{table.context_id, table.component_tag, mpu.sequence_number};
-            // MPU_sequence_number is MPU_id (upper 16 bits) plus its version
-            // (lower 16 bits). Retire the preceding version before accepting
-            // the new catalogue so stale files cannot survive in the VFS.
-            std::vector<MpuKey> superseded;
-            for (const auto& existing : mpu_maps_) {
-                if (existing.first.context == key.context &&
-                    existing.first.component == key.component &&
-                    (existing.first.sequence >> 16U) == (key.sequence >> 16U) &&
-                    existing.first.sequence != key.sequence) {
-                    superseded.push_back(existing.first);
-                }
-            }
-            for (const auto& stale : superseded) {
-                erase_mpu_targets(stale);
-                mpu_maps_.erase(stale);
-            }
-            MpuMap map;
-            map.transaction_id = table.transaction_id;
-            map.download_id = table.download_id;
-            map.index_item_id = mpu.index_item_id.value_or(0);
-            for (const auto& item : mpu.items) map.node_tags.push_back(item.node_tag);
-            for (std::size_t at = 0; at + 5 <= mpu.info.size();) {
-                const auto length = static_cast<std::size_t>(mpu.info[at + 2]);
-                if (length > mpu.info.size() - at - 3) break;
-                if (length == 2) map.mpu_node_tag = be16(mpu.info.data() + at + 3);
-                at += 3 + length;
-            }
-            const auto previous = mpu_maps_.find(key);
-            if (previous != mpu_maps_.end() &&
-                (previous->second.transaction_id != map.transaction_id ||
-                 previous->second.download_id != map.download_id)) {
-                erase_mpu_targets(key);
-            }
-            mpu_maps_[key] = std::move(map);
+        auto& state = catalogues_[table.context_id];
+        if (state.active.has_value() && state.active->session_id == table.session_id &&
+            state.active->management_version == table.version) {
+            return;
         }
-        retry();
+        auto& candidate = state.candidates[table.session_id];
+        candidate.session_id = table.session_id;
+        candidate.management.add(table);
+        try_commit_catalogue(table.context_id, table.session_id);
     }
 
     void unit(const DataUnit& value) {
@@ -297,6 +323,7 @@ public:
     }
 
     void reset() {
+        catalogues_.clear();
         node_paths_.clear();
         mpu_maps_.clear();
         item_paths_.clear();
@@ -308,7 +335,161 @@ public:
         sink_.onApplicationResourcesReset();
     }
 
+    void drop_transient_keep_active() {
+        for (auto& entry : catalogues_) entry.second.candidates.clear();
+        pending_.clear();
+        pending_bytes_ = 0;
+    }
+
 private:
+    static MpuMap make_mpu_map(const DataAssetManagementTable& table,
+                               const DataAssetMpu& mpu) {
+        MpuMap map;
+        map.transaction_id = table.transaction_id;
+        map.download_id = table.download_id;
+        map.index_item_id = mpu.index_item_id.value_or(0);
+        for (const auto& item : mpu.items) map.node_tags.push_back(item.node_tag);
+        for (std::size_t at = 0; at + 3 <= mpu.info.size();) {
+            const auto length = static_cast<std::size_t>(mpu.info[at + 2]);
+            if (length > mpu.info.size() - at - 3) break;
+            if (length == 2) map.mpu_node_tag = be16(mpu.info.data() + at + 3);
+            at += 3 + length;
+        }
+        return map;
+    }
+
+    bool build_catalogue(
+        const std::uint32_t context,
+        const std::vector<DataDirectoryTable>& directories,
+        const std::vector<DataAssetManagementTable>& management,
+        std::map<std::pair<std::uint32_t, std::uint16_t>, std::string>& nodes,
+        std::map<MpuKey, MpuMap>& mpus) {
+        std::set<std::string> base_paths;
+        std::set<std::uint16_t> node_tags;
+        for (const auto& table : directories) {
+            const auto base = safe_path(table.base_path);
+            if (!base.has_value() || !base_paths.insert(*base).second) {
+                report(ErrorCode::MalformedInput, 0, true,
+                       "application catalogue has an invalid or duplicate base directory");
+                return false;
+            }
+            for (const auto& directory : table.directories) {
+                const auto path = join_path(table.base_path, directory.path);
+                if (!path.has_value() || !node_tags.insert(directory.node_tag).second) {
+                    report(ErrorCode::MalformedInput, 0, true,
+                           "application catalogue has an invalid path or duplicate node tag");
+                    return false;
+                }
+                nodes[{context, directory.node_tag}] = *path;
+            }
+        }
+
+        std::set<std::uint16_t> components;
+        for (const auto& table : management) {
+            if (!components.insert(table.component_tag).second) {
+                report(ErrorCode::MalformedInput, 0, true,
+                       "application catalogue repeats a component across DAMT sections");
+                return false;
+            }
+            for (const auto& mpu : table.mpus) {
+                const MpuKey key{context, table.component_tag, mpu.sequence_number};
+                auto map = make_mpu_map(table, mpu);
+                if (!mpus.emplace(key, map).second) {
+                    report(ErrorCode::MalformedInput, 0, true,
+                           "application catalogue repeats an MPU");
+                    return false;
+                }
+                auto referenced_nodes = map.node_tags;
+                if (referenced_nodes.empty() && map.mpu_node_tag.has_value()) {
+                    referenced_nodes.push_back(*map.mpu_node_tag);
+                }
+                for (const auto node : referenced_nodes) {
+                    if (nodes.find({context, node}) == nodes.end()) {
+                        report(ErrorCode::MalformedInput, 0, true,
+                               "DAMT MPU refers to a node absent from the complete DDMT");
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    void try_commit_catalogue(const std::uint32_t context,
+                              const std::uint8_t session_id) {
+        auto state_it = catalogues_.find(context);
+        if (state_it == catalogues_.end()) return;
+        auto& state = state_it->second;
+        auto candidate_it = state.candidates.find(session_id);
+        if (candidate_it == state.candidates.end()) return;
+        auto& candidate = candidate_it->second;
+        const bool same_active_session = state.active.has_value() &&
+            state.active->session_id == session_id;
+        if (!candidate.directories.complete() && !same_active_session) return;
+        if (!candidate.management.complete() && !same_active_session) return;
+        if (!candidate.directories.complete() && !candidate.management.complete()) return;
+
+        const auto directories = candidate.directories.complete()
+            ? candidate.directories.values() : state.active->directories;
+        const auto management = candidate.management.complete()
+            ? candidate.management.values() : state.active->management;
+        const auto directory_version = candidate.directories.complete()
+            ? *candidate.directories.version : state.active->directory_version;
+        const auto management_version = candidate.management.complete()
+            ? *candidate.management.version : state.active->management_version;
+
+        std::map<std::pair<std::uint32_t, std::uint16_t>, std::string> new_nodes;
+        std::map<MpuKey, MpuMap> new_mpus;
+        if (!build_catalogue(context, directories, management, new_nodes, new_mpus)) return;
+        commit_catalogue(context, new_nodes, new_mpus);
+        state.active = ActiveCatalogue{session_id, directory_version, management_version,
+                                       directories, management};
+        state.candidates.clear();
+        retry();
+    }
+
+    void commit_catalogue(
+        const std::uint32_t context,
+        const std::map<std::pair<std::uint32_t, std::uint16_t>, std::string>& new_nodes,
+        const std::map<MpuKey, MpuMap>& new_mpus) {
+        std::set<std::uint16_t> changed_nodes;
+        for (const auto& existing : node_paths_) {
+            if (existing.first.first != context) continue;
+            const auto replacement = new_nodes.find(existing.first);
+            if (replacement == new_nodes.end() || replacement->second != existing.second) {
+                changed_nodes.insert(existing.first.second);
+            }
+        }
+
+        std::vector<MpuKey> retired;
+        for (const auto& existing : mpu_maps_) {
+            if (existing.first.context != context) continue;
+            const auto replacement = new_mpus.find(existing.first);
+            const bool changed_reference = std::any_of(
+                existing.second.node_tags.begin(), existing.second.node_tags.end(),
+                [&](const auto node) { return changed_nodes.contains(node); }) ||
+                (existing.second.mpu_node_tag.has_value() &&
+                 changed_nodes.contains(*existing.second.mpu_node_tag));
+            if (replacement == new_mpus.end() || replacement->second != existing.second ||
+                changed_reference) {
+                retired.push_back(existing.first);
+            }
+        }
+        for (const auto& key : retired) erase_mpu_targets(key, false);
+
+        for (auto it = node_paths_.begin(); it != node_paths_.end();) {
+            if (it->first.first == context) it = node_paths_.erase(it);
+            else ++it;
+        }
+        node_paths_.insert(new_nodes.begin(), new_nodes.end());
+        for (auto it = mpu_maps_.begin(); it != mpu_maps_.end();) {
+            if (it->first.context == context) it = mpu_maps_.erase(it);
+            else ++it;
+        }
+        mpu_maps_.insert(new_mpus.begin(), new_mpus.end());
+        update_application_states(context);
+    }
+
     void retry() {
         bool progressed = true;
         while (progressed) {
@@ -328,6 +509,12 @@ private:
     bool try_consume(const ItemKey& key, const DataUnit& unit) {
         const auto map_it = mpu_maps_.find(key.mpu);
         if (map_it == mpu_maps_.end()) return false;
+        if (!unit.download_id.has_value() ||
+            *unit.download_id != map_it->second.download_id) {
+            report(ErrorCode::MalformedInput, unit.input_offset, true,
+                   "application data-unit download_id does not match active DAMT");
+            return true;
+        }
         if (key.item == map_it->second.index_item_id) {
             return consume_index(key.mpu, unit, map_it->second);
         }
@@ -355,11 +542,18 @@ private:
         for (const auto node : node_tags) {
             if (node_paths_.find({key.context, node}) == node_paths_.end()) return false;
         }
-        if (item_paths_.size() + records.size() > limits_.max_application_resources) {
+        const auto previous_count = static_cast<std::size_t>(std::count_if(
+            item_paths_.begin(), item_paths_.end(), [&](const auto& item) {
+                return item.first.mpu == key;
+            }));
+        if (item_paths_.size() - previous_count + records.size() >
+            limits_.max_application_resources) {
             report(ErrorCode::ResourceLimit, unit.input_offset, true,
                    "application resource catalogue limit exceeded");
             return true;
         }
+
+        std::map<std::uint32_t, FileTarget> targets;
         for (std::size_t index = 0; index < records.size(); ++index) {
             const auto directory = node_paths_.at({key.context, node_tags[index]});
             const auto path = join_path(directory, records[index].filename);
@@ -368,11 +562,34 @@ private:
                        "broadcast file path escapes its virtual root");
                 continue;
             }
-            item_paths_[{key, records[index].item_id}] = FileTarget{
+            const auto inserted = targets.emplace(records[index].item_id, FileTarget{
                 *path, records[index].content_type, records[index].item_size,
                 records[index].version, records[index].compression_type,
-                records[index].original_size};
+                records[index].original_size});
+            if (!inserted.second) {
+                report(ErrorCode::MalformedInput, unit.input_offset, true,
+                       "application resource index repeats an item id");
+                return true;
+            }
         }
+
+        std::vector<ItemKey> retired;
+        for (const auto& existing : item_paths_) {
+            if (!(existing.first.mpu == key)) continue;
+            const auto replacement = targets.find(existing.first.item);
+            if (replacement == targets.end() || replacement->second != existing.second) {
+                retired.push_back(existing.first);
+            }
+        }
+        for (const auto& item : retired) erase_item_target(item, false);
+        for (auto it = item_paths_.begin(); it != item_paths_.end();) {
+            if (it->first.mpu == key) it = item_paths_.erase(it);
+            else ++it;
+        }
+        for (const auto& target : targets) {
+            item_paths_[{key, target.first}] = target.second;
+        }
+        update_application_states(key.context);
         return true;
     }
 
@@ -486,7 +703,29 @@ private:
         }
     }
 
-    void erase_mpu_targets(const MpuKey& key) {
+    void erase_item_target(const ItemKey& key, const bool update_states = true) {
+        item_paths_.erase(key);
+        const auto published = published_.find(key);
+        if (published != published_.end()) {
+            const auto path = published->second.path;
+            const auto path_entry = published_paths_.find({key.mpu.context, path});
+            if (path_entry != published_paths_.end() && path_entry->second == key) {
+                published_paths_.erase(path_entry);
+                sink_.onApplicationResourceRemoved(ApplicationResourceRemoval{
+                    key.mpu.context, key.mpu.component, published->second.transaction_id,
+                    published->second.download_id, key.mpu.sequence, key.item, path});
+            }
+            published_.erase(published);
+        }
+        const auto pending = pending_.find(key);
+        if (pending != pending_.end()) {
+            pending_bytes_ -= pending->second.data.size();
+            pending_.erase(pending);
+        }
+        if (update_states) update_application_states(key.mpu.context);
+    }
+
+    void erase_mpu_targets(const MpuKey& key, const bool update_states = true) {
         for (auto it = item_paths_.begin(); it != item_paths_.end();) {
             if (!(it->first.mpu < key) && !(key < it->first.mpu)) it = item_paths_.erase(it);
             else ++it;
@@ -515,7 +754,7 @@ private:
                 ++it;
             }
         }
-        update_application_states(key.context);
+        if (update_states) update_application_states(key.context);
     }
 
     void report(const ErrorCode code, const std::uint64_t offset, const bool recoverable,
@@ -525,6 +764,7 @@ private:
 
     ApplicationResourceSink& sink_;
     Limits limits_;
+    std::map<std::uint32_t, ContextCatalogueState> catalogues_;
     std::map<std::pair<std::uint32_t, std::uint16_t>, std::string> node_paths_;
     std::map<MpuKey, MpuMap> mpu_maps_;
     std::map<ItemKey, FileTarget> item_paths_;
@@ -557,6 +797,9 @@ void ApplicationResourceAssembler::onDataAssetManagementTable(
 }
 void ApplicationResourceAssembler::onDataUnit(const DataUnit& value) {
     impl_->unit(value);
+}
+void ApplicationResourceAssembler::dropTransientKeepActive() {
+    impl_->drop_transient_keep_active();
 }
 void ApplicationResourceAssembler::reset() { impl_->reset(); }
 

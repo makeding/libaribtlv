@@ -58,6 +58,8 @@ public:
     using ViewerParticipationCallback =
         std::function<void(ViewerParticipationNotification)>;
     using ApplicationCallback = std::function<void(ApplicationInfo)>;
+    using MptSnapshotCallback = std::function<void(MptSnapshot)>;
+    using MhAitSnapshotCallback = std::function<void(MhAitSnapshot)>;
     using DataTransmissionCallback = std::function<void(DataTransmissionTable)>;
     using DataDirectoryCallback = std::function<void(DataDirectoryTable)>;
     using DataAssetManagementCallback = std::function<void(DataAssetManagementTable)>;
@@ -68,7 +70,7 @@ public:
                TrackCallback, AccessUnitCallback, ApplicationServiceCallback,
                LayoutCallback, DataAssetCallback, DataUnitCallback, SignallingCallback, EventCallback,
                StreamEventCallback, ViewerParticipationCallback,
-               ApplicationCallback,
+               ApplicationCallback, MptSnapshotCallback, MhAitSnapshotCallback,
                DataTransmissionCallback, DataDirectoryCallback,
                DataAssetManagementCallback, StateAcquireCallback,
                StateReleaseCallback, ErrorCallback);
@@ -160,6 +162,19 @@ private:
         SubtitleAssembly subtitle;
     };
 
+    struct MhAitSection {
+        std::uint8_t section_number = 0;
+        std::uint8_t last_section_number = 0;
+        std::uint64_t input_offset = 0;
+        std::vector<ApplicationInfo> applications;
+        std::vector<std::uint8_t> raw;
+    };
+
+    struct MhAitAssembly {
+        std::uint8_t last_section_number = 0;
+        std::map<std::uint8_t, MhAitSection> sections;
+    };
+
     void parse_signalling(std::uint16_t packet_id, std::uint32_t sequence,
                           const std::uint8_t* data, std::size_t size,
                           std::uint64_t input_offset);
@@ -210,7 +225,7 @@ private:
                       std::uint16_t packet_id,
                       std::uint64_t input_offset);
     bool parse_mpt(const std::uint8_t* data, std::size_t size,
-                   std::uint64_t input_offset);
+                   std::uint16_t packet_id, std::uint64_t input_offset);
     bool parse_package_list(const std::uint8_t* data, std::size_t size,
                             std::uint64_t input_offset);
     bool parse_lct(const std::uint8_t* data, std::size_t size,
@@ -240,6 +255,8 @@ private:
     StreamEventCallback on_stream_event_;
     ViewerParticipationCallback on_viewer_participation_;
     ApplicationCallback on_application_;
+    MptSnapshotCallback on_mpt_snapshot_;
+    MhAitSnapshotCallback on_mh_ait_snapshot_;
     DataTransmissionCallback on_data_transmission_;
     DataDirectoryCallback on_data_directory_;
     DataAssetManagementCallback on_data_asset_management_;
@@ -250,6 +267,11 @@ private:
     std::unordered_map<std::uint16_t, TrackState> tracks_;
     std::unordered_map<std::uint16_t, DataAssetState> data_assets_;
     std::unordered_map<std::uint16_t, std::uint8_t> event_message_tags_;
+    std::vector<std::uint16_t> ait_packet_ids_;
+    std::vector<std::uint16_t> data_transmission_packet_ids_;
+    std::vector<std::uint8_t> committed_mpt_raw_;
+    std::unordered_map<std::string, MhAitAssembly> mh_ait_staging_;
+    std::unordered_map<std::string, std::vector<std::uint8_t>> committed_mh_ait_raw_;
     std::optional<std::uint64_t> latest_full_ntp_;
 };
 

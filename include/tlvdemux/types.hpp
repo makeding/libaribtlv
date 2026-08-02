@@ -369,6 +369,40 @@ struct TrackInfo {
     std::vector<MpuPresentationRegion> presentation_regions;
 };
 
+// A complete, validated MPT version.  Consumers should treat this as the
+// authoritative service inventory; the item callbacks on Sink are retained as
+// a compatibility view derived from committing this snapshot.
+struct MptSnapshot {
+    std::uint32_t context_id = 0;
+    std::uint16_t source_packet_id = 0;
+    std::vector<std::uint8_t> package_id;
+    std::uint8_t version = 0;
+    std::uint8_t mode = 0;
+    std::uint64_t input_offset = 0;
+    std::vector<ApplicationServiceInfo> application_services;
+    std::vector<TrackInfo> tracks;
+    std::vector<DataAssetInfo> data_assets;
+};
+
+// A complete MH-AIT sub-table.  An empty applications vector is meaningful:
+// it retires every application from the preceding version of this sub-table.
+struct MhAitSnapshot {
+    std::uint32_t context_id = 0;
+    std::uint16_t source_packet_id = 0;
+    std::uint16_t application_type = 0;
+    std::uint8_t version = 0;
+    bool current_next = false;
+    std::uint64_t input_offset = 0;
+    std::vector<ApplicationInfo> applications;
+};
+
+enum class ServiceStateResetReason { FullReset, ServiceSelection };
+
+struct ServiceStateReset {
+    std::optional<std::uint32_t> context_id;
+    ServiceStateResetReason reason = ServiceStateResetReason::FullReset;
+};
+
 struct SubtitleResource {
     std::uint8_t subsample_number = 0;
     std::uint8_t data_type = 0;

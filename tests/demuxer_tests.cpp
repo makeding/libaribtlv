@@ -17,27 +17,44 @@ struct TestSink final : tlvdemux::Sink {
     std::vector<tlvdemux::ApplicationServiceInfo> application_services;
     std::vector<tlvdemux::LayoutConfiguration> layouts;
     std::vector<tlvdemux::DataAssetInfo> data_assets;
+    std::vector<tlvdemux::TrackInfo> removed_tracks;
+    std::vector<tlvdemux::ApplicationServiceInfo> removed_application_services;
+    std::vector<tlvdemux::DataAssetInfo> removed_data_assets;
     std::vector<tlvdemux::SignallingMessage> signalling_messages;
     std::vector<tlvdemux::EventInfo> events;
     std::vector<tlvdemux::StreamEvent> stream_events;
     std::vector<tlvdemux::ViewerParticipationNotification>
         viewer_participation_notifications;
     std::vector<tlvdemux::ApplicationInfo> applications;
+    std::vector<tlvdemux::ApplicationInfo> removed_applications;
+    std::vector<tlvdemux::MptSnapshot> mpt_snapshots;
+    std::vector<tlvdemux::MhAitSnapshot> mh_ait_snapshots;
+    std::vector<tlvdemux::ServiceStateReset> service_resets;
     std::vector<tlvdemux::DataTransmissionTable> data_transmission_tables;
     std::vector<tlvdemux::Error> errors;
     void onService(const tlvdemux::ServiceInfo& value) override { services.push_back(value); }
     void onTrack(const tlvdemux::TrackInfo& value) override { tracks.push_back(value); }
+    void onTrackRemoved(const tlvdemux::TrackInfo& value) override {
+        removed_tracks.push_back(value);
+    }
     void onAccessUnit(tlvdemux::AccessUnit&& value) override {
         access_units.push_back(std::move(value));
     }
     void onApplicationService(const tlvdemux::ApplicationServiceInfo& value) override {
         application_services.push_back(value);
     }
+    void onApplicationServiceRemoved(
+        const tlvdemux::ApplicationServiceInfo& value) override {
+        removed_application_services.push_back(value);
+    }
     void onLayoutConfiguration(const tlvdemux::LayoutConfiguration& value) override {
         layouts.push_back(value);
     }
     void onDataAsset(const tlvdemux::DataAssetInfo& value) override {
         data_assets.push_back(value);
+    }
+    void onDataAssetRemoved(const tlvdemux::DataAssetInfo& value) override {
+        removed_data_assets.push_back(value);
     }
     void onSignallingMessage(tlvdemux::SignallingMessage&& value) override {
         signalling_messages.push_back(std::move(value));
@@ -52,6 +69,18 @@ struct TestSink final : tlvdemux::Sink {
     }
     void onApplication(const tlvdemux::ApplicationInfo& value) override {
         applications.push_back(value);
+    }
+    void onApplicationRemoved(const tlvdemux::ApplicationInfo& value) override {
+        removed_applications.push_back(value);
+    }
+    void onMptSnapshot(const tlvdemux::MptSnapshot& value) override {
+        mpt_snapshots.push_back(value);
+    }
+    void onMhAitSnapshot(const tlvdemux::MhAitSnapshot& value) override {
+        mh_ait_snapshots.push_back(value);
+    }
+    void onServiceStateReset(const tlvdemux::ServiceStateReset& value) override {
+        service_resets.push_back(value);
     }
     void onDataTransmissionTable(tlvdemux::DataTransmissionTable&& value) override {
         data_transmission_tables.push_back(std::move(value));
@@ -410,7 +439,13 @@ std::vector<std::uint8_t> audio_discovery_message() {
     return pa;
 }
 
-std::vector<std::uint8_t> application_control_message() {
+std::vector<std::uint8_t> application_control_message(
+    const std::uint8_t section_number = 0,
+    const std::uint8_t last_section_number = 0,
+    const std::uint8_t version = 3,
+    const bool include_application = true,
+    const std::uint16_t application_type = 0x0011,
+    const std::uint8_t control_code = 0x01) {
     std::vector<std::uint8_t> descriptors;
     descriptor(descriptors, 0x8029,
                {0x05, 0x00, 0x01, 0x01, 0x02, 0x03,
@@ -432,15 +467,16 @@ std::vector<std::uint8_t> application_control_message() {
     std::vector<std::uint8_t> applications;
     append_u16(applications, 0x1234);
     append_u32(applications, 0x01020304);
-    applications.push_back(0x01);
+    applications.push_back(control_code);
     append_u16(applications, 0xf000U | descriptors.size());
     applications.insert(applications.end(), descriptors.begin(), descriptors.end());
 
+    if (!include_application) applications.clear();
     std::vector<std::uint8_t> section{0x9c, 0x00, 0x00};
-    append_u16(section, 0x0011);
-    section.push_back(0xc7);
-    section.push_back(0);
-    section.push_back(0);
+    append_u16(section, application_type);
+    section.push_back(static_cast<std::uint8_t>(0xc1U | ((version & 0x1fU) << 1U)));
+    section.push_back(section_number);
+    section.push_back(last_section_number);
     append_u16(section, 0xf000U | common_descriptors.size());
     section.insert(section.end(), common_descriptors.begin(), common_descriptors.end());
     append_u16(section, 0xf000U | applications.size());

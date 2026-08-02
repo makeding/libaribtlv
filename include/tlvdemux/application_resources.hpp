@@ -100,6 +100,11 @@ public:
     void onDataDirectoryTable(const DataDirectoryTable&);
     void onDataAssetManagementTable(const DataAssetManagementTable&);
     void onDataUnit(const DataUnit&);
+    // Discard section/data-unit acquisition that cannot safely cross an input
+    // discontinuity while retaining the last complete catalogue and all files
+    // already published from it. This is the application-resource counterpart
+    // of an in-source reposition/seek.
+    void dropTransientKeepActive();
     void reset();
 
 private:
