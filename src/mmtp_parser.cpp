@@ -145,6 +145,7 @@ void MmtpParser::flush() {
         track.subtitle = {};
         track.current_mpu_sequence.reset();
         track.au_index = 0;
+        track.last_emitted_dts.reset();
         track.skipping_hevc_picture = false;
         track.discontinuity = true;
         if (track.info.kind == TrackKind::Video) track.wait_for_rap = true;

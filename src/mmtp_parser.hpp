@@ -160,6 +160,7 @@ private:
         std::uint64_t restart_offset = 0;
         std::optional<std::uint32_t> current_mpu_sequence;
         std::size_t au_index = 0;
+        std::optional<std::int64_t> last_emitted_dts;
         bool wait_for_rap = false;
         bool skipping_hevc_picture = false;
         bool discontinuity = false;

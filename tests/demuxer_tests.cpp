@@ -2025,6 +2025,57 @@ void test_aac_extended_timestamp_indexed_by_sample_number() {
           "descriptor entry");
 }
 
+void test_out_of_order_sample_number_is_dropped() {
+    // dts_offset is au_index * pts_offsets[0] (see emit_access_unit()), which
+    // strictly increases with au_index; pts_offsets must stay uniform across
+    // the MPU or emit_access_unit() rejects the whole descriptor entry instead.
+    // Delivering sample_number 4 before 2 therefore produces a decreasing
+    // dts_offset that the guard must reject; sample_number 5 afterward proves
+    // the following access unit is still emitted, marked discontinuous.
+    const std::vector<std::uint16_t> dts_pts_offsets{0, 20, 30, 40, 50};
+    const std::vector<std::uint16_t> pts_offsets{111, 111, 111, 111, 111};
+    auto stream = signalling_tlv(
+        1, 0, video_discovery_message_with_offsets(1, dts_pts_offsets, pts_offsets));
+
+    std::uint32_t sequence = 1;
+    const auto add_mfu = [&](const std::uint32_t sample_number, const bool rap,
+                             const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf300, sequence++, 100U << 16U, rap,
+                           mpu_payload(1, mfu, sample_number)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_mfu(1, true, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(1, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    add_mfu(4, false, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(4, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    add_mfu(2, false, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(2, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    add_mfu(5, false, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(5, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+
+    std::vector<const tlvdemux::AccessUnit*> video;
+    for (const auto& unit : sink.access_units) {
+        if (unit.codec == tlvdemux::Codec::Hevc) video.push_back(&unit);
+    }
+    check(video.size() == 3, "out-of-order sample_number 2 access unit was emitted");
+    check(video[0]->dts.value == 0 && video[1]->dts.value == 333 && video[2]->dts.value == 444,
+          "surviving access units did not use their own sample_number offsets");
+    check(video[2]->discontinuity,
+          "access unit after the dropped decode timestamp was not marked discontinuous");
+    check(std::any_of(sink.errors.begin(), sink.errors.end(), [](const auto& error) {
+              return error.code == tlvdemux::ErrorCode::MalformedInput && error.recoverable &&
+                  error.message ==
+                      "dropped access unit with a decreasing decode timestamp inside an MPU";
+          }),
+          "out-of-order sample_number did not raise a recoverable decreasing-DTS error");
+}
+
 void test_sample_number_change_starts_a_new_access_unit() {
     // Neither AU carries an AUD (NAL 35) or a parameter-set/prefix-SEI NAL,
     // and the second AU's VCL NAL has first_slice_segment_in_pic_flag CLEAR
@@ -2102,6 +2153,7 @@ int main() {
     test_extended_timestamp_indexed_by_sample_number();
     test_non_timed_media_mfu_ignores_opaque_header_as_sample_number();
     test_aac_extended_timestamp_indexed_by_sample_number();
+    test_out_of_order_sample_number_is_dropped();
     test_sample_number_change_starts_a_new_access_unit();
     std::cout << "all tests passed\n";
     return 0;
