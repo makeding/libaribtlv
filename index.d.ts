@@ -156,6 +156,68 @@ declare namespace createTlvDemuxModule {
     subtitle?: SubtitleTrackInfo;
   }
 
+  interface ApplicationServiceInfo {
+    contextId: number;
+    applicationFormat: number;
+    documentResolution: number;
+    defaultAit: boolean;
+    hasDataTransmissionMessages: boolean;
+    aitPacketId: number | null;
+    dataTransmissionPacketId: number | null;
+  }
+
+  interface DataAssetInfo {
+    contextId: number;
+    packetId: number;
+    assetType: string;
+    componentTag: number;
+    presentationRegions: MpuPresentationRegion[];
+  }
+
+  interface ApplicationInfo {
+    contextId: number;
+    sourcePacketId: number;
+    applicationType: number;
+    organizationId: number;
+    applicationId: number;
+    controlCode: number;
+    version: number;
+    currentNext: boolean;
+    sectionNumber: number;
+    lastSectionNumber: number;
+    presentApplicationPriority: boolean;
+    applicationPriority: number;
+    entryPath: string;
+    inputOffset: bigint;
+  }
+
+  interface MptSnapshot {
+    contextId: number;
+    sourcePacketId: number;
+    packageId: Uint8Array;
+    version: number;
+    mode: number;
+    inputOffset: bigint;
+    tracks: TrackInfo[];
+    applicationServices: ApplicationServiceInfo[];
+    dataAssets: DataAssetInfo[];
+  }
+
+  interface MhAitSnapshot {
+    contextId: number;
+    sourcePacketId: number;
+    applicationType: number;
+    version: number;
+    currentNext: boolean;
+    inputOffset: bigint;
+    applications: ApplicationInfo[];
+  }
+
+  interface ServiceStateReset {
+    contextId: number | null;
+    reason: "full-reset" | "service-selection";
+  }
+
   interface SubtitleResource {
     subsampleNumber: number;
     dataType: number;
@@ -209,6 +271,47 @@ declare namespace createTlvDemuxModule {
     language: string;
     title: string;
     description: string;
+    inputOffset: bigint;
+  }
+
+  interface ServiceDescriptionInfo {
+    serviceId: number;
+    eitUserDefinedFlags: number;
+    eitSchedule: boolean;
+    eitPresentFollowing: boolean;
+    runningStatus: number;
+    freeCaMode: boolean;
+    serviceType: number;
+    providerName: string;
+    serviceName: string;
+  }
+
+  interface MhSdtSnapshot {
+    contextId: number;
+    sourcePacketId: number;
+    tableId: number;
+    tlvStreamId: number;
+    originalNetworkId: number;
+    version: number;
+    currentNext: boolean;
+    services: ServiceDescriptionInfo[];
+    inputOffset: bigint;
+  }
+
+  interface LocalTimeOffsetInfo {
+    countryCode: string;
+    countryRegionId: number;
+    polarity: boolean;
+    offsetMinutes: number;
+    changeTimeUnixMilliseconds: number | null;
+    nextOffsetMinutes: number;
+  }
+
+  interface MhTotInfo {
+    contextId: number;
+    sourcePacketId: number;
+    timeUnixMilliseconds: number;
+    localTimeOffsets: LocalTimeOffsetInfo[];
     inputOffset: bigint;
   }
 
@@ -341,6 +444,13 @@ declare namespace createTlvDemuxModule {
   interface TlvDemuxCallbacks {
     onService?: (service: ServiceInfo) => void;
     onTrack?: (track: TrackInfo) => void;
+    onTrackRemoved?: (track: TrackInfo) => void;
+    onApplicationServiceRemoved?: (service: ApplicationServiceInfo) => void;
+    onDataAssetRemoved?: (asset: DataAssetInfo) => void;
+    onApplicationRemoved?: (application: ApplicationInfo) => void;
+    onMptSnapshot?: (snapshot: MptSnapshot) => void;
+    onMhAitSnapshot?: (snapshot: MhAitSnapshot) => void;
+    onServiceStateReset?: (reset: ServiceStateReset) => void;
     onLayoutConfiguration?: (layout: LayoutConfiguration) => void;
     onAccessUnit?: (unit: AccessUnit) => void;
     onAccessUnitView?: (unit: AccessUnit) => void;
@@ -352,6 +462,8 @@ declare namespace createTlvDemuxModule {
     onError?: (error: DemuxError) => void;
     onBroadcastClock?: (clock: BroadcastClock) => void;
     onEventInfo?: (event: EventInfo) => void;
+    onMhSdtSnapshot?: (snapshot: MhSdtSnapshot) => void;
+    onMhTot?: (info: MhTotInfo) => void;
     onStreamEvent?: (event: StreamEvent) => void;
     onViewerParticipationNotification?: (
       notification: ViewerParticipationNotification,

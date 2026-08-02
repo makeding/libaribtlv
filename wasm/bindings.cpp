@@ -283,6 +283,60 @@ val event_info_value(const tlvdemux::EventInfo& info) {
     return result;
 }
 
+val mh_sdt_value(const tlvdemux::MhSdtSnapshot& snapshot) {
+    auto result = val::object();
+    result.set("contextId", snapshot.context_id);
+    result.set("sourcePacketId", snapshot.source_packet_id);
+    result.set("tableId", snapshot.table_id);
+    result.set("tlvStreamId", snapshot.tlv_stream_id);
+    result.set("originalNetworkId", snapshot.original_network_id);
+    result.set("version", snapshot.version);
+    result.set("currentNext", snapshot.current_next);
+    result.set("inputOffset", snapshot.input_offset);
+    auto services = val::array();
+    for (std::size_t index = 0; index < snapshot.services.size(); ++index) {
+        const auto& info = snapshot.services[index];
+        auto service = val::object();
+        service.set("serviceId", info.service_id);
+        service.set("eitUserDefinedFlags", info.eit_user_defined_flags);
+        service.set("eitSchedule", info.eit_schedule);
+        service.set("eitPresentFollowing", info.eit_present_following);
+        service.set("runningStatus", info.running_status);
+        service.set("freeCaMode", info.free_ca_mode);
+        service.set("serviceType", info.service_type);
+        service.set("providerName", info.provider_name);
+        service.set("serviceName", info.service_name);
+        services.set(index, service);
+    }
+    result.set("services", services);
+    return result;
+}
+
+val mh_tot_value(const tlvdemux::MhTotInfo& info) {
+    auto result = val::object();
+    result.set("contextId", info.context_id);
+    result.set("sourcePacketId", info.source_packet_id);
+    result.set("timeUnixMilliseconds", static_cast<double>(info.time_unix_milliseconds));
+    result.set("inputOffset", info.input_offset);
+    auto offsets = val::array();
+    for (std::size_t index = 0; index < info.local_time_offsets.size(); ++index) {
+        const auto& source = info.local_time_offsets[index];
+        auto offset = val::object();
+        offset.set("countryCode", source.country_code);
+        offset.set("countryRegionId", source.country_region_id);
+        offset.set("polarity", source.polarity);
+        offset.set("offsetMinutes", source.offset_minutes);
+        offset.set("changeTimeUnixMilliseconds",
+                   source.change_time_unix_milliseconds.has_value()
+                       ? val(static_cast<double>(*source.change_time_unix_milliseconds))
+                       : val::null());
+        offset.set("nextOffsetMinutes", source.next_offset_minutes);
+        offsets.set(index, offset);
+    }
+    result.set("localTimeOffsets", offsets);
+    return result;
+}
+
 val stream_event_value(const tlvdemux::StreamEvent& event) {
     auto result = val::object();
     result.set("contextId", event.context_id);
@@ -622,6 +676,11 @@ public:
         const tlvdemux::ApplicationServiceInfo& info) override {
         auto event = val::object();
         event.set("contextId", info.context_id);
+        event.set("applicationFormat", info.application_format);
+        event.set("documentResolution", info.document_resolution);
+        event.set("defaultAit", info.default_ait);
+        event.set("hasDataTransmissionMessages",
+                  info.has_data_transmission_messages);
         event.set("aitPacketId", info.ait_packet_id.has_value()
             ? val(*info.ait_packet_id) : val::null());
         event.set("dataTransmissionPacketId", info.data_transmission_packet_id.has_value()
@@ -635,6 +694,8 @@ public:
         event.set("packetId", info.packet_id);
         event.set("componentTag", info.component_tag);
         event.set("assetType", info.asset_type);
+        event.set("presentationRegions",
+                  presentation_regions_value(info.presentation_regions));
         emit("onDataAssetRemoved", event);
     }
 
@@ -663,6 +724,8 @@ public:
             service.set("applicationFormat", info.application_format);
             service.set("documentResolution", info.document_resolution);
             service.set("defaultAit", info.default_ait);
+            service.set("hasDataTransmissionMessages",
+                        info.has_data_transmission_messages);
             service.set("aitPacketId", info.ait_packet_id.has_value()
                 ? val(*info.ait_packet_id) : val::null());
             service.set("dataTransmissionPacketId", info.data_transmission_packet_id.has_value()
@@ -772,6 +835,14 @@ public:
         emit("onEventInfo", event_info_value(info));
     }
 
+    void onMhSdtSnapshot(const tlvdemux::MhSdtSnapshot& snapshot) override {
+        emit("onMhSdtSnapshot", mh_sdt_value(snapshot));
+    }
+
+    void onMhTot(const tlvdemux::MhTotInfo& info) override {
+        emit("onMhTot", mh_tot_value(info));
+    }
+
     void onStreamEvent(const tlvdemux::StreamEvent& event) override {
         emit("onStreamEvent", stream_event_value(event));
     }
@@ -845,9 +916,7 @@ private:
 
     void restart_application_assembly() {
         application_events_.clear();
-        // Replacing the assembler clears partial tables/units without sending
-        // onApplicationResourcesReset(), which would erase the completed VFS.
-        application_assembler_ = tlvdemux::ApplicationResourceAssembler(*this);
+        application_assembler_.dropTransientKeepActive();
     }
 
     void consume_application_event(tlvdemux::ApplicationInfo info) {

@@ -54,6 +54,8 @@ public:
     using DataUnitCallback = std::function<void(DataUnit)>;
     using SignallingCallback = std::function<void(SignallingMessage)>;
     using EventCallback = std::function<void(EventInfo)>;
+    using MhSdtCallback = std::function<void(MhSdtSnapshot)>;
+    using MhTotCallback = std::function<void(MhTotInfo)>;
     using StreamEventCallback = std::function<void(StreamEvent)>;
     using ViewerParticipationCallback =
         std::function<void(ViewerParticipationNotification)>;
@@ -69,6 +71,7 @@ public:
     MmtpParser(std::uint32_t context_id, const Limits&, PackageCallback,
                TrackCallback, AccessUnitCallback, ApplicationServiceCallback,
                LayoutCallback, DataAssetCallback, DataUnitCallback, SignallingCallback, EventCallback,
+               MhSdtCallback, MhTotCallback,
                StreamEventCallback, ViewerParticipationCallback,
                ApplicationCallback, MptSnapshotCallback, MhAitSnapshotCallback,
                DataTransmissionCallback, DataDirectoryCallback,
@@ -171,8 +174,22 @@ private:
     };
 
     struct MhAitAssembly {
+        std::uint8_t version = 0;
         std::uint8_t last_section_number = 0;
         std::map<std::uint8_t, MhAitSection> sections;
+    };
+
+    struct MhSdtSection {
+        std::uint64_t input_offset = 0;
+        std::vector<ServiceDescriptionInfo> services;
+    };
+
+    struct MhSdtAssembly {
+        std::uint8_t version = 0;
+        std::uint8_t last_section_number = 0;
+        std::uint16_t tlv_stream_id = 0;
+        std::uint16_t original_network_id = 0;
+        std::map<std::uint8_t, MhSdtSection> sections;
     };
 
     void parse_signalling(std::uint16_t packet_id, std::uint32_t sequence,
@@ -218,6 +235,9 @@ private:
     bool parse_m2_message(std::uint16_t packet_id,
                           const std::uint8_t* data, std::size_t size,
                           std::uint64_t input_offset);
+    bool parse_m2_short_message(std::uint16_t packet_id,
+                                const std::uint8_t* data, std::size_t size,
+                                std::uint64_t input_offset);
     bool parse_data_transmission_message(std::uint16_t packet_id,
                                          const std::uint8_t* data, std::size_t size,
                                          std::uint64_t input_offset);
@@ -233,6 +253,10 @@ private:
     bool parse_mh_ait(const std::uint8_t* data, std::size_t size,
                       std::uint16_t packet_id, std::uint64_t input_offset);
     bool parse_mh_eit(const std::uint8_t* data, std::size_t size,
+                      std::uint16_t packet_id, std::uint64_t input_offset);
+    bool parse_mh_sdt(const std::uint8_t* data, std::size_t size,
+                      std::uint16_t packet_id, std::uint64_t input_offset);
+    bool parse_mh_tot(const std::uint8_t* data, std::size_t size,
                       std::uint16_t packet_id, std::uint64_t input_offset);
     bool parse_emt(const std::uint8_t* data, std::size_t size,
                    std::uint16_t packet_id, std::uint64_t input_offset);
@@ -252,6 +276,8 @@ private:
     DataUnitCallback on_data_unit_;
     SignallingCallback on_signalling_;
     EventCallback on_event_;
+    MhSdtCallback on_mh_sdt_;
+    MhTotCallback on_mh_tot_;
     StreamEventCallback on_stream_event_;
     ViewerParticipationCallback on_viewer_participation_;
     ApplicationCallback on_application_;
@@ -271,6 +297,7 @@ private:
     std::vector<std::uint16_t> data_transmission_packet_ids_;
     std::vector<std::uint8_t> committed_mpt_raw_;
     std::unordered_map<std::string, MhAitAssembly> mh_ait_staging_;
+    std::unordered_map<std::string, MhSdtAssembly> mh_sdt_staging_;
     std::unordered_map<std::string, std::vector<std::uint8_t>> committed_mh_ait_raw_;
     std::optional<std::uint64_t> latest_full_ntp_;
 };

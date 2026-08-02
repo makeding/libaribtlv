@@ -22,6 +22,8 @@ struct TestSink final : tlvdemux::Sink {
     std::vector<tlvdemux::DataAssetInfo> removed_data_assets;
     std::vector<tlvdemux::SignallingMessage> signalling_messages;
     std::vector<tlvdemux::EventInfo> events;
+    std::vector<tlvdemux::MhSdtSnapshot> mh_sdt_snapshots;
+    std::vector<tlvdemux::MhTotInfo> mh_tot;
     std::vector<tlvdemux::StreamEvent> stream_events;
     std::vector<tlvdemux::ViewerParticipationNotification>
         viewer_participation_notifications;
@@ -60,6 +62,10 @@ struct TestSink final : tlvdemux::Sink {
         signalling_messages.push_back(std::move(value));
     }
     void onEventInfo(const tlvdemux::EventInfo& value) override { events.push_back(value); }
+    void onMhSdtSnapshot(const tlvdemux::MhSdtSnapshot& value) override {
+        mh_sdt_snapshots.push_back(value);
+    }
+    void onMhTot(const tlvdemux::MhTotInfo& value) override { mh_tot.push_back(value); }
     void onStreamEvent(const tlvdemux::StreamEvent& value) override {
         stream_events.push_back(value);
     }
@@ -582,6 +588,83 @@ std::vector<std::uint8_t> mh_eit_message() {
     return message;
 }
 
+std::vector<std::uint8_t> mh_sdt_message() {
+    std::vector<std::uint8_t> service_descriptor{0x01, 0x03, 'N', 'H', 'K',
+                                                  0x03, 'B', 'S', '4'};
+    std::vector<std::uint8_t> descriptors;
+    descriptor(descriptors, 0x8019, service_descriptor);
+    std::vector<std::uint8_t> section{0x9f, 0x00, 0x00};
+    append_u16(section, 11);
+    section.push_back(0xc7);
+    section.push_back(0);
+    section.push_back(0);
+    append_u16(section, 4);
+    section.push_back(0xff);
+    append_u16(section, 101);
+    section.push_back(0xff);
+    append_u16(section, 0x8000U | descriptors.size());
+    section.insert(section.end(), descriptors.begin(), descriptors.end());
+    append_u32(section, 0);
+    const auto section_length = section.size() - 3;
+    section[1] = static_cast<std::uint8_t>(0xf0U | (section_length >> 8U));
+    section[2] = static_cast<std::uint8_t>(section_length);
+    std::vector<std::uint8_t> message{0x80, 0x00, 0x00};
+    append_u16(message, section.size());
+    message.insert(message.end(), section.begin(), section.end());
+    return message;
+}
+
+std::vector<std::uint8_t> mh_tot_message() {
+    std::vector<std::uint8_t> local_offset{
+        'J', 'P', 'N', 0x05, 0x01, 0x00,
+        0x9e, 0x8c, 0x13, 0x00, 0x00, 0x02, 0x00,
+    };
+    std::vector<std::uint8_t> descriptors;
+    descriptor(descriptors, 0x8023, local_offset);
+    std::vector<std::uint8_t> section{0xa1, 0x00, 0x00,
+                                      0x9e, 0x8c, 0x12, 0x34, 0x56};
+    append_u16(section, 0xf000U | descriptors.size());
+    section.insert(section.end(), descriptors.begin(), descriptors.end());
+    append_u32(section, 0);
+    const auto section_length = section.size() - 3;
+    section[1] = static_cast<std::uint8_t>(0x70U | (section_length >> 8U));
+    section[2] = static_cast<std::uint8_t>(section_length);
+    std::vector<std::uint8_t> message{0x80, 0x02, 0x00};
+    append_u16(message, section.size());
+    message.insert(message.end(), section.begin(), section.end());
+    return message;
+}
+
+void test_independent_m2_sdt_and_tot() {
+    auto stream = signalling_tlv(1, 0, mh_sdt_message(), 0x8004);
+    const auto tot = signalling_tlv(1, 0, mh_tot_message(), 0x8005);
+    stream.insert(stream.end(), tot.begin(), tot.end());
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+    check(sink.mh_sdt_snapshots.size() == 1 &&
+              sink.mh_sdt_snapshots[0].tlv_stream_id == 11 &&
+              sink.mh_sdt_snapshots[0].original_network_id == 4 &&
+              sink.mh_sdt_snapshots[0].services.size() == 1 &&
+              sink.mh_sdt_snapshots[0].services[0].service_id == 101 &&
+              sink.mh_sdt_snapshots[0].services[0].provider_name == "NHK" &&
+              sink.mh_sdt_snapshots[0].services[0].service_name == "BS4",
+          "independent M2 MH-SDT did not produce a complete service snapshot");
+    const auto expected_time =
+        static_cast<std::int64_t>(86400 + 12 * 3600 + 34 * 60 + 56 - 9 * 3600) * 1000;
+    check(sink.mh_tot.size() == 1 &&
+              sink.mh_tot[0].time_unix_milliseconds == expected_time &&
+              sink.mh_tot[0].local_time_offsets.size() == 1 &&
+              sink.mh_tot[0].local_time_offsets[0].offset_minutes == 60 &&
+              sink.mh_tot[0].local_time_offsets[0].next_offset_minutes == 120,
+          "independent M2-short MH-TOT did not expose JST/local-offset state");
+    check(sink.signalling_messages.size() == 2 &&
+              sink.signalling_messages[0].message_id == 0x8000 &&
+              sink.signalling_messages[1].message_id == 0x8002,
+          "independent M2/M2-short messages were not exposed");
+}
+
 void test_mh_eit_program_events() {
     const auto message = mh_eit_message();
     auto stream = signalling_tlv(1, 0, message);
@@ -964,6 +1047,95 @@ void test_application_and_data_transmission_signalling() {
               sink.signalling_messages[0].message_id == 0x8000 &&
               sink.signalling_messages[1].message_id == 0x8003,
           "application signalling messages were not exposed after typed parsing");
+}
+
+void test_mpt_snapshot_removes_missing_service_state() {
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    const auto initial = discovery_stream();
+    demuxer.push(initial.data(), initial.size());
+    const auto ait = signalling_tlv(2, 0, application_control_message());
+    demuxer.push(ait.data(), ait.size());
+    check(sink.mpt_snapshots.size() == 1 && sink.applications.size() == 1,
+          "initial MPT/MH-AIT snapshots were not committed once");
+
+    const auto replacement = signalling_tlv(3, 0, video_discovery_message(1));
+    demuxer.push(replacement.data(), replacement.size());
+    check(sink.mpt_snapshots.size() == 2 && sink.removed_tracks.size() == 2 &&
+              sink.removed_data_assets.size() == 1 &&
+              sink.removed_application_services.size() == 1 &&
+              sink.removed_applications.size() == 1,
+          "complete MPT replacement did not retire every missing item atomically");
+
+    const auto stale_ait = signalling_tlv(
+        4, 0, application_control_message(0, 0, 4, true, 0x0011, 0x02));
+    demuxer.push(stale_ait.data(), stale_ait.size());
+    check(sink.mh_ait_snapshots.size() == 1 && sink.applications.size() == 1,
+          "MPT descriptor removal did not stop the old MH-AIT route");
+}
+
+void test_mh_ait_snapshot_completion_empty_and_reposition() {
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+
+    auto arib_single = signalling_tlv(
+        1, 0, application_control_message(1, 1, 10));
+    const auto arib_repeat = signalling_tlv(
+        2, 0, application_control_message(1, 1, 10));
+    arib_single.insert(arib_single.end(), arib_repeat.begin(), arib_repeat.end());
+    demuxer.push(arib_single.data(), arib_single.size());
+    check(sink.mh_ait_snapshots.size() == 1 && sink.applications.size() == 1 &&
+              sink.mh_ait_snapshots.back().applications.size() == 1,
+          "ARIB-HTML5 section 1/1 was incorrectly left waiting for section 0 (snapshots=" +
+              std::to_string(sink.mh_ait_snapshots.size()) + ", applications=" +
+              std::to_string(sink.applications.size()) + ", errors=" +
+              std::to_string(sink.errors.size()) + ", signalling=" +
+              std::to_string(sink.signalling_messages.size()) + ")");
+
+    const auto empty = signalling_tlv(
+        3, 0, application_control_message(1, 1, 11, false));
+    demuxer.push(empty.data(), empty.size());
+    check(sink.mh_ait_snapshots.size() == 2 &&
+              sink.mh_ait_snapshots.back().applications.empty() &&
+              sink.removed_applications.size() == 1,
+          "empty MH-AIT snapshot did not retire the preceding application");
+
+    const auto generic_last = signalling_tlv(
+        4, 0, application_control_message(1, 1, 12, true, 0x0010));
+    demuxer.push(generic_last.data(), generic_last.size());
+    check(sink.mh_ait_snapshots.size() == 2,
+          "generic multi-section MH-AIT committed without section 0");
+    const auto generic_first = signalling_tlv(
+        5, 0, application_control_message(0, 1, 12, false, 0x0010));
+    demuxer.push(generic_first.data(), generic_first.size());
+    check(sink.mh_ait_snapshots.size() == 3 &&
+              sink.mh_ait_snapshots.back().applications.size() == 1,
+          "out-of-order complete MH-AIT sub-table was not committed atomically");
+
+    demuxer.reposition(tlvdemux::RepositionOptions{0, true});
+    auto historical = signalling_tlv(
+        1, 0, application_control_message(1, 1, 2, true, 0x0011, 0x02));
+    const auto historical_repeat = signalling_tlv(
+        2, 0, application_control_message(1, 1, 2, true, 0x0011, 0x02));
+    historical.insert(historical.end(), historical_repeat.begin(), historical_repeat.end());
+    demuxer.push(historical.data(), historical.size());
+    check(sink.mh_ait_snapshots.size() == 4 &&
+              sink.mh_ait_snapshots.back().version == 2 &&
+              sink.applications.back().control_code == 0x02,
+          "first complete snapshot after reposition rejected a historical version rollback");
+}
+
+void test_service_state_reset_notifications() {
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.selectService(1);
+    demuxer.reset();
+    check(sink.service_resets.size() == 2 &&
+              sink.service_resets[0].reason ==
+                  tlvdemux::ServiceStateResetReason::ServiceSelection &&
+              sink.service_resets[1].reason ==
+                  tlvdemux::ServiceStateResetReason::FullReset,
+          "service selection/full reset did not expose explicit reset ownership");
 }
 
 void test_dynamic_audio_layout_metadata() {
@@ -1623,6 +1795,10 @@ int main() {
     test_track_discovery_and_deduplication();
     test_service_selection_clears_layout_state();
     test_application_and_data_transmission_signalling();
+    test_mpt_snapshot_removes_missing_service_state();
+    test_mh_ait_snapshot_completion_empty_and_reposition();
+    test_service_state_reset_notifications();
+    test_independent_m2_sdt_and_tot();
     test_mh_eit_program_events();
     test_emt_stream_events();
     test_viewer_participation_notifications();

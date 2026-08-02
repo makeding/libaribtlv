@@ -65,6 +65,8 @@ MmtpParser::MmtpParser(const std::uint32_t context_id, const Limits& limits,
                        DataUnitCallback on_data_unit,
                        SignallingCallback on_signalling,
                        EventCallback on_event,
+                       MhSdtCallback on_mh_sdt,
+                       MhTotCallback on_mh_tot,
                        StreamEventCallback on_stream_event,
                        ViewerParticipationCallback on_viewer_participation,
                        ApplicationCallback on_application,
@@ -82,6 +84,8 @@ MmtpParser::MmtpParser(const std::uint32_t context_id, const Limits& limits,
       on_data_asset_(std::move(on_data_asset)), on_data_unit_(std::move(on_data_unit)),
       on_signalling_(std::move(on_signalling)),
       on_event_(std::move(on_event)),
+      on_mh_sdt_(std::move(on_mh_sdt)),
+      on_mh_tot_(std::move(on_mh_tot)),
       on_stream_event_(std::move(on_stream_event)),
       on_viewer_participation_(std::move(on_viewer_participation)),
       on_application_(std::move(on_application)),
@@ -112,6 +116,7 @@ void MmtpParser::reset() {
     data_transmission_packet_ids_.clear();
     committed_mpt_raw_.clear();
     mh_ait_staging_.clear();
+    mh_sdt_staging_.clear();
     committed_mh_ait_raw_.clear();
     latest_full_ntp_.reset();
 }

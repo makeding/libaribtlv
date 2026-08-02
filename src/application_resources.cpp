@@ -153,6 +153,7 @@ struct SectionSet {
 };
 
 struct ActiveCatalogue {
+    std::uint16_t source_packet_id = 0;
     std::uint8_t session_id = 0;
     std::uint8_t directory_version = 0;
     std::uint8_t management_version = 0;
@@ -161,6 +162,7 @@ struct ActiveCatalogue {
 };
 
 struct CandidateCatalogue {
+    std::uint16_t source_packet_id = 0;
     std::uint8_t session_id = 0;
     SectionSet<DataDirectoryTable> directories;
     SectionSet<DataAssetManagementTable> management;
@@ -168,7 +170,7 @@ struct CandidateCatalogue {
 
 struct ContextCatalogueState {
     std::optional<ActiveCatalogue> active;
-    std::map<std::uint8_t, CandidateCatalogue> candidates;
+    std::map<std::pair<std::uint16_t, std::uint8_t>, CandidateCatalogue> candidates;
 };
 
 std::optional<std::string> safe_path(const std::string& value) {
@@ -276,28 +278,38 @@ public:
 
     void directory(const DataDirectoryTable& table) {
         if (!limits_.collect_application_resources) return;
+        if (!table.current_next) return;
         auto& state = catalogues_[table.context_id];
-        if (state.active.has_value() && state.active->session_id == table.session_id &&
+        if (state.active.has_value() &&
+            state.active->source_packet_id == table.source_packet_id &&
+            state.active->session_id == table.session_id &&
             state.active->directory_version == table.version) {
             return;
         }
-        auto& candidate = state.candidates[table.session_id];
+        auto& candidate = state.candidates[{table.source_packet_id, table.session_id}];
+        candidate.source_packet_id = table.source_packet_id;
         candidate.session_id = table.session_id;
         candidate.directories.add(table);
-        try_commit_catalogue(table.context_id, table.session_id);
+        try_commit_catalogue(table.context_id, table.source_packet_id,
+                             table.session_id);
     }
 
     void management(const DataAssetManagementTable& table) {
         if (!limits_.collect_application_resources) return;
+        if (!table.current_next) return;
         auto& state = catalogues_[table.context_id];
-        if (state.active.has_value() && state.active->session_id == table.session_id &&
+        if (state.active.has_value() &&
+            state.active->source_packet_id == table.source_packet_id &&
+            state.active->session_id == table.session_id &&
             state.active->management_version == table.version) {
             return;
         }
-        auto& candidate = state.candidates[table.session_id];
+        auto& candidate = state.candidates[{table.source_packet_id, table.session_id}];
+        candidate.source_packet_id = table.source_packet_id;
         candidate.session_id = table.session_id;
         candidate.management.add(table);
-        try_commit_catalogue(table.context_id, table.session_id);
+        try_commit_catalogue(table.context_id, table.source_packet_id,
+                             table.session_id);
     }
 
     void unit(const DataUnit& value) {
@@ -330,6 +342,8 @@ public:
         pending_.clear();
         published_.clear();
         published_paths_.clear();
+        superseded_mpus_.clear();
+        deferred_item_removals_.clear();
         applications_.clear();
         pending_bytes_ = 0;
         sink_.onApplicationResourcesReset();
@@ -416,14 +430,16 @@ private:
     }
 
     void try_commit_catalogue(const std::uint32_t context,
+                              const std::uint16_t source_packet_id,
                               const std::uint8_t session_id) {
         auto state_it = catalogues_.find(context);
         if (state_it == catalogues_.end()) return;
         auto& state = state_it->second;
-        auto candidate_it = state.candidates.find(session_id);
+        auto candidate_it = state.candidates.find({source_packet_id, session_id});
         if (candidate_it == state.candidates.end()) return;
         auto& candidate = candidate_it->second;
         const bool same_active_session = state.active.has_value() &&
+            state.active->source_packet_id == source_packet_id &&
             state.active->session_id == session_id;
         if (!candidate.directories.complete() && !same_active_session) return;
         if (!candidate.management.complete() && !same_active_session) return;
@@ -442,8 +458,8 @@ private:
         std::map<MpuKey, MpuMap> new_mpus;
         if (!build_catalogue(context, directories, management, new_nodes, new_mpus)) return;
         commit_catalogue(context, new_nodes, new_mpus);
-        state.active = ActiveCatalogue{session_id, directory_version, management_version,
-                                       directories, management};
+        state.active = ActiveCatalogue{source_packet_id, session_id, directory_version,
+                                       management_version, directories, management};
         state.candidates.clear();
         retry();
     }
@@ -475,7 +491,24 @@ private:
                 retired.push_back(existing.first);
             }
         }
-        for (const auto& key : retired) erase_mpu_targets(key, false);
+        for (const auto& key : retired) {
+            if (new_mpus.find(key) != new_mpus.end()) {
+                // Metadata for the same MPU key changed. Keep its last
+                // published bytes until the replacement index/items arrive.
+                continue;
+            }
+            const auto replacement = std::find_if(
+                new_mpus.begin(), new_mpus.end(), [&](const auto& item) {
+                    return item.first.context == key.context &&
+                        item.first.component == key.component &&
+                        (item.first.sequence >> 16U) == (key.sequence >> 16U);
+                });
+            if (replacement != new_mpus.end() && replacement->first != key) {
+                superseded_mpus_[replacement->first].push_back(key);
+            } else {
+                erase_mpu_targets(key, false);
+            }
+        }
 
         for (auto it = node_paths_.begin(); it != node_paths_.end();) {
             if (it->first.first == context) it = node_paths_.erase(it);
@@ -577,11 +610,14 @@ private:
         for (const auto& existing : item_paths_) {
             if (!(existing.first.mpu == key)) continue;
             const auto replacement = targets.find(existing.first.item);
-            if (replacement == targets.end() || replacement->second != existing.second) {
+            if (replacement == targets.end()) {
                 retired.push_back(existing.first);
             }
         }
-        for (const auto& item : retired) erase_item_target(item, false);
+        if (!retired.empty()) {
+            auto& deferred = deferred_item_removals_[key];
+            deferred.insert(deferred.end(), retired.begin(), retired.end());
+        }
         for (auto it = item_paths_.begin(); it != item_paths_.end();) {
             if (it->first.mpu == key) it = item_paths_.erase(it);
             else ++it;
@@ -589,6 +625,7 @@ private:
         for (const auto& target : targets) {
             item_paths_[{key, target.first}] = target.second;
         }
+        finish_mpu_update_if_ready(key);
         update_application_states(key.context);
         return true;
     }
@@ -641,6 +678,18 @@ private:
             }
         }
 
+        const auto previous = published_.find(key);
+        if (previous != published_.end() && previous->second.path != target.path) {
+            const auto old_path = previous->second.path;
+            const auto path_entry = published_paths_.find({key.mpu.context, old_path});
+            if (path_entry != published_paths_.end() && path_entry->second == key) {
+                published_paths_.erase(path_entry);
+                sink_.onApplicationResourceRemoved(ApplicationResourceRemoval{
+                    key.mpu.context, key.mpu.component,
+                    previous->second.transaction_id, previous->second.download_id,
+                    key.mpu.sequence, key.item, old_path});
+            }
+        }
         published_[key] = signature;
         published_paths_[{key.mpu.context, target.path}] = key;
         ApplicationResource resource;
@@ -655,8 +704,36 @@ private:
         resource.content_type = target.content_type;
         resource.data = std::move(bytes);
         sink_.onApplicationResource(std::move(resource));
+        finish_mpu_update_if_ready(key.mpu);
         update_application_states(key.mpu.context);
         return true;
+    }
+
+    void finish_mpu_update_if_ready(const MpuKey& key) {
+        const auto superseded = superseded_mpus_.find(key);
+        const auto deferred = deferred_item_removals_.find(key);
+        if (superseded == superseded_mpus_.end() &&
+            deferred == deferred_item_removals_.end()) return;
+        bool has_target = false;
+        for (const auto& item : item_paths_) {
+            if (!(item.first.mpu == key)) continue;
+            has_target = true;
+            const auto published = published_.find(item.first);
+            if (published == published_.end() ||
+                published->second.path != item.second.path ||
+                published->second.version != item.second.version) {
+                return;
+            }
+        }
+        (void)has_target;
+        if (superseded != superseded_mpus_.end()) {
+            for (const auto& old : superseded->second) erase_mpu_targets(old, false);
+            superseded_mpus_.erase(superseded);
+        }
+        if (deferred != deferred_item_removals_.end()) {
+            for (const auto& old : deferred->second) erase_item_target(old, false);
+            deferred_item_removals_.erase(deferred);
+        }
     }
 
     bool entry_ready(const ApplicationInfo& info) const {
@@ -771,6 +848,8 @@ private:
     std::map<ItemKey, DataUnit> pending_;
     std::map<ItemKey, PublishedItem> published_;
     std::map<std::pair<std::uint32_t, std::string>, ItemKey> published_paths_;
+    std::map<MpuKey, std::vector<MpuKey>> superseded_mpus_;
+    std::map<MpuKey, std::vector<ItemKey>> deferred_item_removals_;
     std::unordered_map<std::string, ApplicationState> applications_;
     std::size_t pending_bytes_ = 0;
 };

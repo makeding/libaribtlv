@@ -54,6 +54,8 @@ public:
               [this](DataUnit unit) { data_unit(std::move(unit)); },
               [this](SignallingMessage message) { signalling(std::move(message)); },
               [this](EventInfo info) { event_info(std::move(info)); },
+              [this](MhSdtSnapshot snapshot) { mh_sdt(std::move(snapshot)); },
+              [this](MhTotInfo info) { mh_tot(std::move(info)); },
               [this](StreamEvent event) { stream_event(std::move(event)); },
               [this](ViewerParticipationNotification notification) {
                   viewer_participation(std::move(notification));
@@ -112,6 +114,9 @@ public:
     void reposition(const RepositionOptions options) {
         tlv_.reset(options.input_offset);
         ip_.reset();
+        if (limits_.collect_application_resources) {
+            application_resources_.dropTransientKeepActive();
+        }
         if (!options.preserve_timeline) origin_.reset();
         if (!options.preserve_timeline) broadcast_clock_.reset();
         last_clock_mpu_sequence_.reset();
@@ -156,6 +161,8 @@ private:
         layouts_.clear();
         data_assets_.clear();
         events_.clear();
+        mh_sdt_snapshots_.clear();
+        mh_tot_.clear();
         stream_events_.clear();
         viewer_participation_notifications_.clear();
         applications_.clear();
@@ -584,6 +591,33 @@ private:
         sink_.onEventInfo(info);
     }
 
+    void mh_sdt(MhSdtSnapshot snapshot) {
+        if (selected_service_.has_value() && *selected_service_ != snapshot.context_id) return;
+        if (!snapshot.current_next) return;
+        const auto key = std::to_string(snapshot.context_id) + ':' +
+            std::to_string(snapshot.source_packet_id) + ':' +
+            std::to_string(snapshot.table_id) + ':' +
+            std::to_string(snapshot.tlv_stream_id) + ':' +
+            std::to_string(snapshot.original_network_id);
+        const auto found = mh_sdt_snapshots_.find(key);
+        if (found != mh_sdt_snapshots_.end() &&
+            found->second.version == snapshot.version &&
+            found->second.services == snapshot.services) return;
+        mh_sdt_snapshots_[key] = snapshot;
+        sink_.onMhSdtSnapshot(snapshot);
+    }
+
+    void mh_tot(MhTotInfo info) {
+        if (selected_service_.has_value() && *selected_service_ != info.context_id) return;
+        const auto key = std::to_string(info.context_id) + ':' +
+            std::to_string(info.source_packet_id);
+        const auto found = mh_tot_.find(key);
+        if (found != mh_tot_.end() &&
+            found->second.time_unix_milliseconds == info.time_unix_milliseconds) return;
+        mh_tot_[key] = info;
+        sink_.onMhTot(info);
+    }
+
     void stream_event(StreamEvent event) {
         if (selected_service_.has_value() && *selected_service_ != event.context_id) return;
         if (!accepts_emt(event.context_id, event.source_packet_id)) return;
@@ -865,6 +899,8 @@ private:
     std::unordered_map<std::string, LayoutConfiguration> layouts_;
     std::unordered_map<std::string, DataAssetInfo> data_assets_;
     std::unordered_map<std::string, EventInfo> events_;
+    std::unordered_map<std::string, MhSdtSnapshot> mh_sdt_snapshots_;
+    std::unordered_map<std::string, MhTotInfo> mh_tot_;
     std::unordered_map<std::string, StreamEvent> stream_events_;
     std::unordered_map<std::string, ViewerParticipationNotification>
         viewer_participation_notifications_;

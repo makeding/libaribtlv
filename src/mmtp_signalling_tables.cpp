@@ -59,6 +59,14 @@ bool MmtpParser::parse_tables(const std::uint8_t* data, const std::size_t size,
                 !parse_mh_ait(section, section_size, packet_id, input_offset)) {
                 return false;
             }
+            if ((table_id == 0x9f || table_id == 0xa0) &&
+                !parse_mh_sdt(section, section_size, packet_id, input_offset)) {
+                return false;
+            }
+            if (table_id == 0xa1 &&
+                !parse_mh_tot(section, section_size, packet_id, input_offset)) {
+                return false;
+            }
             if (table_id == 0xa6 &&
                 !parse_emt(section, section_size, packet_id, input_offset)) {
                 return false;

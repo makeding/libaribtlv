@@ -23,6 +23,8 @@ public:
     using DataUnitCallback = std::function<void(DataUnit)>;
     using SignallingCallback = std::function<void(SignallingMessage)>;
     using EventCallback = std::function<void(EventInfo)>;
+    using MhSdtCallback = std::function<void(MhSdtSnapshot)>;
+    using MhTotCallback = std::function<void(MhTotInfo)>;
     using StreamEventCallback = std::function<void(StreamEvent)>;
     using ViewerParticipationCallback =
         std::function<void(ViewerParticipationNotification)>;
@@ -36,6 +38,7 @@ public:
     CompressedIpParser(const Limits&, ServiceCallback, TrackCallback,
                        AccessUnitCallback, ApplicationServiceCallback,
                        LayoutCallback, DataAssetCallback, DataUnitCallback, SignallingCallback, EventCallback,
+                       MhSdtCallback, MhTotCallback,
                        StreamEventCallback, ViewerParticipationCallback,
                        ApplicationCallback, MptSnapshotCallback, MhAitSnapshotCallback,
                        DataTransmissionCallback, DataDirectoryCallback,
@@ -61,6 +64,8 @@ private:
     DataUnitCallback on_data_unit_;
     SignallingCallback on_signalling_;
     EventCallback on_event_;
+    MhSdtCallback on_mh_sdt_;
+    MhTotCallback on_mh_tot_;
     StreamEventCallback on_stream_event_;
     ViewerParticipationCallback on_viewer_participation_;
     ApplicationCallback on_application_;

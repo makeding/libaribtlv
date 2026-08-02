@@ -205,6 +205,48 @@ struct EventInfo {
     std::uint64_t input_offset = 0;
 };
 
+struct ServiceDescriptionInfo {
+    std::uint16_t service_id = 0;
+    std::uint8_t eit_user_defined_flags = 0;
+    bool eit_schedule = false;
+    bool eit_present_following = false;
+    std::uint8_t running_status = 0;
+    bool free_ca_mode = false;
+    std::uint8_t service_type = 0;
+    std::string provider_name;
+    std::string service_name;
+    bool operator==(const ServiceDescriptionInfo&) const = default;
+};
+
+struct MhSdtSnapshot {
+    std::uint32_t context_id = 0;
+    std::uint16_t source_packet_id = 0;
+    std::uint8_t table_id = 0;
+    std::uint16_t tlv_stream_id = 0;
+    std::uint16_t original_network_id = 0;
+    std::uint8_t version = 0;
+    bool current_next = false;
+    std::uint64_t input_offset = 0;
+    std::vector<ServiceDescriptionInfo> services;
+};
+
+struct LocalTimeOffsetInfo {
+    std::string country_code;
+    std::uint8_t country_region_id = 0;
+    bool polarity = false;
+    std::int32_t offset_minutes = 0;
+    std::optional<std::int64_t> change_time_unix_milliseconds;
+    std::int32_t next_offset_minutes = 0;
+};
+
+struct MhTotInfo {
+    std::uint32_t context_id = 0;
+    std::uint16_t source_packet_id = 0;
+    std::int64_t time_unix_milliseconds = 0;
+    std::vector<LocalTimeOffsetInfo> local_time_offsets;
+    std::uint64_t input_offset = 0;
+};
+
 // An ARIB STD-B60 general event message carried by an EMT (table_id 0xA6).
 // time_value is the descriptor's raw 64-bit NTP/NPT field.  For time_mode 0
 // it is reserved and must not be interpreted as an ignition time.
@@ -294,6 +336,7 @@ struct DataTransmissionTable {
     std::uint8_t table_id = 0;
     std::uint8_t session_id = 0;
     std::uint8_t version = 0;
+    bool current_next = true;
     std::uint8_t section_number = 0;
     std::uint8_t last_section_number = 0;
     std::vector<std::uint8_t> data;
@@ -314,12 +357,15 @@ struct DataDirectoryNode {
 
 struct DataDirectoryTable {
     std::uint32_t context_id = 0;
+    std::uint16_t source_packet_id = 0;
     std::uint8_t session_id = 0;
     std::uint8_t version = 0;
+    bool current_next = true;
     std::uint8_t section_number = 0;
     std::uint8_t last_section_number = 0;
     std::string base_path;
     std::vector<DataDirectoryNode> directories;
+    std::uint64_t input_offset = 0;
 };
 
 struct DataAssetItem {
@@ -343,8 +389,10 @@ struct DataAssetMpu {
 
 struct DataAssetManagementTable {
     std::uint32_t context_id = 0;
+    std::uint16_t source_packet_id = 0;
     std::uint8_t session_id = 0;
     std::uint8_t version = 0;
+    bool current_next = true;
     std::uint8_t section_number = 0;
     std::uint8_t last_section_number = 0;
     std::uint32_t transaction_id = 0;
@@ -352,6 +400,7 @@ struct DataAssetManagementTable {
     std::uint32_t download_id = 0;
     std::vector<DataAssetMpu> mpus;
     std::vector<std::uint8_t> component_info;
+    std::uint64_t input_offset = 0;
 };
 
 struct TrackInfo {

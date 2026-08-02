@@ -214,10 +214,8 @@ void test_out_of_order_collection_and_update() {
 
     const std::vector<std::uint8_t> second{'t', 'w', 'o'};
     assembler.onDataAssetManagementTable(management(1, 11, 21, 9, 0, 1));
-    check(sink.removals.size() == 1 &&
-              sink.removals[0].path == "sh4/60/001/top/source/index.html" &&
-              !sink.states.back().entry_ready && sink.states.back().resource_count == 0,
-          "resource replacement did not retire the old VFS path and readiness state");
+    check(sink.removals.empty() && sink.states.back().entry_ready,
+          "DAMT update removed the old readable resource before replacement bytes arrived");
     assembler.onDataUnit(unit(1, 99, index_item(5, second.size(), 2,
         "index.html", "text/html"), 9, 21));
     assembler.onDataUnit(unit(1, 5, second, 9, 21));
@@ -226,9 +224,13 @@ void test_out_of_order_collection_and_update() {
           "new application resource version was not published");
 
     assembler.onDataAssetManagementTable(management(1, 11, 21, 10, 0, 2));
-    check(sink.removals.size() == 2 &&
-              sink.removals.back().mpu_sequence_number == 9,
-          "new MPU version did not retire resources from the previous MPU version");
+    check(sink.removals.empty(),
+          "new MPU version retired the preceding bytes before its files were complete");
+    assembler.onDataUnit(unit(1, 99, index_item(5, second.size(), 3,
+        "index.html", "text/html"), 10, 21));
+    assembler.onDataUnit(unit(1, 5, second, 10, 21));
+    check(sink.resources.size() == 3 && sink.removals.empty(),
+          "complete replacement MPU did not atomically supersede the same VFS path");
 
     assembler.reset();
     check(sink.resets == 1, "reset was not propagated to the resource store");
@@ -327,8 +329,13 @@ void test_session_snapshot_and_reposition_lifecycle() {
     assembler.onDataDirectoryTable(directory(
         10, 2, 2, 0, 1, 7, "/next", "first"));
     assembler.onDataAssetManagementTable(management(10, 31, 31, 10, 2, 2));
+    check(sink.removals.empty(),
+          "complete new catalogue retired old resources before its MPU was ready");
+    assembler.onDataUnit(unit(10, 99, index_item(5, old_bytes.size(), 2,
+        "new.html", "text/html"), 10, 31));
+    assembler.onDataUnit(unit(10, 5, old_bytes, 10, 31));
     check(sink.removals.size() == 1 && sink.removals.back().path.ends_with("old.html"),
-          "complete same-session DDMT and DAMT pair did not retire old resources");
+          "ready replacement MPU did not retire the superseded path");
 }
 
 void test_same_session_single_table_update() {
@@ -344,8 +351,13 @@ void test_same_session_single_table_update() {
     check(sink.resources.size() == 1, "same-session fixture did not publish");
 
     assembler.onDataAssetManagementTable(management(11, 41, 41, 10, 4, 4));
+    check(sink.removals.empty(),
+          "same-session DAMT update did not retain the old MPU while collecting");
+    assembler.onDataUnit(unit(11, 99, index_item(5, bytes.size(), 2,
+        "next.html", "text/html"), 10, 41));
+    assembler.onDataUnit(unit(11, 5, bytes, 10, 41));
     check(sink.removals.size() == 1,
-          "complete same-session DAMT update did not reuse active DDMT");
+          "complete same-session replacement did not reuse active DDMT and retire old path");
 }
 
 void test_download_id_and_snapshot_diff() {
@@ -377,10 +389,13 @@ void test_download_id_and_snapshot_diff() {
 
     assembler.onDataUnit(unit(12, 99, index_item(5, bytes.size(), 3,
         "right.html", "text/html"), 9, 50));
+    check(std::none_of(sink.removals.begin(), sink.removals.end(), [](const auto& removal) {
+              return removal.item_id == 6 && removal.path.ends_with("removed.txt");
+          }), "new index deleted an old item before replacement MPU completion");
+    assembler.onDataUnit(unit(12, 5, bytes, 9, 50));
     check(std::any_of(sink.removals.begin(), sink.removals.end(), [](const auto& removal) {
               return removal.item_id == 6 && removal.path.ends_with("removed.txt");
-          }), "new index did not delete an item absent from the active MPU");
-    assembler.onDataUnit(unit(12, 5, bytes, 9, 50));
+          }), "complete new MPU did not delete an item absent from its index");
 
     const auto removals_before_catalogue = sink.removals.size();
     assembler.onDataDirectoryTable(directory(

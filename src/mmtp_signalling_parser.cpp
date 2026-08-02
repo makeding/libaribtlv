@@ -36,6 +36,8 @@ void MmtpParser::accept_signalling_unit(const std::uint16_t packet_id,
         valid = parse_pa_message(packet_id, data, size, input_offset);
     } else if (message_id == 0x8000) {
         valid = parse_m2_message(packet_id, data, size, input_offset);
+    } else if (message_id == 0x8002) {
+        valid = parse_m2_short_message(packet_id, data, size, input_offset);
     } else if (message_id == 0x8003) {
         valid = parse_data_transmission_message(packet_id, data, size, input_offset);
     }
@@ -453,6 +455,15 @@ std::optional<std::uint32_t> parse_bcd_duration(const std::uint8_t* data) {
         static_cast<std::uint32_t>(*minute) * 60U + *second;
 }
 
+std::optional<std::int32_t> parse_bcd_hhmm(const std::uint8_t* data) {
+    const auto hour = decode_bcd(data[0]);
+    const auto minute = decode_bcd(data[1]);
+    if (!hour.has_value() || !minute.has_value() || *hour > 12 || *minute > 59) {
+        return std::nullopt;
+    }
+    return static_cast<std::int32_t>(*hour) * 60 + *minute;
+}
+
 bool parse_short_event_descriptor(const std::uint8_t* payload, const std::size_t length,
                                   EventInfo& event) {
     if (length < 6) return false;
@@ -491,7 +502,17 @@ bool MmtpParser::parse_m2_message(const std::uint16_t packet_id,
                                   const std::uint64_t input_offset) {
     if (size < 5 || read_be16(data) != 0x8000) return false;
     const auto length = static_cast<std::size_t>(read_be16(data + 3));
-    if (length > size - 5) return false;
+    if (length != size - 5) return false;
+    return parse_tables(data + 5, length, packet_id, input_offset);
+}
+
+bool MmtpParser::parse_m2_short_message(const std::uint16_t packet_id,
+                                        const std::uint8_t* data,
+                                        const std::size_t size,
+                                        const std::uint64_t input_offset) {
+    if (size < 5 || read_be16(data) != 0x8002) return false;
+    const auto length = static_cast<std::size_t>(read_be16(data + 3));
+    if (length != size - 5) return false;
     return parse_tables(data + 5, length, packet_id, input_offset);
 }
 
@@ -518,6 +539,7 @@ bool MmtpParser::parse_data_transmission_message(const std::uint16_t packet_id,
     result.table_id = table[0];
     result.session_id = table[3];
     result.version = static_cast<std::uint8_t>((table[5] >> 1U) & 0x1fU);
+    result.current_next = (table[5] & 0x01U) != 0;
     result.section_number = table[6];
     result.last_section_number = table[7];
     result.data.assign(table, table + section_size);
@@ -533,10 +555,13 @@ bool MmtpParser::parse_data_directory_table(const DataTransmissionTable& table) 
     ByteReader body(table.data.data() + 8, table.data.size() - 12);
     DataDirectoryTable result;
     result.context_id = table.context_id;
+    result.source_packet_id = table.source_packet_id;
     result.session_id = table.session_id;
     result.version = table.version;
+    result.current_next = table.current_next;
     result.section_number = table.section_number;
     result.last_section_number = table.last_section_number;
+    result.input_offset = table.input_offset;
 
     std::uint8_t base_path_length = 0;
     std::vector<std::uint8_t> base_path;
@@ -583,10 +608,13 @@ bool MmtpParser::parse_data_asset_management_table(const DataTransmissionTable& 
     ByteReader body(table.data.data() + 8, table.data.size() - 12);
     DataAssetManagementTable result;
     result.context_id = table.context_id;
+    result.source_packet_id = table.source_packet_id;
     result.session_id = table.session_id;
     result.version = table.version;
+    result.current_next = table.current_next;
     result.section_number = table.section_number;
     result.last_section_number = table.last_section_number;
+    result.input_offset = table.input_offset;
     std::uint8_t mpu_count = 0;
     if (!body.read_u32(result.transaction_id) || !body.read_u16(result.component_tag) ||
         !body.read_u32(result.download_id) || !body.read_u8(mpu_count)) {
@@ -726,13 +754,20 @@ bool MmtpParser::parse_mh_ait(const std::uint8_t* data, const std::size_t size,
     const auto version = static_cast<std::uint8_t>((version_flags >> 1U) & 0x1fU);
     const auto identity = std::to_string(packet_id) + ':' +
         std::to_string(application_type) + ':' + std::to_string(current_next ? 1 : 0);
-    const auto staging_key = identity + ':' + std::to_string(version);
-    auto& assembly = mh_ait_staging_[staging_key];
+    auto& assembly = mh_ait_staging_[identity];
     if (!assembly.sections.empty() &&
-        assembly.last_section_number != last_section_number) {
+        (assembly.version != version ||
+         assembly.last_section_number != last_section_number)) {
         assembly.sections.clear();
     }
+    assembly.version = version;
     assembly.last_section_number = last_section_number;
+    const auto existing_section = assembly.sections.find(section_number);
+    if (existing_section != assembly.sections.end() &&
+        existing_section->second.raw != parsed_section.raw) {
+        assembly.sections.clear();
+        return false;
+    }
     assembly.sections[section_number] = std::move(parsed_section);
 
     // ARIB-HTML5 operation uses a one-section sub-table numbered 1/1 in real
@@ -773,7 +808,7 @@ bool MmtpParser::parse_mh_ait(const std::uint8_t* data, const std::size_t size,
         committed_mh_ait_raw_[identity] = std::move(committed_raw);
         on_mh_ait_snapshot_(std::move(snapshot));
     }
-    mh_ait_staging_.erase(staging_key);
+    mh_ait_staging_.erase(identity);
     return true;
 }
 
@@ -828,6 +863,156 @@ bool MmtpParser::parse_mh_eit(const std::uint8_t* data, const std::size_t size,
         on_event_(std::move(event));
     }
     return offset == section_end;
+}
+
+bool MmtpParser::parse_mh_sdt(const std::uint8_t* data, const std::size_t size,
+                              const std::uint16_t packet_id,
+                              const std::uint64_t input_offset) {
+    if (size < 15 || (data[0] != 0x9f && data[0] != 0xa0)) return false;
+    const auto section_length = static_cast<std::size_t>(read_be16(data + 1) & 0x0fffU);
+    if (section_length + 3 != size || section_length < 12) return false;
+    const auto version = static_cast<std::uint8_t>((data[5] >> 1U) & 0x1fU);
+    const bool current_next = (data[5] & 0x01U) != 0;
+    const auto section_number = data[6];
+    const auto last_section_number = data[7];
+    if (section_number > last_section_number) return false;
+    if (!current_next) return true;
+
+    MhSdtSection parsed;
+    parsed.input_offset = input_offset;
+    const auto section_end = size - 4;
+    std::size_t offset = 11;
+    while (offset < section_end) {
+        if (section_end - offset < 5) return false;
+        ServiceDescriptionInfo service;
+        service.service_id = read_be16(data + offset);
+        service.eit_user_defined_flags =
+            static_cast<std::uint8_t>((data[offset + 2] >> 2U) & 0x07U);
+        service.eit_schedule = (data[offset + 2] & 0x02U) != 0;
+        service.eit_present_following = (data[offset + 2] & 0x01U) != 0;
+        service.running_status = static_cast<std::uint8_t>(data[offset + 3] >> 5U);
+        service.free_ca_mode = (data[offset + 3] & 0x10U) != 0;
+        const auto descriptors_length = static_cast<std::size_t>(
+            read_be16(data + offset + 3) & 0x0fffU);
+        offset += 5;
+        if (descriptors_length > section_end - offset) return false;
+        ByteReader descriptors(data + offset, descriptors_length);
+        while (descriptors.remaining() != 0) {
+            std::uint16_t tag = 0;
+            std::uint32_t length = 0;
+            if (!descriptors.read_u16(tag) ||
+                !descriptor_length(descriptors, tag, length) ||
+                length > descriptors.remaining()) return false;
+            const std::uint8_t* payload = nullptr;
+            if (!descriptors.read_view(length, payload)) return false;
+            if (tag != 0x8019) continue;
+            if (length < 3) return false;
+            service.service_type = payload[0];
+            std::size_t at = 1;
+            const auto provider_length = static_cast<std::size_t>(payload[at++]);
+            if (provider_length > length - at) return false;
+            service.provider_name.assign(
+                reinterpret_cast<const char*>(payload + at), provider_length);
+            at += provider_length;
+            if (at >= length) return false;
+            const auto service_length = static_cast<std::size_t>(payload[at++]);
+            if (service_length != length - at) return false;
+            service.service_name.assign(
+                reinterpret_cast<const char*>(payload + at), service_length);
+        }
+        offset += descriptors_length;
+        parsed.services.push_back(std::move(service));
+    }
+    if (offset != section_end) return false;
+
+    const auto tlv_stream_id = read_be16(data + 3);
+    const auto original_network_id = read_be16(data + 8);
+    const auto identity = std::to_string(packet_id) + ':' +
+        std::to_string(data[0]) + ':' + std::to_string(tlv_stream_id) + ':' +
+        std::to_string(original_network_id);
+    auto& assembly = mh_sdt_staging_[identity];
+    if (!assembly.sections.empty() &&
+        (assembly.version != version ||
+         assembly.last_section_number != last_section_number ||
+         assembly.tlv_stream_id != tlv_stream_id ||
+         assembly.original_network_id != original_network_id)) {
+        assembly.sections.clear();
+    }
+    assembly.version = version;
+    assembly.last_section_number = last_section_number;
+    assembly.tlv_stream_id = tlv_stream_id;
+    assembly.original_network_id = original_network_id;
+    const auto existing = assembly.sections.find(section_number);
+    if (existing != assembly.sections.end() && existing->second.services != parsed.services) {
+        assembly.sections.clear();
+        return false;
+    }
+    assembly.sections[section_number] = std::move(parsed);
+    if (assembly.sections.size() != static_cast<std::size_t>(last_section_number) + 1U) {
+        return true;
+    }
+    MhSdtSnapshot snapshot;
+    snapshot.context_id = context_id_;
+    snapshot.source_packet_id = packet_id;
+    snapshot.table_id = data[0];
+    snapshot.tlv_stream_id = tlv_stream_id;
+    snapshot.original_network_id = original_network_id;
+    snapshot.version = version;
+    snapshot.current_next = true;
+    snapshot.input_offset = assembly.sections.begin()->second.input_offset;
+    for (std::uint16_t number = 0; number <= last_section_number; ++number) {
+        const auto section = assembly.sections.find(static_cast<std::uint8_t>(number));
+        if (section == assembly.sections.end()) return true;
+        snapshot.services.insert(snapshot.services.end(), section->second.services.begin(),
+                                 section->second.services.end());
+    }
+    mh_sdt_staging_.erase(identity);
+    on_mh_sdt_(std::move(snapshot));
+    return true;
+}
+
+bool MmtpParser::parse_mh_tot(const std::uint8_t* data, const std::size_t size,
+                              const std::uint16_t packet_id,
+                              const std::uint64_t input_offset) {
+    if (size < 14 || data[0] != 0xa1 || (data[1] & 0x80U) != 0) return false;
+    const auto section_length = static_cast<std::size_t>(read_be16(data + 1) & 0x0fffU);
+    if (section_length + 3 != size || section_length < 11) return false;
+    const auto time = parse_mjd_time(data + 3);
+    if (!time.has_value()) return false;
+    const auto descriptors_length = static_cast<std::size_t>(read_be16(data + 8) & 0x0fffU);
+    if (descriptors_length != size - 14) return false;
+
+    MhTotInfo result;
+    result.context_id = context_id_;
+    result.source_packet_id = packet_id;
+    result.time_unix_milliseconds = *time;
+    result.input_offset = input_offset;
+    ByteReader descriptors(data + 10, descriptors_length);
+    while (descriptors.remaining() != 0) {
+        std::uint16_t tag = 0;
+        std::uint32_t length = 0;
+        if (!descriptors.read_u16(tag) || !descriptor_length(descriptors, tag, length) ||
+            length > descriptors.remaining()) return false;
+        const std::uint8_t* payload = nullptr;
+        if (!descriptors.read_view(length, payload)) return false;
+        if (tag != 0x8023) continue;
+        if (length % 13 != 0) return false;
+        for (std::size_t at = 0; at < length; at += 13) {
+            const auto current_offset = parse_bcd_hhmm(payload + at + 4);
+            const auto next_offset = parse_bcd_hhmm(payload + at + 11);
+            if (!current_offset.has_value() || !next_offset.has_value()) return false;
+            LocalTimeOffsetInfo info;
+            info.country_code.assign(reinterpret_cast<const char*>(payload + at), 3);
+            info.country_region_id = static_cast<std::uint8_t>(payload[at + 3] >> 2U);
+            info.polarity = (payload[at + 3] & 0x01U) != 0;
+            info.offset_minutes = info.polarity ? *current_offset : -*current_offset;
+            info.change_time_unix_milliseconds = parse_mjd_time(payload + at + 6);
+            info.next_offset_minutes = info.polarity ? *next_offset : -*next_offset;
+            result.local_time_offsets.push_back(std::move(info));
+        }
+    }
+    on_mh_tot_(std::move(result));
+    return true;
 }
 
 bool MmtpParser::parse_mpt(const std::uint8_t* data, const std::size_t size,
