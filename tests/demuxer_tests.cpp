@@ -385,7 +385,7 @@ std::vector<std::uint8_t> discovery_message() {
     descriptor(subtitle_descriptors, 0x8020,
                {0x00, 0x20, 0x30, 0x08, 'j', 'p', 'n', 0x02, 0x2a, 0x10,
                 0x00, 0x00, 0x00, 0x05,
-                0x00, 0x00, 0x00, 0x64, 0x80, 0x00, 0x00, 0x00});
+                0x00, 0x00, 0x00, 0x64, 0x80, 0x00, 0x00, 0x00, 0x7f});
 
     std::vector<std::uint8_t> application_descriptors;
     descriptor(application_descriptors, 0x8011, {0x12, 0x40});
@@ -1081,7 +1081,8 @@ void test_track_discovery_and_deduplication() {
               sink.tracks[2].subtitle->resolution == 1 &&
               sink.tracks[2].subtitle->start_mpu_sequence_number == 5 &&
               sink.tracks[2].subtitle->reference_start_ntp ==
-                  std::optional<std::uint64_t>{(100ULL << 32U) | 0x80000000ULL},
+                  std::optional<std::uint64_t>{(100ULL << 32U) | 0x80000000ULL} &&
+              sink.tracks[2].subtitle->reference_start_time_leap_indicator == 1,
           "ARIB B62 subtitle timing metadata was not exposed on the subtitle track");
 
     const auto stable_id = sink.tracks[0].track_id;
@@ -1091,6 +1092,58 @@ void test_track_discovery_and_deduplication() {
     check(sink.tracks.size() == 6 && sink.tracks[3].track_id == stable_id &&
               sink.layouts.size() == 2,
           "reset changed a track's Demuxer-lifetime stable identity");
+}
+
+// ARIB STD-B60 Table 9-3's TMD == 0010 branch of Additional_Arib_Subtitle_Info()
+// is 9 bytes (reference_start_time plus the leap indicator/reserved byte); here
+// it is cut back to 8, one byte short of the standard.
+std::vector<std::uint8_t> truncated_subtitle_message() {
+    std::vector<std::uint8_t> subtitle_descriptors;
+    descriptor(subtitle_descriptors, 0x8011, {0x12, 0x30});
+    descriptor(subtitle_descriptors, 0x8020,
+               {0x00, 0x20, 0x30, 0x08, 'j', 'p', 'n', 0x02, 0x2a, 0x10,
+                0x00, 0x00, 0x00, 0x05,
+                0x00, 0x00, 0x00, 0x64, 0x80, 0x00, 0x00, 0x00});
+
+    std::vector<std::uint8_t> mpt_body{0xfc, 2, 0x00, 0x65};
+    append_u16(mpt_body, 0);
+    mpt_body.push_back(1);
+    asset(mpt_body, 0xf330, "stpp", subtitle_descriptors);
+    std::vector<std::uint8_t> mpt{0x20, 8};
+    append_u16(mpt, mpt_body.size());
+    mpt.insert(mpt.end(), mpt_body.begin(), mpt_body.end());
+
+    std::vector<std::uint8_t> pa{0x00, 0x00, 0x00};
+    append_u32(pa, 1 + mpt.size());
+    pa.push_back(0);
+    pa.insert(pa.end(), mpt.begin(), mpt.end());
+    return pa;
+}
+
+std::vector<std::uint8_t> truncated_subtitle_stream() {
+    const auto pa = truncated_subtitle_message();
+    const auto mmtp = signalling_mmtp(1, 0, pa);
+    std::vector<std::uint8_t> compressed_payload{0x00, 0x10, 0x61};
+    compressed_payload.insert(compressed_payload.end(), mmtp.begin(), mmtp.end());
+    return tlv(0x03, compressed_payload);
+}
+
+void test_truncated_subtitle_reference_start_time_is_rejected() {
+    const auto data = truncated_subtitle_stream();
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(data.data(), data.size());
+    demuxer.flush();
+    // parse_mpt() rejects the whole MPT on a malformed asset descriptor, so the
+    // subtitle track is never installed and the PA message never reaches onSignallingMessage.
+    check(sink.tracks.empty(),
+          "subtitle track was exposed despite a truncated reference_start_time block");
+    check(sink.signalling_messages.empty(),
+          "MPT with a truncated subtitle descriptor was still reported as a valid signalling "
+          "message");
+    check(!sink.errors.empty() && sink.errors[0].code == tlvdemux::ErrorCode::MalformedInput &&
+              sink.errors[0].recoverable,
+          "truncated reference_start_time block did not raise a recoverable parse error");
 }
 
 void test_service_selection_clears_layout_state() {
@@ -2170,6 +2223,7 @@ int main() {
     test_signalling_fragmentation_aggregation_and_m2();
     test_global_packet_state_budget();
     test_track_discovery_and_deduplication();
+    test_truncated_subtitle_reference_start_time_is_rejected();
     test_service_selection_clears_layout_state();
     test_application_and_data_transmission_signalling();
     test_mpt_snapshot_removes_missing_service_state();

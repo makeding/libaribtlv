@@ -94,6 +94,8 @@ struct SubtitleInfo {
     std::optional<std::uint32_t> start_mpu_sequence_number;
     // ARIB STD-B60 reference_start_time in unsigned 64-bit NTP format.
     std::optional<std::uint64_t> reference_start_ntp;
+    // ARIB STD-B60 reference_start_time_leap_indicator.
+    std::uint8_t reference_start_time_leap_indicator = 0;
 };
 
 struct ServiceInfo {

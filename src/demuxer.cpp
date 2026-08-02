@@ -220,7 +220,9 @@ private:
                    first->resolution == second->resolution &&
                    first->compression_type == second->compression_type &&
                    first->start_mpu_sequence_number == second->start_mpu_sequence_number &&
-                   first->reference_start_ntp == second->reference_start_ntp;
+                   first->reference_start_ntp == second->reference_start_ntp &&
+                   first->reference_start_time_leap_indicator ==
+                       second->reference_start_time_leap_indicator;
         };
         return left.track_id == right.track_id && left.context_id == right.context_id &&
                left.packet_id == right.packet_id && left.asset_id == right.asset_id &&

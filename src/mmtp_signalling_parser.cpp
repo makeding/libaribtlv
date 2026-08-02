@@ -219,8 +219,13 @@ bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata) {
                 offset += 4;
             }
             if (subtitle.timing_mode == 0x02) {
-                if (additional_size < offset + 8) return false;
+                // reference_start_time (8 bytes) is followed by a 2-bit
+                // reference_start_time_leap_indicator and 6 reserved bits, so the
+                // conditional block is 9 bytes, not 8.
+                if (additional_size < offset + 9) return false;
                 subtitle.reference_start_ntp = read_be64(additional + offset);
+                subtitle.reference_start_time_leap_indicator =
+                    static_cast<std::uint8_t>((additional[offset + 8] >> 6U) & 0x03U);
             }
             metadata.ttml = subtitle.format == 0;
             metadata.subtitle = subtitle;
