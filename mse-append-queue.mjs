@@ -253,4 +253,50 @@ export class MseAppendQueue {
   }
 }
 
+function intersectBufferedRanges(left, right) {
+  const result = [];
+  let leftIndex = 0;
+  let rightIndex = 0;
+  while (leftIndex < left.length && rightIndex < right.length) {
+    const start = Math.max(left[leftIndex].start, right[rightIndex].start);
+    const end = Math.min(left[leftIndex].end, right[rightIndex].end);
+    if (end > start) result.push({ start, end });
+    if (left[leftIndex].end < right[rightIndex].end) leftIndex += 1;
+    else rightIndex += 1;
+  }
+  return result;
+}
+
+/** Waits for all queues and closes a MediaSource on a stable A/V boundary. */
+export async function finalizeMseMediaSource(mediaSource, queues, options = {}) {
+  await Promise.all(queues.map(queue => queue.waitIdle()));
+  let truncatedTo = null;
+  if (options.truncateToCommonEnd && queues.length > 1) {
+    let common = queues[0].bufferedRanges();
+    for (let index = 1; index < queues.length && common.length; index += 1) {
+      common = intersectBufferedRanges(common, queues[index].bufferedRanges());
+    }
+    const commonEnd = common.at(-1)?.end;
+    const minimumTruncationSeconds = options.minimumTruncationSeconds ?? 0.05;
+    if (Number.isFinite(commonEnd) && Number.isFinite(mediaSource.duration) &&
+        mediaSource.duration - commonEnd > minimumTruncationSeconds) {
+      // Chromium rejects duration reduction while any coded frame still ends
+      // beyond the requested value. Remove those tails first, then commit the
+      // shorter duration once every SourceBuffer has completed its mutation.
+      for (const queue of queues) {
+        const ranges = queue.bufferedRanges();
+        const bufferedEnd = ranges.at(-1)?.end;
+        if (Number.isFinite(bufferedEnd) && bufferedEnd > commonEnd) {
+          queue.sourceBuffer.remove(commonEnd, bufferedEnd);
+        }
+      }
+      await Promise.all(queues.map(queue => queue.waitIdle()));
+      mediaSource.duration = commonEnd;
+      truncatedTo = commonEnd;
+    }
+  }
+  if (mediaSource.readyState === 'open') mediaSource.endOfStream();
+  return { truncatedTo };
+}
+
 export default MseAppendQueue;

@@ -2,7 +2,7 @@ import { B62TTMLRenderer } from '/aribb62.js/src/index.js';
 import { DataBroadcastController } from './data-broadcast.js?v=webkit-canvas-plane-v4';
 import { coalesceReadableStream } from './live-stream.mjs';
 import { createWorkerTlvDemuxModule } from './worker-tlvdemux.js';
-import { MseAppendQueue } from '../mse-append-queue.mjs';
+import { MseAppendQueue, finalizeMseMediaSource } from '../mse-append-queue.mjs';
 
 const MiB = 1024n * 1024n;
 const PLAYBACK_CHUNK = 2n * MiB;
@@ -631,6 +631,7 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   let audioDiscontinuityCount = 0;
   let callbackError = null;
   let recoverableErrors = 0;
+  let incompleteInputTail = false;
   let played = reuseMedia && !elements.video.paused;
   let suppressOutput = startTimeSeconds > 0;
   let headVideoSeen = false;
@@ -896,7 +897,12 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
     },
     onError(error) {
       if (!error.recoverable) callbackError = new Error(error.message);
-      else if (recoverableErrors++ < 8) appendLog(`分離警告 @${error.inputOffset}: ${error.message}`);
+      else {
+        if (/^incomplete TLV (header|payload) at end of input$/.test(error.message)) {
+          incompleteInputTail = true;
+        }
+        if (recoverableErrors++ < 8) appendLog(`分離警告 @${error.inputOffset}: ${error.message}`);
+      }
     },
   });
   await demuxer.configureTrackSelection({
@@ -1047,9 +1053,13 @@ async function playSource(source, probeResult, generation, startTimeSeconds = 0,
   activeDemuxer = null;
   activeAudioSwitch = null;
   activeSubtitleSwitch = null;
-  await Promise.all(activeQueues.map(queue => queue.waitIdle()));
   if (generation !== runGeneration) return;
-  if (mediaSource.readyState === 'open') mediaSource.endOfStream();
+  const finalized = await finalizeMseMediaSource(mediaSource, activeQueues, {
+    truncateToCommonEnd: !liveMode && incompleteInputTail,
+  });
+  if (finalized.truncatedTo !== null) {
+    appendLog(`不完全な入力末尾を共通 A/V 終端 ${finalized.truncatedTo.toFixed(6)}s に丸めました`);
+  }
   elements.probeState.textContent = liveMode ? 'Live 終了' : '読み込み完了';
   appendLog(liveMode ? 'Live ストリームが終了しました' : 'ストリーム終端です');
 }

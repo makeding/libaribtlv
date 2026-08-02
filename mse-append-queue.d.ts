@@ -11,6 +11,11 @@ export interface MseBufferedRange {
   end: number;
 }
 
+export interface FinalizeMseMediaSourceOptions {
+  truncateToCommonEnd?: boolean;
+  minimumTruncationSeconds?: number;
+}
+
 export declare class MseAppendQueue {
   readonly mediaElement: HTMLMediaElement;
   readonly mediaSource: MediaSource;
@@ -48,5 +53,11 @@ export declare class MseAppendQueue {
   stop(): void;
   destroy(error?: Error): void;
 }
+
+export declare function finalizeMseMediaSource(
+  mediaSource: MediaSource,
+  queues: MseAppendQueue[],
+  options?: FinalizeMseMediaSourceOptions,
+): Promise<{truncatedTo: number | null}>;
 
 export default MseAppendQueue;

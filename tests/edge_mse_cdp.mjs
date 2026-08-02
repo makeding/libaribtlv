@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 
 const [debugBase = 'http://127.0.0.1:9335', targetSecondsText = '70', sourceUrl,
-  playbackRateText] = process.argv.slice(2);
+  playbackRateText, startTimeText] = process.argv.slice(2);
 const targetSeconds = Number(targetSecondsText);
 assert.ok(Number.isFinite(targetSeconds) && targetSeconds > 0, 'invalid target seconds');
 const requestedPlaybackRate = playbackRateText === undefined ? null : Number(playbackRateText);
 assert.ok(requestedPlaybackRate === null ||
   (Number.isFinite(requestedPlaybackRate) && requestedPlaybackRate > 0), 'invalid playback rate');
+const requestedStartTime = startTimeText === undefined ? null : Number(startTimeText);
+assert.ok(requestedStartTime === null ||
+  (Number.isFinite(requestedStartTime) && requestedStartTime >= 0), 'invalid start time');
 
 const targets = await (await fetch(`${debugBase}/json`)).json();
 const target = targets.find(item => item.type === 'page' && item.url.includes('/demo/'));
@@ -59,6 +62,9 @@ await evaluate(`new Promise((resolve, reject) => {
 })`, true);
 if (requestedPlaybackRate !== null) {
   await evaluate(`document.getElementById('video').playbackRate = ${requestedPlaybackRate}`);
+}
+if (requestedStartTime !== null) {
+  await evaluate(`document.getElementById('video').currentTime = ${requestedStartTime}`);
 }
 
 const deadline = Date.now() + Math.max(90000, targetSeconds * 2000);
