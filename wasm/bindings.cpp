@@ -266,6 +266,22 @@ val stream_event_value(const tlvdemux::StreamEvent& event) {
     return result;
 }
 
+val viewer_participation_value(
+    const tlvdemux::ViewerParticipationNotification& notification) {
+    auto result = val::object();
+    result.set("contextId", notification.context_id);
+    result.set("sourcePacketId", notification.source_packet_id);
+    result.set("eventMessageTag", notification.event_message_tag);
+    result.set("dataEventId", notification.data_event_id);
+    result.set("messageGroupId", notification.message_group_id);
+    result.set("version", notification.version);
+    result.set("currentNext", notification.current_next);
+    result.set("sectionNumber", notification.section_number);
+    result.set("lastSectionNumber", notification.last_section_number);
+    result.set("inputOffset", notification.input_offset);
+    return result;
+}
+
 class WasmDurationProbe final {
 public:
     bool begin(const std::uint64_t source_size, const val& js_options) {
@@ -632,6 +648,12 @@ public:
         emit("onStreamEvent", stream_event_value(event));
     }
 
+    void onViewerParticipationNotification(
+        const tlvdemux::ViewerParticipationNotification& notification) override {
+        emit("onViewerParticipationNotification",
+             viewer_participation_value(notification));
+    }
+
     void onApplicationState(const tlvdemux::ApplicationState& state) override {
         application_resources_.onApplicationState(state);
         emit("onApplicationState", application_state_event(state));
@@ -653,6 +675,12 @@ public:
             emit("onApplicationResource",
                  application_resource_event(*stored, copy_bytes(stored->data)));
         }
+    }
+
+    void onApplicationResourceRemoved(
+        const tlvdemux::ApplicationResourceRemoval& removal) override {
+        application_resources_.onApplicationResourceRemoved(removal);
+        emit("onApplicationResourceRemoved", application_resource_removal_event(removal));
     }
 
     void onApplicationResourcesReset() override {
@@ -764,6 +792,19 @@ private:
         event.set("path", resource.path);
         event.set("contentType", resource.content_type);
         event.set("data", data);
+        return event;
+    }
+
+    static val application_resource_removal_event(
+        const tlvdemux::ApplicationResourceRemoval& removal) {
+        auto event = val::object();
+        event.set("contextId", removal.context_id);
+        event.set("componentTag", removal.component_tag);
+        event.set("transactionId", removal.transaction_id);
+        event.set("downloadId", removal.download_id);
+        event.set("mpuSequenceNumber", removal.mpu_sequence_number);
+        event.set("itemId", removal.item_id);
+        event.set("path", removal.path);
         return event;
     }
 

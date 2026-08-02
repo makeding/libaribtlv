@@ -22,6 +22,10 @@ public:
     void onApplicationResource(ApplicationResource&& resource) override {
         sink_.onApplicationResource(std::move(resource));
     }
+    void onApplicationResourceRemoved(
+        const ApplicationResourceRemoval& removal) override {
+        sink_.onApplicationResourceRemoved(removal);
+    }
     void onApplicationResourcesReset() override {
         sink_.onApplicationResourcesReset();
     }
@@ -51,6 +55,9 @@ public:
               [this](SignallingMessage message) { signalling(std::move(message)); },
               [this](EventInfo info) { event_info(std::move(info)); },
               [this](StreamEvent event) { stream_event(std::move(event)); },
+              [this](ViewerParticipationNotification notification) {
+                  viewer_participation(std::move(notification));
+              },
               [this](ApplicationInfo info) { application(std::move(info)); },
               [this](DataTransmissionTable table) { data_transmission(std::move(table)); },
               [this](DataDirectoryTable table) { data_directory(std::move(table)); },
@@ -89,31 +96,13 @@ public:
         tlv_.reset();
         ip_.reset();
         if (limits_.collect_application_resources) application_resources_.reset();
-        services_.clear();
-        current_tracks_.clear();
-        application_services_.clear();
-        layouts_.clear();
-        data_assets_.clear();
-        events_.clear();
-        stream_events_.clear();
-        applications_.clear();
-        data_transmission_tables_.clear();
-        data_directory_versions_.clear();
-        data_asset_management_versions_.clear();
+        clear_service_state();
         error_counts_.clear();
-        origin_.reset();
-        broadcast_clock_.reset();
-        last_clock_mpu_sequence_.reset();
+        clear_timeline_state();
         reposition_epoch_ = 0;
         emitted_reposition_epochs_.clear();
         input_end_offset_ = 0;
-        for (std::size_t index = 0; index < selected_tracks_.size(); ++index) {
-            selection_boundaries_[index] = 0;
-            selection_pending_[index] = selected_tracks_[index].has_value();
-            selection_wait_for_rap_[index] =
-                index == static_cast<std::size_t>(TrackKind::Video) &&
-                selected_tracks_[index].has_value();
-        }
+        arm_track_selections(0);
     }
 
     void reposition(const RepositionOptions options) {
@@ -123,13 +112,7 @@ public:
         if (!options.preserve_timeline) broadcast_clock_.reset();
         last_clock_mpu_sequence_.reset();
         input_end_offset_ = options.input_offset;
-        for (std::size_t index = 0; index < selected_tracks_.size(); ++index) {
-            selection_boundaries_[index] = options.input_offset;
-            selection_pending_[index] = selected_tracks_[index].has_value();
-            selection_wait_for_rap_[index] =
-                index == static_cast<std::size_t>(TrackKind::Video) &&
-                selected_tracks_[index].has_value();
-        }
+        arm_track_selections(options.input_offset);
         ++reposition_epoch_;
         if (reposition_epoch_ == 0) ++reposition_epoch_;
     }
@@ -138,19 +121,8 @@ public:
         selected_service_ = context_id;
         ip_.select_service(context_id);
         if (limits_.collect_application_resources) application_resources_.reset();
-        services_.clear();
-        current_tracks_.clear();
-        application_services_.clear();
-        data_assets_.clear();
-        events_.clear();
-        stream_events_.clear();
-        applications_.clear();
-        data_transmission_tables_.clear();
-        data_directory_versions_.clear();
-        data_asset_management_versions_.clear();
-        origin_.reset();
-        broadcast_clock_.reset();
-        last_clock_mpu_sequence_.reset();
+        clear_service_state();
+        clear_timeline_state();
     }
 
     void select_track(const TrackKind kind, std::optional<std::uint64_t> track_id) {
@@ -171,6 +143,37 @@ public:
     std::optional<BroadcastClock> broadcast_clock() const { return broadcast_clock_; }
 
 private:
+    void clear_service_state() {
+        services_.clear();
+        current_tracks_.clear();
+        application_services_.clear();
+        layouts_.clear();
+        data_assets_.clear();
+        events_.clear();
+        stream_events_.clear();
+        viewer_participation_notifications_.clear();
+        applications_.clear();
+        data_transmission_tables_.clear();
+        data_directory_versions_.clear();
+        data_asset_management_versions_.clear();
+    }
+
+    void clear_timeline_state() {
+        origin_.reset();
+        broadcast_clock_.reset();
+        last_clock_mpu_sequence_.reset();
+    }
+
+    void arm_track_selections(const std::uint64_t boundary) {
+        for (std::size_t index = 0; index < selected_tracks_.size(); ++index) {
+            selection_boundaries_[index] = boundary;
+            selection_pending_[index] = selected_tracks_[index].has_value();
+            selection_wait_for_rap_[index] =
+                index == static_cast<std::size_t>(TrackKind::Video) &&
+                selected_tracks_[index].has_value();
+        }
+    }
+
     static bool same_track(const TrackInfo& left, const TrackInfo& right) {
         const auto same_audio = [](const std::optional<AudioInfo>& first,
                                    const std::optional<AudioInfo>& second) {
@@ -342,6 +345,26 @@ private:
         }
         stream_events_[key] = event;
         sink_.onStreamEvent(event);
+    }
+
+    void viewer_participation(ViewerParticipationNotification notification) {
+        if (selected_service_.has_value() &&
+            *selected_service_ != notification.context_id) {
+            return;
+        }
+        if (!notification.current_next) return;
+        const auto key = std::to_string(notification.context_id) + ':' +
+            std::to_string(notification.source_packet_id) + ':' +
+            std::to_string(notification.event_message_tag) + ':' +
+            std::to_string(notification.data_event_id) + ':' +
+            std::to_string(notification.message_group_id);
+        const auto found = viewer_participation_notifications_.find(key);
+        if (found != viewer_participation_notifications_.end() &&
+            found->second.version == notification.version) {
+            return;
+        }
+        viewer_participation_notifications_[key] = notification;
+        sink_.onViewerParticipationNotification(notification);
     }
 
     void application(ApplicationInfo info) {
@@ -599,6 +622,8 @@ private:
     std::unordered_map<std::string, DataAssetInfo> data_assets_;
     std::unordered_map<std::string, EventInfo> events_;
     std::unordered_map<std::string, StreamEvent> stream_events_;
+    std::unordered_map<std::string, ViewerParticipationNotification>
+        viewer_participation_notifications_;
     std::unordered_map<std::string, ApplicationInfo> applications_;
     std::unordered_map<std::string, DataTransmissionTable> data_transmission_tables_;
     std::unordered_map<std::string, std::uint8_t> data_directory_versions_;

@@ -24,6 +24,8 @@ public:
     using SignallingCallback = std::function<void(SignallingMessage)>;
     using EventCallback = std::function<void(EventInfo)>;
     using StreamEventCallback = std::function<void(StreamEvent)>;
+    using ViewerParticipationCallback =
+        std::function<void(ViewerParticipationNotification)>;
     using ApplicationCallback = std::function<void(ApplicationInfo)>;
     using DataTransmissionCallback = std::function<void(DataTransmissionTable)>;
     using DataDirectoryCallback = std::function<void(DataDirectoryTable)>;
@@ -32,7 +34,7 @@ public:
     CompressedIpParser(const Limits&, ServiceCallback, TrackCallback,
                        AccessUnitCallback, ApplicationServiceCallback,
                        LayoutCallback, DataAssetCallback, DataUnitCallback, SignallingCallback, EventCallback,
-                       StreamEventCallback,
+                       StreamEventCallback, ViewerParticipationCallback,
                        ApplicationCallback,
                        DataTransmissionCallback, DataDirectoryCallback,
                        DataAssetManagementCallback, ErrorCallback);
@@ -58,6 +60,7 @@ private:
     SignallingCallback on_signalling_;
     EventCallback on_event_;
     StreamEventCallback on_stream_event_;
+    ViewerParticipationCallback on_viewer_participation_;
     ApplicationCallback on_application_;
     DataTransmissionCallback on_data_transmission_;
     DataDirectoryCallback on_data_directory_;

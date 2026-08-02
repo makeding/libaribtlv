@@ -25,6 +25,8 @@ public:
     virtual void onBroadcastClock(const BroadcastClock&) {}
     virtual void onEventInfo(const EventInfo&) {}
     virtual void onStreamEvent(const StreamEvent&) {}
+    virtual void onViewerParticipationNotification(
+        const ViewerParticipationNotification&) {}
     virtual void onApplicationService(const ApplicationServiceInfo&) {}
     virtual void onLayoutConfiguration(const LayoutConfiguration&) {}
     virtual void onDataAsset(const DataAssetInfo&) {}
@@ -36,6 +38,7 @@ public:
     virtual void onDataAssetManagementTable(const DataAssetManagementTable&) {}
     virtual void onApplicationState(const ApplicationState&) {}
     virtual void onApplicationResource(ApplicationResource&&) {}
+    virtual void onApplicationResourceRemoved(const ApplicationResourceRemoval&) {}
     virtual void onApplicationResourcesReset() {}
 };
 

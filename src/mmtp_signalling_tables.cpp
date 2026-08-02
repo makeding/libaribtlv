@@ -172,6 +172,27 @@ bool MmtpParser::parse_emt(const std::uint8_t* data, const std::size_t size,
             DescriptorView{descriptor_tag, payload, static_cast<std::size_t>(descriptor_size)});
     }
 
+    // TR-B39 6.2.5: the viewer-participation corner notification is the one
+    // descriptor-less EMT.  It is consumed by the receiver UI, not dispatched
+    // into the ARIB-HTML5 application as a general event message.
+    if (section_length == 9 && data_event_id == 0x0f && table_group_id == 0x0f00 &&
+        data[6] == 0 && data[7] == 0 && descriptor_views.empty()) {
+        ViewerParticipationNotification notification;
+        notification.context_id = context_id_;
+        notification.source_packet_id = packet_id;
+        notification.event_message_tag = tag == event_message_tags_.end()
+            ? std::uint8_t{0xff} : tag->second;
+        notification.data_event_id = data_event_id;
+        notification.message_group_id = table_group_id;
+        notification.version = static_cast<std::uint8_t>((data[5] >> 1U) & 0x1fU);
+        notification.current_next = current_next;
+        notification.section_number = data[6];
+        notification.last_section_number = data[7];
+        notification.input_offset = input_offset;
+        on_viewer_participation_(std::move(notification));
+        return true;
+    }
+
     std::optional<std::uint64_t> utc_reference;
     std::optional<std::uint64_t> npt_reference;
     for (const auto& descriptor : descriptor_views) {

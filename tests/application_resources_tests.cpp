@@ -14,6 +14,7 @@ namespace {
 struct TestSink final : tlvdemux::ApplicationResourceSink {
     std::vector<tlvdemux::ApplicationState> states;
     std::vector<tlvdemux::ApplicationResource> resources;
+    std::vector<tlvdemux::ApplicationResourceRemoval> removals;
     std::vector<tlvdemux::Error> errors;
     std::size_t resets = 0;
 
@@ -22,6 +23,10 @@ struct TestSink final : tlvdemux::ApplicationResourceSink {
     }
     void onApplicationResource(tlvdemux::ApplicationResource&& value) override {
         resources.push_back(std::move(value));
+    }
+    void onApplicationResourceRemoved(
+        const tlvdemux::ApplicationResourceRemoval& value) override {
+        removals.push_back(value);
     }
     void onApplicationResourcesReset() override { ++resets; }
     void onApplicationResourceError(const tlvdemux::Error& value) override {
@@ -85,14 +90,15 @@ tlvdemux::DataDirectoryTable directory(const std::uint32_t context) {
 
 tlvdemux::DataAssetManagementTable management(const std::uint32_t context,
                                                const std::uint32_t transaction,
-                                               const std::uint32_t download) {
+                                               const std::uint32_t download,
+                                               const std::uint32_t sequence = 9) {
     tlvdemux::DataAssetManagementTable value;
     value.context_id = context;
     value.transaction_id = transaction;
     value.component_tag = 0x40;
     value.download_id = download;
     tlvdemux::DataAssetMpu mpu;
-    mpu.sequence_number = 9;
+    mpu.sequence_number = sequence;
     mpu.index_item = true;
     mpu.index_item_id = 99;
     tlvdemux::DataAssetItem item;
@@ -104,11 +110,12 @@ tlvdemux::DataAssetManagementTable management(const std::uint32_t context,
 }
 
 tlvdemux::DataUnit unit(const std::uint32_t context, const std::uint32_t item,
-                        std::vector<std::uint8_t> bytes) {
+                        std::vector<std::uint8_t> bytes,
+                        const std::uint32_t sequence = 9) {
     tlvdemux::DataUnit value;
     value.context_id = context;
     value.component_tag = 0x40;
-    value.mpu_sequence_number = 9;
+    value.mpu_sequence_number = sequence;
     value.item_id = item;
     value.data = std::move(bytes);
     return value;
@@ -167,12 +174,21 @@ void test_out_of_order_collection_and_update() {
 
     const std::vector<std::uint8_t> second{'t', 'w', 'o'};
     assembler.onDataAssetManagementTable(management(1, 11, 21));
+    check(sink.removals.size() == 1 &&
+              sink.removals[0].path == "sh4/60/001/top/source/index.html" &&
+              !sink.states.back().entry_ready && sink.states.back().resource_count == 0,
+          "resource replacement did not retire the old VFS path and readiness state");
     assembler.onDataUnit(unit(1, 99, index_item(5, second.size(), 2,
         "index.html", "text/html")));
     assembler.onDataUnit(unit(1, 5, second));
     check(sink.resources.size() == 2 && sink.resources.back().version == 2 &&
               sink.resources.back().data == second,
           "new application resource version was not published");
+
+    assembler.onDataAssetManagementTable(management(1, 11, 21, 10));
+    check(sink.removals.size() == 2 &&
+              sink.removals.back().mpu_sequence_number == 9,
+          "new MPU version did not retire resources from the previous MPU version");
 
     assembler.reset();
     check(sink.resets == 1, "reset was not propagated to the resource store");
@@ -205,6 +221,9 @@ void test_virtual_resource_store() {
           "virtual resource store did not resolve the ready application entry");
     check(store.get(4, "../escape") == nullptr,
           "virtual resource store accepted path traversal");
+    store.onApplicationResourceRemoved(tlvdemux::ApplicationResourceRemoval{
+        4, 0, 0, 0, 0, 0, "sh4/60/001/top/source/index.html"});
+    check(store.list(4).empty(), "virtual resource removal left a stale VFS entry");
     store.clear();
     check(store.list().empty(), "virtual resource store did not clear its session");
 }

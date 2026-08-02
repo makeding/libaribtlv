@@ -49,6 +49,16 @@ struct ApplicationResource {
     std::vector<std::uint8_t> data;
 };
 
+struct ApplicationResourceRemoval {
+    std::uint32_t context_id = 0;
+    std::uint16_t component_tag = 0;
+    std::uint32_t transaction_id = 0;
+    std::uint32_t download_id = 0;
+    std::uint32_t mpu_sequence_number = 0;
+    std::uint32_t item_id = 0;
+    std::string path;
+};
+
 struct ApplicationResourceMetadata {
     std::uint32_t context_id = 0;
     std::uint16_t component_tag = 0;
@@ -68,6 +78,7 @@ public:
     virtual ~ApplicationResourceSink() = default;
     virtual void onApplicationState(const ApplicationState&) {}
     virtual void onApplicationResource(ApplicationResource&&) {}
+    virtual void onApplicationResourceRemoved(const ApplicationResourceRemoval&) {}
     virtual void onApplicationResourcesReset() {}
     virtual void onApplicationResourceError(const Error&) {}
 };
@@ -110,6 +121,7 @@ public:
 
     void onApplicationState(const ApplicationState&) override;
     void onApplicationResource(ApplicationResource&&) override;
+    void onApplicationResourceRemoved(const ApplicationResourceRemoval&) override;
     void onApplicationResourcesReset() override;
 
     std::shared_ptr<const ApplicationResource> get(std::uint32_t context_id,

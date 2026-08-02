@@ -234,6 +234,22 @@ public:
         if (!limits_.collect_application_resources) return;
         for (const auto& mpu : table.mpus) {
             const MpuKey key{table.context_id, table.component_tag, mpu.sequence_number};
+            // MPU_sequence_number is MPU_id (upper 16 bits) plus its version
+            // (lower 16 bits). Retire the preceding version before accepting
+            // the new catalogue so stale files cannot survive in the VFS.
+            std::vector<MpuKey> superseded;
+            for (const auto& existing : mpu_maps_) {
+                if (existing.first.context == key.context &&
+                    existing.first.component == key.component &&
+                    (existing.first.sequence >> 16U) == (key.sequence >> 16U) &&
+                    existing.first.sequence != key.sequence) {
+                    superseded.push_back(existing.first);
+                }
+            }
+            for (const auto& stale : superseded) {
+                erase_mpu_targets(stale);
+                mpu_maps_.erase(stale);
+            }
             MpuMap map;
             map.transaction_id = table.transaction_id;
             map.download_id = table.download_id;
@@ -474,9 +490,26 @@ private:
             else ++it;
         }
         for (auto it = published_.begin(); it != published_.end();) {
-            if (!(it->first.mpu < key) && !(key < it->first.mpu)) it = published_.erase(it);
-            else ++it;
+            if (!(it->first.mpu < key) && !(key < it->first.mpu)) {
+                const auto path = it->second.path;
+                published_paths_.erase({key.context, path});
+                sink_.onApplicationResourceRemoved(ApplicationResourceRemoval{
+                    key.context, key.component, it->second.transaction_id,
+                    it->second.download_id, key.sequence, it->first.item, path});
+                it = published_.erase(it);
+            } else {
+                ++it;
+            }
         }
+        for (auto it = pending_.begin(); it != pending_.end();) {
+            if (!(it->first.mpu < key) && !(key < it->first.mpu)) {
+                pending_bytes_ -= it->second.data.size();
+                it = pending_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        update_application_states(key.context);
     }
 
     void report(const ErrorCode code, const std::uint64_t offset, const bool recoverable,
@@ -555,6 +588,16 @@ void ApplicationResourceStore::onApplicationResource(ApplicationResource&& resou
     ++impl_->generation;
     impl_->resources[key] =
         Impl::StoredResource{std::move(shared), impl_->generation};
+    impl_->changed.notify_all();
+}
+
+void ApplicationResourceStore::onApplicationResourceRemoved(
+    const ApplicationResourceRemoval& removal) {
+    const auto normalized = safe_path(removal.path);
+    if (!normalized.has_value()) return;
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->resources.erase({removal.context_id, *normalized});
+    ++impl_->generation;
     impl_->changed.notify_all();
 }
 

@@ -235,6 +235,24 @@ declare namespace createTlvDemuxModule {
     inputOffset: bigint;
   }
 
+  /**
+   * Receiver-level TR-B39 viewer-participation corner notification. This is
+   * intentionally separate from StreamEvent because it is not dispatched to
+   * the ARIB-HTML5 application as an interrupt event.
+   */
+  interface ViewerParticipationNotification {
+    contextId: number;
+    sourcePacketId: number;
+    eventMessageTag: number;
+    dataEventId: number;
+    messageGroupId: number;
+    version: number;
+    currentNext: boolean;
+    sectionNumber: number;
+    lastSectionNumber: number;
+    inputOffset: bigint;
+  }
+
   interface ApplicationState {
     contextId: number;
     sourcePacketId: number;
@@ -290,6 +308,16 @@ declare namespace createTlvDemuxModule {
     dataLifetime?: "callback";
   }
 
+  interface ApplicationResourceRemoval {
+    contextId: number;
+    componentTag: number;
+    transactionId: number;
+    downloadId: number;
+    mpuSequenceNumber: number;
+    itemId: number;
+    path: string;
+  }
+
   interface MseTrackInit {
     type: "video" | "audio";
     mime: string;
@@ -325,9 +353,13 @@ declare namespace createTlvDemuxModule {
     onBroadcastClock?: (clock: BroadcastClock) => void;
     onEventInfo?: (event: EventInfo) => void;
     onStreamEvent?: (event: StreamEvent) => void;
+    onViewerParticipationNotification?: (
+      notification: ViewerParticipationNotification,
+    ) => void;
     onApplicationState?: (application: ApplicationState) => void;
     onApplicationResource?: (resource: ApplicationResource) => void;
     onApplicationResourceView?: (resource: ApplicationResource) => void;
+    onApplicationResourceRemoved?: (removal: ApplicationResourceRemoval) => void;
     onApplicationResourcesReset?: () => void;
     onMseInit?: (init: MseTrackInit) => void;
     onMseSegment?: (segment: MseMediaSegment) => void;

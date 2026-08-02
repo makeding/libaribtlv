@@ -19,6 +19,7 @@ add_library(tlvdemux
     src/compressed_ip_parser.cpp
     src/demuxer.cpp
     src/duration_probe.cpp
+    src/mmtp_media_parser.cpp
     src/mmtp_parser.cpp
     src/mmtp_signalling_tables.cpp
     src/mse/hevc_parser.cpp

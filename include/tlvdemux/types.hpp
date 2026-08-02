@@ -231,6 +231,23 @@ struct StreamEvent {
     std::uint64_t input_offset = 0;
 };
 
+// ARIB TR-B39 viewer-participation corner notification carried by a
+// descriptor-less EMT (data_event_id 0xF, event_msg_group_id 0xF00).  This is
+// a receiver-level notification and must not be injected into the application
+// as a general event message.
+struct ViewerParticipationNotification {
+    std::uint32_t context_id = 0;
+    std::uint16_t source_packet_id = 0;
+    std::uint8_t event_message_tag = 0xff;
+    std::uint8_t data_event_id = 0x0f;
+    std::uint16_t message_group_id = 0x0f00;
+    std::uint8_t version = 0;
+    bool current_next = false;
+    std::uint8_t section_number = 0;
+    std::uint8_t last_section_number = 0;
+    std::uint64_t input_offset = 0;
+};
+
 struct ApplicationInfo {
     struct Profile {
         std::uint16_t application_profile = 0;

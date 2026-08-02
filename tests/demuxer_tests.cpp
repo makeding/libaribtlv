@@ -20,6 +20,8 @@ struct TestSink final : tlvdemux::Sink {
     std::vector<tlvdemux::SignallingMessage> signalling_messages;
     std::vector<tlvdemux::EventInfo> events;
     std::vector<tlvdemux::StreamEvent> stream_events;
+    std::vector<tlvdemux::ViewerParticipationNotification>
+        viewer_participation_notifications;
     std::vector<tlvdemux::ApplicationInfo> applications;
     std::vector<tlvdemux::DataTransmissionTable> data_transmission_tables;
     std::vector<tlvdemux::Error> errors;
@@ -43,6 +45,10 @@ struct TestSink final : tlvdemux::Sink {
     void onEventInfo(const tlvdemux::EventInfo& value) override { events.push_back(value); }
     void onStreamEvent(const tlvdemux::StreamEvent& value) override {
         stream_events.push_back(value);
+    }
+    void onViewerParticipationNotification(
+        const tlvdemux::ViewerParticipationNotification& value) override {
+        viewer_participation_notifications.push_back(value);
     }
     void onApplication(const tlvdemux::ApplicationInfo& value) override {
         applications.push_back(value);
@@ -602,6 +608,22 @@ std::vector<std::uint8_t> emt_message(const std::uint8_t version,
     return message;
 }
 
+std::vector<std::uint8_t> viewer_participation_emt(
+    const std::uint8_t version, const bool current_next = true) {
+    std::vector<std::uint8_t> section{
+        0xa6, 0xf0, 0x09,
+        0xff, 0x00, // data_event_id 0xF, event_msg_group_id 0xF00
+        static_cast<std::uint8_t>(0xc0U | ((version & 0x1fU) << 1U) |
+                                  (current_next ? 1U : 0U)),
+        0x00, 0x00,
+    };
+    append_u32(section, 0);
+    std::vector<std::uint8_t> message{0x80, 0x00, 0x00};
+    append_u16(message, section.size());
+    message.insert(message.end(), section.begin(), section.end());
+    return message;
+}
+
 void test_emt_stream_events() {
     auto stream = discovery_stream();
     const auto first = signalling_tlv(1, 0, emt_message(7, 0xb007), 0xff04);
@@ -627,6 +649,35 @@ void test_emt_stream_events() {
               event.npt_reference == std::optional<std::uint64_t>{10ULL << 32U} &&
               event.private_data == std::vector<std::uint8_t>({0xde, 0xad}),
           "EMT timing reference or private data was not parsed");
+}
+
+void test_viewer_participation_notifications() {
+    auto stream = signalling_tlv(1, 0, viewer_participation_emt(7), 0xff04);
+    const auto repeated = signalling_tlv(2, 0, viewer_participation_emt(7), 0xff04);
+    const auto updated = signalling_tlv(3, 0, viewer_participation_emt(8), 0xff04);
+    const auto not_current = signalling_tlv(
+        4, 0, viewer_participation_emt(9, false), 0xff04);
+    stream.insert(stream.end(), repeated.begin(), repeated.end());
+    stream.insert(stream.end(), updated.begin(), updated.end());
+    stream.insert(stream.end(), not_current.begin(), not_current.end());
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+    check(sink.viewer_participation_notifications.size() == 2,
+          "viewer-participation EMT was not deduplicated by table version");
+    const auto& notification = sink.viewer_participation_notifications.front();
+    check(notification.context_id == 1 && notification.source_packet_id == 0xff04 &&
+              notification.event_message_tag == 0xff &&
+              notification.data_event_id == 0x0f &&
+              notification.message_group_id == 0x0f00 &&
+              notification.version == 7 && notification.current_next &&
+              notification.section_number == 0 &&
+              notification.last_section_number == 0,
+          "descriptor-less viewer-participation EMT identity was not exposed");
+    check(sink.stream_events.empty(),
+          "viewer-participation notification leaked into application StreamEvent");
 }
 
 void test_global_packet_state_budget() {
@@ -1465,6 +1516,7 @@ int main() {
     test_application_and_data_transmission_signalling();
     test_mh_eit_program_events();
     test_emt_stream_events();
+    test_viewer_participation_notifications();
     test_dynamic_audio_layout_metadata();
     test_authenticated_mmtp_payload_bounds();
     test_codec_output_and_timeline();

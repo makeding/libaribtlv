@@ -113,10 +113,12 @@ function createDemuxer(module, objectId, options) {
     onBroadcastClock: event('onBroadcastClock'),
     onEventInfo: event('onEventInfo'),
     onStreamEvent: event('onStreamEvent'),
+    onViewerParticipationNotification: event('onViewerParticipationNotification'),
     onApplicationResourceView(resource) {
       const data = copyBytes(resource.data);
       sendEvent(objectId, 'onApplicationResourceView', { ...resource, data }, [data.buffer]);
     },
+    onApplicationResourceRemoved: event('onApplicationResourceRemoved'),
     onApplicationState(state) {
       sendEvent(objectId, 'onApplicationState', {
         ...state,
