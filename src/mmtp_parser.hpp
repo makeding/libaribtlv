@@ -153,6 +153,7 @@ private:
         std::size_t au_index = 0;
         std::int64_t dts_offset_accumulator = 0;
         bool wait_for_rap = false;
+        bool skipping_hevc_picture = false;
         bool discontinuity = false;
         MediaAssembler media;
         PendingHevc pending_hevc;

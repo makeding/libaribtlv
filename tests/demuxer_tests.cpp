@@ -1441,6 +1441,59 @@ void test_hevc_irap_detection_without_mmtp_rap() {
           "HEVC IRAP NAL was not exposed as a random-access AU without MMTP RAP");
 }
 
+void test_reposition_drops_orphan_hevc_irap_continuation() {
+    auto initial = discovery_stream();
+    append_video_access_unit(initial, 1);
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(initial.data(), initial.size());
+    demuxer.flush();
+    const auto initial_access_unit_count = sink.access_units.size();
+
+    auto restarted = discovery_stream();
+    const auto add_video = [&](const std::uint32_t sequence, const bool rap,
+                               const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf300, sequence, 100U << 16U, rap,
+                           mpu_payload(1, mfu)));
+        restarted.insert(restarted.end(), packet.begin(), packet.end());
+    };
+
+    // A checkpoint may be inside a large IRAP picture. This type-21 CRA NAL is
+    // a continuation slice, so neither its NAL type nor an MMTP RAP flag makes
+    // it the head of a decodable random-access point.
+    add_video(1, true, {0, 0, 0, 3, 0x2a, 0x01, 0x00});
+    add_video(2, false, {0, 0, 0, 2, 0x50, 0x01}); // suffix SEI of old picture
+    add_video(3, false, {0, 0, 0, 3, 0x2a, 0x01, 0x00});
+    const auto complete_picture_offset = static_cast<std::uint64_t>(restarted.size());
+    add_video(4, false, {0, 0, 0, 2, 0x4e, 0x01}); // prefix SEI of new picture
+    add_video(5, false, {0, 0, 0, 3, 0x2a, 0x01, 0x80});
+
+    constexpr std::uint64_t source_offset = 500000;
+    demuxer.reposition(tlvdemux::RepositionOptions{source_offset, true});
+    demuxer.push(restarted.data(), restarted.size());
+    demuxer.flush();
+
+    const auto first_restarted = sink.access_units.begin() +
+        static_cast<std::ptrdiff_t>(initial_access_unit_count);
+    const auto restarted_video_count = std::count_if(
+        first_restarted, sink.access_units.end(), [](const auto& unit) {
+            return unit.codec == tlvdemux::Codec::Hevc;
+        });
+    const auto video = std::find_if(
+        first_restarted, sink.access_units.end(), [](const auto& unit) {
+            return unit.codec == tlvdemux::Codec::Hevc;
+        });
+    check(restarted_video_count == 1 && video != sink.access_units.end(),
+          "reposition emitted an orphan HEVC IRAP continuation as an access unit");
+    check(video->data == std::vector<std::uint8_t>(
+              {0, 0, 1, 0x4e, 0x01, 0, 0, 1, 0x2a, 0x01, 0x80}) &&
+              video->random_access && video->discontinuity &&
+              video->input_offset == source_offset + complete_picture_offset,
+          "reposition did not resume at the first complete HEVC IRAP picture");
+}
+
 void test_access_unit_restart_offset_is_snapshotted() {
     const auto pa = discovery_message();
     auto stream = signalling_tlv(1, 0, pa);
@@ -1546,6 +1599,7 @@ int main() {
     test_reposition_preserves_timeline_and_absolute_offsets();
     test_track_selection_preserves_timeline_and_waits_for_rap();
     test_hevc_irap_detection_without_mmtp_rap();
+    test_reposition_drops_orphan_hevc_irap_continuation();
     test_access_unit_restart_offset_is_snapshotted();
     test_restart_offset_includes_timestamp_mapping_origin();
     std::cout << "all tests passed\n";

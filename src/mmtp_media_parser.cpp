@@ -58,6 +58,7 @@ void MmtpParser::install_track(TrackInfo info, AssetMetadata metadata,
     }
     if ((first_install || codec_changed) && state.info.kind == TrackKind::Video) {
         state.wait_for_rap = true;
+        state.skipping_hevc_picture = false;
         state.pending_hevc = {};
         state.media = {};
     }
@@ -225,6 +226,22 @@ void MmtpParser::consume_complete_mfu(TrackState& track,
         const bool is_irap = nal_type >= 16 && nal_type <= 23;
         const bool first_slice = is_vcl && nal_size >= 3 && (data[6] & 0x80U) != 0;
         auto& pending = track.pending_hevc;
+        const bool starts_access_unit = nal_type == 35 || first_slice ||
+            nal_type == 32 || nal_type == 33 || nal_type == 34 || nal_type == 39;
+        if (track.skipping_hevc_picture) {
+            if (!starts_access_unit) return;
+            track.skipping_hevc_picture = false;
+        }
+        if (is_vcl && !first_slice && !pending.has_vcl) {
+            // Repositioning can restart in the middle of a picture. An IRAP
+            // NAL type (or the MMTP RAP flag) on a continuation slice does not
+            // make that truncated picture a random-access point: B60 defines
+            // RAP_flag in terms of carrying the head of the access point.
+            pending = {};
+            track.skipping_hevc_picture = true;
+            track.discontinuity = true;
+            return;
+        }
         const bool begins_access_unit = nal_type == 35 ||
             (first_slice && pending.has_vcl) ||
             ((nal_type == 32 || nal_type == 33 || nal_type == 34 || nal_type == 39) &&

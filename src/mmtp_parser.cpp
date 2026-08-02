@@ -132,6 +132,7 @@ void MmtpParser::flush() {
         track.current_mpu_sequence.reset();
         track.au_index = 0;
         track.dts_offset_accumulator = 0;
+        track.skipping_hevc_picture = false;
         track.discontinuity = true;
         if (track.info.kind == TrackKind::Video) track.wait_for_rap = true;
     }
