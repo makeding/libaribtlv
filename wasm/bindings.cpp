@@ -279,6 +279,65 @@ val event_info_value(const tlvdemux::EventInfo& info) {
     result.set("language", info.language);
     result.set("title", info.title);
     result.set("description", info.description);
+    result.set("extendedDescription", info.extended_description);
+    auto extended_items = val::array();
+    for (std::size_t index = 0; index < info.extended_items.size(); ++index) {
+        auto item = val::object();
+        item.set("description", info.extended_items[index].description);
+        item.set("value", info.extended_items[index].value);
+        extended_items.set(index, item);
+    }
+    result.set("extendedItems", extended_items);
+    auto genres = val::array();
+    for (std::size_t index = 0; index < info.genres.size(); ++index) {
+        auto genre = val::object();
+        genre.set("level1", info.genres[index].level1);
+        genre.set("level2", info.genres[index].level2);
+        genre.set("user1", info.genres[index].user1);
+        genre.set("user2", info.genres[index].user2);
+        genres.set(index, genre);
+    }
+    result.set("genres", genres);
+    auto ratings = val::array();
+    for (std::size_t index = 0; index < info.parental_ratings.size(); ++index) {
+        auto rating = val::object();
+        rating.set("countryCode", info.parental_ratings[index].country_code);
+        rating.set("rating", info.parental_ratings[index].rating);
+        ratings.set(index, rating);
+    }
+    result.set("parentalRatings", ratings);
+    auto audio_components = val::array();
+    for (std::size_t index = 0; index < info.audio_components.size(); ++index) {
+        const auto& source = info.audio_components[index];
+        auto component = val::object();
+        component.set("componentType", source.audio.component_type);
+        component.set("componentTag", source.audio.component_tag);
+        component.set("channelLayout", static_cast<unsigned>(source.audio.channel_layout));
+        component.set("channels", tlvdemux::audio_channel_count(source.audio.channel_layout));
+        component.set("streamType", source.audio.stream_type);
+        component.set("multilingual", source.audio.es_multi_lingual);
+        component.set("mainComponent", source.audio.main_component);
+        component.set("sampleRate", source.audio.sample_rate);
+        component.set("language", source.language);
+        component.set("secondaryLanguage", source.audio.secondary_language);
+        component.set("text", source.text);
+        audio_components.set(index, component);
+    }
+    result.set("audioComponents", audio_components);
+    if (info.series.has_value()) {
+        auto series = val::object();
+        series.set("seriesId", info.series->series_id);
+        series.set("repeatLabel", info.series->repeat_label);
+        series.set("programPattern", info.series->program_pattern);
+        series.set("expireDateMjd", info.series->expire_date_mjd.has_value()
+            ? val(*info.series->expire_date_mjd) : val::null());
+        series.set("episodeNumber", info.series->episode_number);
+        series.set("lastEpisodeNumber", info.series->last_episode_number);
+        series.set("name", info.series->name);
+        result.set("series", series);
+    } else {
+        result.set("series", val::null());
+    }
     result.set("inputOffset", info.input_offset);
     return result;
 }

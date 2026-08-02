@@ -562,6 +562,26 @@ std::vector<std::uint8_t> mh_eit_message() {
     append_u16(descriptors, short_event.size());
     descriptors.insert(descriptors.end(), short_event.begin(), short_event.end());
 
+    std::vector<std::uint8_t> extended{0x00, 'j', 'p', 'n'};
+    std::vector<std::uint8_t> extended_items{0x04, 'C', 'a', 's', 't'};
+    append_u16(extended_items, 5);
+    extended_items.insert(extended_items.end(), {'A', 'l', 'i', 'c', 'e'});
+    append_u16(extended, extended_items.size());
+    extended.insert(extended.end(), extended_items.begin(), extended_items.end());
+    append_u16(extended, 4);
+    extended.insert(extended.end(), {'M', 'o', 'r', 'e'});
+    append_u16(descriptors, 0xf002);
+    append_u16(descriptors, extended.size());
+    descriptors.insert(descriptors.end(), extended.begin(), extended.end());
+    descriptor(descriptors, 0x8012, {0x12, 0x34});
+    descriptor(descriptors, 0x8013, {'J', 'P', 'N', 0x04});
+    descriptor(descriptors, 0x8014,
+               {0x03, 0x03, 0x00, 0x10, 0x11, 0xff, 0x4e,
+                'j', 'p', 'n', 'M', 'a', 'i', 'n'});
+    descriptor(descriptors, 0x8016,
+               {0x12, 0x34, 0x25, 0x9e, 0x8c, 0x00, 0x10, 0x0c,
+                'S', 'e', 'r', 'i', 'e', 's'});
+
     std::vector<std::uint8_t> section{
         0x8b, 0xf0, 0x00,
         0x00, 0x65, // service_id 101
@@ -687,6 +707,20 @@ void test_mh_eit_program_events() {
     check(event.running_status == 4 && !event.free_ca_mode && event.language == "jpn" &&
               event.title == "録画された番組" && event.description == "番組概要",
           "MH short-event descriptor was not parsed");
+    check(event.extended_description == "More" && event.extended_items.size() == 1 &&
+              event.extended_items[0].description == "Cast" &&
+              event.extended_items[0].value == "Alice" &&
+              event.genres.size() == 1 && event.genres[0].level1 == 1 &&
+              event.genres[0].level2 == 2 && event.parental_ratings.size() == 1 &&
+              event.parental_ratings[0].rating == 4,
+          "MH extended/content/parental event descriptors were not parsed");
+    check(event.audio_components.size() == 1 &&
+              event.audio_components[0].audio.component_tag == 0x10 &&
+              event.audio_components[0].audio.sample_rate == 48000 &&
+              event.audio_components[0].text == "Main" && event.series.has_value() &&
+              event.series->series_id == 0x1234 && event.series->episode_number == 1 &&
+              event.series->last_episode_number == 12 && event.series->name == "Series",
+          "MH audio-component/series event descriptors were not parsed");
 }
 
 std::vector<std::uint8_t> emt_message(const std::uint8_t version,

@@ -63,6 +63,7 @@ struct AudioInfo {
     std::uint8_t sampling_rate_code = 0;
     std::uint32_t sample_rate = 0;
     std::string secondary_language;
+    bool operator==(const AudioInfo&) const = default;
 };
 
 struct Timestamp {
@@ -183,6 +184,44 @@ struct SignallingMessage {
     std::uint64_t input_offset = 0;
 };
 
+struct ExtendedEventItem {
+    std::string description;
+    std::string value;
+    bool operator==(const ExtendedEventItem&) const = default;
+};
+
+struct ContentGenre {
+    std::uint8_t level1 = 0;
+    std::uint8_t level2 = 0;
+    std::uint8_t user1 = 0;
+    std::uint8_t user2 = 0;
+    bool operator==(const ContentGenre&) const = default;
+};
+
+struct ParentalRating {
+    std::string country_code;
+    std::uint8_t rating = 0;
+    bool operator==(const ParentalRating&) const = default;
+};
+
+struct EventAudioComponent {
+    AudioInfo audio;
+    std::string language;
+    std::string text;
+    bool operator==(const EventAudioComponent&) const = default;
+};
+
+struct SeriesInfo {
+    std::uint16_t series_id = 0;
+    std::uint8_t repeat_label = 0;
+    std::uint8_t program_pattern = 0;
+    std::optional<std::uint16_t> expire_date_mjd;
+    std::uint16_t episode_number = 0;
+    std::uint16_t last_episode_number = 0;
+    std::string name;
+    bool operator==(const SeriesInfo&) const = default;
+};
+
 struct EventInfo {
     std::uint32_t context_id = 0;
     std::uint16_t source_packet_id = 0;
@@ -202,6 +241,12 @@ struct EventInfo {
     std::string language;
     std::string title;
     std::string description;
+    std::string extended_description;
+    std::vector<ExtendedEventItem> extended_items;
+    std::vector<ContentGenre> genres;
+    std::vector<ParentalRating> parental_ratings;
+    std::vector<EventAudioComponent> audio_components;
+    std::optional<SeriesInfo> series;
     std::uint64_t input_offset = 0;
 };
 

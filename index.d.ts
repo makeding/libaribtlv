@@ -271,6 +271,32 @@ declare namespace createTlvDemuxModule {
     language: string;
     title: string;
     description: string;
+    extendedDescription: string;
+    extendedItems: Array<{ description: string; value: string }>;
+    genres: Array<{ level1: number; level2: number; user1: number; user2: number }>;
+    parentalRatings: Array<{ countryCode: string; rating: number }>;
+    audioComponents: Array<{
+      componentType: number;
+      componentTag: number;
+      channelLayout: number;
+      channels: number;
+      streamType: number;
+      multilingual: boolean;
+      mainComponent: boolean;
+      sampleRate: number;
+      language: string;
+      secondaryLanguage: string;
+      text: string;
+    }>;
+    series: {
+      seriesId: number;
+      repeatLabel: number;
+      programPattern: number;
+      expireDateMjd: number | null;
+      episodeNumber: number;
+      lastEpisodeNumber: number;
+      name: string;
+    } | null;
     inputOffset: bigint;
   }
 

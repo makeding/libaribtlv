@@ -845,6 +845,14 @@ bool MmtpParser::parse_mh_eit(const std::uint8_t* data, const std::size_t size,
         offset += 12;
         if (descriptors_length > section_end - offset) return false;
 
+        struct ExtendedFragment {
+            std::uint8_t number = 0;
+            std::uint8_t last = 0;
+            std::string language;
+            std::vector<ExtendedEventItem> items;
+            std::string text;
+        };
+        std::vector<ExtendedFragment> extended_fragments;
         ByteReader descriptors(data + offset, descriptors_length);
         while (descriptors.remaining() != 0) {
             std::uint16_t tag = 0;
@@ -857,6 +865,118 @@ bool MmtpParser::parse_mh_eit(const std::uint8_t* data, const std::size_t size,
             if (!descriptors.read_view(length, payload)) return false;
             if (tag == 0xf001 && !parse_short_event_descriptor(payload, length, event)) {
                 return false;
+            } else if (tag == 0xf002) {
+                if (length < 8) return false;
+                ExtendedFragment fragment;
+                fragment.number = static_cast<std::uint8_t>(payload[0] >> 4U);
+                fragment.last = static_cast<std::uint8_t>(payload[0] & 0x0fU);
+                fragment.language.assign(reinterpret_cast<const char*>(payload + 1), 3);
+                const auto items_length = static_cast<std::size_t>(read_be16(payload + 4));
+                if (items_length > length - 6) return false;
+                std::size_t at = 6;
+                const auto items_end = at + items_length;
+                while (at < items_end) {
+                    const auto description_length = static_cast<std::size_t>(payload[at++]);
+                    if (description_length > items_end - at) return false;
+                    ExtendedEventItem item;
+                    item.description.assign(
+                        reinterpret_cast<const char*>(payload + at), description_length);
+                    at += description_length;
+                    if (items_end - at < 2) return false;
+                    const auto item_length = static_cast<std::size_t>(read_be16(payload + at));
+                    at += 2;
+                    if (item_length > items_end - at) return false;
+                    item.value.assign(reinterpret_cast<const char*>(payload + at), item_length);
+                    at += item_length;
+                    fragment.items.push_back(std::move(item));
+                }
+                if (length - at < 2) return false;
+                const auto text_length = static_cast<std::size_t>(read_be16(payload + at));
+                at += 2;
+                if (text_length != length - at) return false;
+                fragment.text.assign(reinterpret_cast<const char*>(payload + at), text_length);
+                extended_fragments.push_back(std::move(fragment));
+            } else if (tag == 0x8012) {
+                if (length % 2 != 0) return false;
+                for (std::size_t at = 0; at < length; at += 2) {
+                    event.genres.push_back(ContentGenre{
+                        static_cast<std::uint8_t>(payload[at] >> 4U),
+                        static_cast<std::uint8_t>(payload[at] & 0x0fU),
+                        static_cast<std::uint8_t>(payload[at + 1] >> 4U),
+                        static_cast<std::uint8_t>(payload[at + 1] & 0x0fU)});
+                }
+            } else if (tag == 0x8013) {
+                if (length % 4 != 0) return false;
+                for (std::size_t at = 0; at < length; at += 4) {
+                    ParentalRating rating;
+                    rating.country_code.assign(
+                        reinterpret_cast<const char*>(payload + at), 3);
+                    rating.rating = payload[at + 3];
+                    event.parental_ratings.push_back(std::move(rating));
+                }
+            } else if (tag == 0x8014) {
+                if (length < 10) return false;
+                EventAudioComponent component;
+                component.audio.stream_content = static_cast<std::uint8_t>(payload[0] & 0x0fU);
+                component.audio.component_type = payload[1];
+                component.audio.component_tag = read_be16(payload + 2);
+                component.audio.channel_layout =
+                    audio_channel_layout(component.audio.component_type);
+                component.audio.stream_type = payload[4];
+                component.audio.simulcast_group_tag = payload[5];
+                component.audio.es_multi_lingual = (payload[6] & 0x80U) != 0;
+                component.audio.main_component = (payload[6] & 0x40U) != 0;
+                component.audio.quality_indicator =
+                    static_cast<std::uint8_t>((payload[6] >> 4U) & 0x03U);
+                component.audio.sampling_rate_code =
+                    static_cast<std::uint8_t>((payload[6] >> 1U) & 0x07U);
+                component.audio.sample_rate =
+                    audio_sample_rate(component.audio.sampling_rate_code);
+                component.language.assign(reinterpret_cast<const char*>(payload + 7), 3);
+                std::size_t at = 10;
+                if (component.audio.es_multi_lingual) {
+                    if (length < 13) return false;
+                    component.audio.secondary_language.assign(
+                        reinterpret_cast<const char*>(payload + 10), 3);
+                    at = 13;
+                }
+                component.text.assign(reinterpret_cast<const char*>(payload + at), length - at);
+                event.audio_components.push_back(std::move(component));
+            } else if (tag == 0x8016) {
+                if (length < 8) return false;
+                SeriesInfo series;
+                series.series_id = read_be16(payload);
+                series.repeat_label = static_cast<std::uint8_t>(payload[2] >> 4U);
+                series.program_pattern = static_cast<std::uint8_t>((payload[2] >> 1U) & 0x07U);
+                if ((payload[2] & 0x01U) != 0) series.expire_date_mjd = read_be16(payload + 3);
+                series.episode_number = static_cast<std::uint16_t>(
+                    (static_cast<std::uint16_t>(payload[5]) << 4U) | (payload[6] >> 4U));
+                series.last_episode_number = static_cast<std::uint16_t>(
+                    ((static_cast<std::uint16_t>(payload[6]) & 0x0fU) << 8U) | payload[7]);
+                series.name.assign(reinterpret_cast<const char*>(payload + 8), length - 8);
+                event.series = std::move(series);
+            }
+        }
+        if (!extended_fragments.empty()) {
+            const auto preferred_language = !event.language.empty()
+                ? event.language : extended_fragments.front().language;
+            std::sort(extended_fragments.begin(), extended_fragments.end(),
+                      [](const auto& left, const auto& right) {
+                          return left.number < right.number;
+                      });
+            std::optional<std::uint8_t> last_number;
+            std::optional<std::uint8_t> previous_number;
+            for (const auto& fragment : extended_fragments) {
+                if (fragment.language != preferred_language) continue;
+                if (!last_number.has_value()) last_number = fragment.last;
+                if (*last_number != fragment.last ||
+                    (previous_number.has_value() && fragment.number == *previous_number)) {
+                    return false;
+                }
+                previous_number = fragment.number;
+                event.extended_items.insert(event.extended_items.end(),
+                                            fragment.items.begin(), fragment.items.end());
+                event.extended_description += fragment.text;
             }
         }
         offset += descriptors_length;

@@ -584,7 +584,13 @@ private:
         if (found != events_.end() && found->second.version == info.version &&
             found->second.start_time_unix_milliseconds == info.start_time_unix_milliseconds &&
             found->second.duration_seconds == info.duration_seconds &&
-            found->second.title == info.title && found->second.description == info.description) {
+            found->second.title == info.title && found->second.description == info.description &&
+            found->second.extended_description == info.extended_description &&
+            found->second.extended_items == info.extended_items &&
+            found->second.genres == info.genres &&
+            found->second.parental_ratings == info.parental_ratings &&
+            found->second.audio_components == info.audio_components &&
+            found->second.series == info.series) {
             return;
         }
         events_[key] = info;
