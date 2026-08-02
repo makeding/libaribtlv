@@ -49,7 +49,7 @@ class FakeMediaSource extends EventTarget {
 }
 
 globalThis.MediaSource = FakeMediaSource;
-const {MseAppendQueue} = await import('../mse-append-queue.mjs');
+const {MseAppendQueue, finalizeMseMediaSource} = await import('../mse-append-queue.mjs');
 
 async function tick() {
   await new Promise(resolve => setTimeout(resolve, 5));
@@ -93,6 +93,27 @@ async function tick() {
   sourceBuffer.complete();
   await queue.waitIdle();
   assert.equal(queue.queuedBytes, 0);
+}
+
+{
+  const removals = [];
+  const mediaSource = {
+    duration: 10,
+    readyState: 'open',
+    endOfStream() { this.readyState = 'ended'; },
+  };
+  const queue = end => ({
+    sourceBuffer: {remove: (start, finish) => removals.push([start, finish])},
+    bufferedRanges: () => [{start: 0, end}],
+    waitIdle: async () => undefined,
+  });
+  const result = await finalizeMseMediaSource(mediaSource, [queue(10), queue(9)], {
+    truncateToCommonEnd: true,
+  });
+  assert.deepEqual(removals, [[9, 10]]);
+  assert.equal(result.truncatedTo, 9);
+  assert.equal(mediaSource.duration, 9);
+  assert.equal(mediaSource.readyState, 'ended');
 }
 
 console.log('mse append queue regression tests passed');
