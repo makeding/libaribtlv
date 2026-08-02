@@ -257,6 +257,9 @@ bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata) {
                     std::uint16_t pts = default_pts_offset;
                     if (!values.read_u16(dts_pts)) return false;
                     if (pts_offset_type == 2 && !values.read_u16(pts)) return false;
+                    if (index != 0 && pts != timing.pts_offsets.back()) {
+                        timing.uniform_pts_offsets = false;
+                    }
                     timing.dts_pts_offsets.push_back(dts_pts);
                     timing.pts_offsets.push_back(pts);
                 }

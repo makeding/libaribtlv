@@ -123,7 +123,7 @@ void MmtpParser::consume_mfu_piece(TrackState& track,
                       "complete MFU interrupted a fragmented MFU");
         }
         assembler.state = FragmentState::Idle;
-        consume_complete_mfu(track, mpu_sequence, sample_number, random_access,
+        consume_complete_mfu(track, mpu_sequence, timed ? sample_number : 0, random_access,
                              payload, payload_size, input_offset, track.restart_offset);
         break;
     case 1:
@@ -167,7 +167,8 @@ void MmtpParser::consume_mfu_piece(TrackState& track,
         }
         assembler.random_access = assembler.random_access || random_access;
         if (append_media(track, payload, payload_size, input_offset)) {
-            consume_complete_mfu(track, assembler.mpu_sequence, assembler.sample_number,
+            consume_complete_mfu(track, assembler.mpu_sequence,
+                                 timed ? assembler.sample_number : 0,
                                  assembler.random_access, assembler.data.data(),
                                  assembler.data.size(), assembler.input_offset,
                                  assembler.restart_offset);
@@ -191,7 +192,7 @@ void MmtpParser::finalize_hevc(TrackState& track) {
         if (pending.random_access) track.wait_for_rap = false;
         emit_access_unit(track, pending.mpu_sequence, std::move(pending.data),
                          pending.random_access, pending.input_offset,
-                         pending.restart_offset);
+                         pending.restart_offset, pending.sample_number);
     } else {
         track.discontinuity = true;
         on_error_(ErrorCode::MalformedInput, pending.input_offset, true,
@@ -245,7 +246,8 @@ void MmtpParser::consume_complete_mfu(TrackState& track,
         const bool begins_access_unit = nal_type == 35 ||
             (first_slice && pending.has_vcl) ||
             ((nal_type == 32 || nal_type == 33 || nal_type == 34 || nal_type == 39) &&
-             pending.has_vcl);
+             pending.has_vcl) ||
+            (sample_number != 0 && pending.active && pending.sample_number != sample_number);
         if (pending.active && begins_access_unit) {
             finalize_hevc(track);
         }
@@ -285,7 +287,7 @@ void MmtpParser::consume_complete_mfu(TrackState& track,
         loas.push_back(static_cast<std::uint8_t>(size));
         loas.insert(loas.end(), data, data + size);
         emit_access_unit(track, mpu_sequence, std::move(loas), random_access, input_offset,
-                         restart_offset);
+                         restart_offset, sample_number);
         return;
     }
 
@@ -407,7 +409,7 @@ void MmtpParser::consume_complete_mfu(TrackState& track,
     const auto output_rap = subtitle.random_access;
     subtitle = {};
     emit_access_unit(track, mpu_sequence, std::move(ttml), output_rap, output_offset,
-                     output_restart_offset, std::move(resources));
+                     output_restart_offset, 0, std::move(resources));
 }
 
 void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_sequence,
@@ -415,7 +417,16 @@ void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_seq
                                   const bool random_access,
                                   const std::uint64_t input_offset,
                                   const std::uint64_t restart_offset,
+                                  const std::uint32_t sample_number,
                                   std::vector<SubtitleResource> subtitle_resources) {
+    std::size_t au_index = 0;
+    if (sample_number != 0) {
+        au_index = static_cast<std::size_t>(sample_number - 1);
+        if (track.au_index <= au_index) track.au_index = au_index + 1;
+    } else {
+        au_index = track.au_index;
+        ++track.au_index;
+    }
     const auto timestamp = track.timestamps.find(mpu_sequence);
     const auto extended = track.extended_timestamps.find(mpu_sequence);
     std::int64_t dts_offset = 0;
@@ -423,18 +434,24 @@ void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_seq
     std::uint64_t ntp = 0;
     auto output_restart_offset = restart_offset;
     if (timestamp != track.timestamps.end() && extended != track.extended_timestamps.end() &&
-        track.au_index < extended->second.dts_pts_offsets.size() &&
-        track.au_index < extended->second.pts_offsets.size()) {
+        au_index < extended->second.dts_pts_offsets.size() &&
+        au_index < extended->second.pts_offsets.size()) {
+        if (!extended->second.uniform_pts_offsets) {
+            track.discontinuity = true;
+            on_error_(ErrorCode::UnsupportedFeature, input_offset, true,
+                      "dropped access unit: pts_offset_type 2 supplied a non-uniform "
+                      "pts_offset, which needs the bitstream presentation order that "
+                      "this parser does not derive");
+            return;
+        }
         output_restart_offset = std::min(
             output_restart_offset,
             std::min(timestamp->second.restart_offset,
                      extended->second.restart_offset));
         dts_offset = -static_cast<std::int64_t>(extended->second.decoding_time_offset) +
-            track.dts_offset_accumulator;
-        pts_offset = dts_offset + extended->second.dts_pts_offsets[track.au_index];
-        track.dts_offset_accumulator += extended->second.pts_offsets[track.au_index];
+            static_cast<std::int64_t>(au_index) * extended->second.pts_offsets[0];
+        pts_offset = dts_offset + extended->second.dts_pts_offsets[au_index];
         ntp = timestamp->second.ntp;
-        ++track.au_index;
     } else if (track.info.codec == Codec::Ttml && latest_full_ntp_.has_value()) {
         const auto delivery = track.delivery_timestamps.find(mpu_sequence);
         if (delivery == track.delivery_timestamps.end()) {
@@ -450,7 +467,6 @@ void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_seq
         ntp = expand_short_ntp(delivery->second, *latest_full_ntp_);
     } else {
         track.discontinuity = true;
-        ++track.au_index;
         on_error_(ErrorCode::Discontinuity, input_offset, true,
                   "dropped access unit without a matching timestamp descriptor");
         return;
@@ -701,7 +717,6 @@ void MmtpParser::parse_mpu(const std::uint16_t packet_id,
         }
         track.current_mpu_sequence = mpu_sequence;
         track.au_index = 0;
-        track.dts_offset_accumulator = 0;
     }
 
     const auto* body = data + 8;

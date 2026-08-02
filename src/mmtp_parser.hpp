@@ -22,6 +22,10 @@ struct ExtendedTimestampMapping {
     std::uint16_t decoding_time_offset = 0;
     std::vector<std::uint16_t> dts_pts_offsets;
     std::vector<std::uint16_t> pts_offsets;
+    // false only when pts_offset_type == 2 supplied distinct per-AU pts_offset values.
+    // emit_access_unit() derives dts_offset from a single pts_offsets[0] constant and
+    // rejects access units when this is false.
+    bool uniform_pts_offsets = true;
     std::uint64_t restart_offset = 0;
 };
 
@@ -156,7 +160,6 @@ private:
         std::uint64_t restart_offset = 0;
         std::optional<std::uint32_t> current_mpu_sequence;
         std::size_t au_index = 0;
-        std::int64_t dts_offset_accumulator = 0;
         bool wait_for_rap = false;
         bool skipping_hevc_picture = false;
         bool discontinuity = false;
@@ -222,6 +225,7 @@ private:
     void emit_access_unit(TrackState&, std::uint32_t mpu_sequence,
                           std::vector<std::uint8_t>, bool random_access,
                           std::uint64_t input_offset, std::uint64_t restart_offset,
+                          std::uint32_t sample_number = 0,
                           std::vector<SubtitleResource> subtitle_resources = {});
     void finalize_hevc(TrackState&);
     void install_track(TrackInfo, AssetMetadata, std::uint64_t input_offset);
