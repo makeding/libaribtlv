@@ -133,10 +133,12 @@ protected:
 
     void enqueue(Sample sample) {
         if (pending_) {
+            // A trun sample duration is the delta to the next decode timestamp;
+            // a non-advancing DTS has no representable duration, so drop it
+            // rather than fabricate one (see Firefox CtsComparator background).
             const auto delta = sample.dts - pending_->dts;
-            pending_->duration = delta > 0
-                ? static_cast<std::uint32_t>(delta)
-                : (last_duration_ != 0 ? last_duration_ : default_duration());
+            if (delta <= 0) return;
+            pending_->duration = static_cast<std::uint32_t>(delta);
             last_duration_ = pending_->duration;
             ready_duration_ += pending_->duration;
             ready_.push_back(std::move(*pending_));
