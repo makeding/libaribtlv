@@ -716,6 +716,13 @@ void MmtpParser::parse_mpu(const std::uint16_t packet_id,
     if (!track.current_mpu_sequence.has_value() || *track.current_mpu_sequence != mpu_sequence) {
         if (track.current_mpu_sequence.has_value()) {
             finalize_hevc(track);
+            const auto previous = track.extended_timestamps.find(*track.current_mpu_sequence);
+            if (!track.wait_for_rap && previous != track.extended_timestamps.end() &&
+                track.au_index != previous->second.dts_pts_offsets.size()) {
+                track.discontinuity = true;
+                on_error_(ErrorCode::Discontinuity, input_offset, true,
+                          "MPU access-unit count disagrees with its timestamp descriptor");
+            }
             if (mpu_sequence != *track.current_mpu_sequence + 1U) track.discontinuity = true;
             if (track.subtitle.active) {
                 track.subtitle = {};

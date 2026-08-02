@@ -1947,6 +1947,47 @@ void test_extended_timestamp_indexed_by_sample_number() {
           "descriptor entry");
 }
 
+void test_mpu_au_count_mismatch_flags_discontinuity() {
+    const std::vector<std::uint16_t> dts_pts_offsets{10, 20};
+    const std::vector<std::uint16_t> pts_offsets{111, 222};
+    auto stream = signalling_tlv(
+        1, 0, video_discovery_message_with_offsets(1, dts_pts_offsets, pts_offsets));
+    const auto next_mpu_signalling = signalling_tlv(2, 0, video_discovery_message(2));
+
+    std::uint32_t sequence = 1;
+    const auto add_mfu = [&](const std::uint32_t mpu_sequence, const std::uint32_t sample_number,
+                             const bool rap, const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf300, sequence++, 100U << 16U, rap,
+                           mpu_payload(mpu_sequence, mfu, sample_number)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    // MPU 1's descriptor declares two access units, but only one is delivered
+    // before MPU 2 begins.
+    add_mfu(1, 1, true, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(1, 1, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    stream.insert(stream.end(), next_mpu_signalling.begin(), next_mpu_signalling.end());
+    add_mfu(2, 1, false, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(2, 1, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+
+    check(std::any_of(sink.errors.begin(), sink.errors.end(), [](const auto& error) {
+              return error.code == tlvdemux::ErrorCode::Discontinuity && error.recoverable;
+          }),
+          "short MPU access-unit count did not raise a recoverable discontinuity error");
+    const auto second_mpu_video = std::find_if(
+        sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
+            return unit.codec == tlvdemux::Codec::Hevc &&
+                unit.mpu_sequence_number == std::optional<std::uint32_t>{2};
+        });
+    check(second_mpu_video != sink.access_units.end() && second_mpu_video->discontinuity,
+          "MPU access-unit count mismatch did not mark the next access unit discontinuous");
+}
+
 void test_non_timed_media_mfu_ignores_opaque_header_as_sample_number() {
     const std::vector<std::uint16_t> dts_pts_offsets{0, 20};
     const std::vector<std::uint16_t> pts_offsets{111, 111};
@@ -2151,6 +2192,7 @@ int main() {
     test_access_unit_restart_offset_is_snapshotted();
     test_restart_offset_includes_timestamp_mapping_origin();
     test_extended_timestamp_indexed_by_sample_number();
+    test_mpu_au_count_mismatch_flags_discontinuity();
     test_non_timed_media_mfu_ignores_opaque_header_as_sample_number();
     test_aac_extended_timestamp_indexed_by_sample_number();
     test_out_of_order_sample_number_is_dropped();
