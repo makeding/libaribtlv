@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -41,6 +42,10 @@ using emscripten::val;
 #endif
 
 constexpr std::uint32_t kFragmentDurationDivisor = 4;
+// Firefox's MoofParser only bridges cross-moof composition gaps under 1us
+// (dom/media/mp4/MoofParser.cpp), so a fragment can only be cut where the
+// queue has a genuinely safe prefix. Bound how long we wait for one.
+constexpr std::uint32_t kQueueDurationBoundMultiplier = 8;
 
 Bytes u32(const std::uint64_t value) {
     return {static_cast<std::uint8_t>(value >> 24U),
@@ -119,7 +124,7 @@ public:
             ready_.push_back(std::move(*pending_));
             pending_.reset();
         }
-        emit();
+        emit(true);
     }
 
 protected:
@@ -133,27 +138,62 @@ protected:
 
     void enqueue(Sample sample) {
         if (pending_) {
+            // A trun sample duration is the delta to the next decode timestamp;
+            // a non-advancing DTS has no representable duration, so drop it
+            // rather than fabricate one (see Firefox CtsComparator background).
             const auto delta = sample.dts - pending_->dts;
-            pending_->duration = delta > 0
-                ? static_cast<std::uint32_t>(delta)
-                : (last_duration_ != 0 ? last_duration_ : default_duration());
+            if (delta <= 0) return;
+            pending_->duration = static_cast<std::uint32_t>(delta);
             last_duration_ = pending_->duration;
             ready_duration_ += pending_->duration;
             ready_.push_back(std::move(*pending_));
         }
         pending_ = std::move(sample);
-        if (track_ && ready_duration_ >=
-                std::max<std::uint32_t>(1, track_->timescale / kFragmentDurationDivisor)) {
-            emit();
-        }
+        if (!track_) return;
+        const auto threshold = std::max<std::uint32_t>(1, track_->timescale / kFragmentDurationDivisor);
+        if (ready_duration_ >= threshold) emit(false);
+        if (ready_duration_ >= std::uint64_t(threshold) * kQueueDurationBoundMultiplier) emit(true);
     }
 
-    void emit() {
+    // Longest prefix of ready_ whose composition interval cannot overlap
+    // anything still queued after it (rest of ready_, plus pending_). Cutting
+    // a fragment there is safe: Firefox's CtsComparator reorders each moof's
+    // samples by composition time, so a cut mid reorder-group would make this
+    // fragment's interval overlap the next one and evict already-buffered frames.
+    std::size_t safe_prefix() const {
+        const auto count = ready_.size();
+        if (count == 0) return 0;
+        std::vector<std::int64_t> min_from(count + 1);
+        min_from[count] = pending_ ? pending_->pts : std::numeric_limits<std::int64_t>::max();
+        for (std::size_t index = count; index-- > 0;) {
+            min_from[index] = std::min(ready_[index].pts, min_from[index + 1]);
+        }
+        std::size_t safe = 0;
+        std::int64_t prefix_end = std::numeric_limits<std::int64_t>::min();
+        for (std::size_t index = 0; index < count; ++index) {
+            prefix_end = std::max(prefix_end,
+                                  ready_[index].pts + static_cast<std::int64_t>(ready_[index].duration));
+            if (prefix_end <= min_from[index + 1]) safe = index + 1;
+        }
+        return safe;
+    }
+
+    void emit(const bool force) {
         if (!track_ || ready_.empty()) return;
-        auto segment = media_segment(*track_, ready_, sequence_++);
-        output_.segment(type_, std::move(segment));
-        ready_.clear();
-        ready_duration_ = 0;
+        const auto count = force ? ready_.size() : safe_prefix();
+        if (count == 0) return;
+        std::uint64_t emitted_duration = 0;
+        for (std::size_t index = 0; index < count; ++index) {
+            emitted_duration += ready_[index].duration;
+        }
+        std::vector<Sample> segment;
+        segment.reserve(count);
+        for (std::size_t index = 0; index < count; ++index) {
+            segment.push_back(std::move(ready_[index]));
+        }
+        output_.segment(type_, media_segment(*track_, segment, sequence_++));
+        ready_.erase(ready_.begin(), ready_.begin() + static_cast<std::ptrdiff_t>(count));
+        ready_duration_ -= emitted_duration;
     }
 
     std::optional<Mp4Track> track_;
@@ -173,8 +213,11 @@ public:
     explicit HevcMuxer(Output& output) : BaseMuxer("video", output), output_(output) {}
 
     bool started() const noexcept { return started_; }
+    // AacMuxer has its own (sample-rate) track timescale, so it needs this
+    // shared offset in microseconds regardless of the video track timescale.
     std::optional<std::int64_t> timeline_offset_us() const noexcept {
-        return timeline_offset_us_;
+        if (!timeline_offset_ticks_) return std::nullopt;
+        return scaled(*timeline_offset_ticks_, track_->timescale, 1000000);
     }
 
     void reset() {
@@ -183,7 +226,8 @@ public:
         track_.reset();
         started_ = false;
         no_rasl_output_ = false;
-        timeline_offset_us_.reset();
+        sequence_start_ = true;
+        timeline_offset_ticks_.reset();
     }
 
     void push(const tlvdemux::AccessUnit& unit, const bool output_enabled) {
@@ -191,7 +235,8 @@ public:
             reset_samples();
             started_ = false;
             no_rasl_output_ = false;
-            timeline_offset_us_.reset();
+            sequence_start_ = true;
+            timeline_offset_ticks_.reset();
         }
         const auto nalus = annex_b_views(unit.data);
         for (const auto& nalu : nalus) {
@@ -209,33 +254,61 @@ public:
             track.height = config.height;
             track.codec = config.codec;
             track.config = config.hvcc;
+            // Adopt the stream's own timescale so DTS/PTS stay exact integers
+            // (e.g. 180000's 3003-tick frame interval is not an integer number
+            // of microseconds, and the resulting rounding drift can make a
+            // fragment's composition interval overlap the next one). A
+            // timescale of 1 means the stream never signalled one; keep the
+            // 1000000 default rather than build a 1 Hz MP4 track.
+            if (unit.dts.timescale > 1) track.timescale = unit.dts.timescale;
             set_track(std::move(track));
         }
         if (!track_) return;
 
         bool has_vcl = false;
         bool only_rasl_vcl = true;
+        bool all_leading = true;
+        bool has_eos = false;
         int irap = -1;
         for (const auto& nalu : nalus) {
-            if (nalu.type < 0 || nalu.type > 31) continue;
-            has_vcl = true;
-            only_rasl_vcl = only_rasl_vcl && (nalu.type == 8 || nalu.type == 9);
-            if (nalu.type >= 16 && nalu.type <= 21 && irap < 0) irap = nalu.type;
+            if (nalu.type >= 0 && nalu.type <= 31) {
+                has_vcl = true;
+                only_rasl_vcl = only_rasl_vcl && (nalu.type == 8 || nalu.type == 9);
+                all_leading = all_leading && (nalu.type >= 6 && nalu.type <= 9);
+                if (nalu.type >= 16 && nalu.type <= 21 && irap < 0) irap = nalu.type;
+            } else if (nalu.type == 36 || nalu.type == 37) {
+                has_eos = true;
+            }
         }
-        if (!has_vcl) return;
+        if (!has_vcl) {
+            // An EOS/EOB-only access unit carries no picture, but still ends
+            // the coded video sequence for whichever IRAP follows it.
+            if (has_eos) sequence_start_ = true;
+            return;
+        }
         if (!started_) {
             if (irap < 0) return;
             started_ = true;
-            const auto first_dts_us = scaled(unit.dts.value, unit.dts.timescale, 1000000);
-            timeline_offset_us_ = std::max<std::int64_t>(0, -first_dts_us);
-            // The first CRA starts a fresh decode sequence, so its leading RASL
-            // pictures cannot reference pre-CRA pictures that were not emitted.
-            no_rasl_output_ = irap == 21;
+            const auto first_dts = scaled(unit.dts.value, unit.dts.timescale, track_->timescale);
+            timeline_offset_ticks_ = std::max<std::int64_t>(0, -first_dts);
             output_.video_start(irap, unit.random_access);
+        }
+        // HEVC 8.1.3: NoRaslOutputFlag is 1 for every IDR/BLA access unit, and for
+        // a CRA that opens a fresh coded video sequence (the first access unit in
+        // the bitstream, or the first one after an EOS/EOB NAL); HandleCraAsBlaFlag
+        // is an external decoder input, not derivable from the bitstream, and is
+        // ignored. While it holds, RASL pictures reference data the decoder never
+        // received and are dropped. RADL pictures are leading but decodable, so
+        // they pass through without closing the window; the window instead ends at
+        // the first trailing (non-leading) access unit that follows the IRAP.
+        if (irap >= 0) {
+            no_rasl_output_ = (irap >= 16 && irap <= 20) || sequence_start_;
+            sequence_start_ = false;
         } else if (no_rasl_output_) {
             if (only_rasl_vcl) return;
-            no_rasl_output_ = false;
+            if (!all_leading) no_rasl_output_ = false;
         }
+        if (has_eos) sequence_start_ = true;
         if (!output_enabled) return;
 
         std::size_t output_size = 0;
@@ -250,9 +323,9 @@ public:
             append(data, unit.data.data() + nalu.offset, nalu.size);
         }
         if (data.empty()) return;
-        const auto offset = timeline_offset_us_.value_or(0);
-        const auto dts = scaled(unit.dts.value, unit.dts.timescale, 1000000) + offset;
-        const auto pts = scaled(unit.pts.value, unit.pts.timescale, 1000000) + offset;
+        const auto offset = timeline_offset_ticks_.value_or(0);
+        const auto dts = scaled(unit.dts.value, unit.dts.timescale, track_->timescale) + offset;
+        const auto pts = scaled(unit.pts.value, unit.pts.timescale, track_->timescale) + offset;
         if (dts < 0) return;
         enqueue({std::move(data), dts, pts, 0, irap >= 0});
     }
@@ -262,13 +335,20 @@ private:
         return nalu.type != 32 && nalu.type != 33 && nalu.type != 34 && nalu.type != 35;
     }
 
-    std::uint32_t default_duration() const override { return 33367; }
+    // 33367 at a 1e6 timescale is the ~29.97fps default this stood in for;
+    // scale it to whatever timescale the track actually adopted above.
+    std::uint32_t default_duration() const override {
+        return track_ ? static_cast<std::uint32_t>(std::llround(
+                            33367.0 * track_->timescale / 1000000.0))
+                      : 33367;
+    }
 
     Output& output_;
     std::map<int, Bytes> parameter_sets_;
     bool started_ = false;
     bool no_rasl_output_ = false;
-    std::optional<std::int64_t> timeline_offset_us_;
+    bool sequence_start_ = true;
+    std::optional<std::int64_t> timeline_offset_ticks_;
 };
 
 class AacMuxer final : public BaseMuxer {
