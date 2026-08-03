@@ -284,20 +284,71 @@ void append_u64(std::vector<std::uint8_t>& value, const std::uint64_t number) {
 void timing_descriptors(std::vector<std::uint8_t>& value,
                         const std::uint32_t mpu_sequence,
                         const std::uint32_t timescale,
-                        const std::uint8_t au_count = 1) {
+                        const std::uint8_t au_count = 1,
+                        const std::uint64_t mpu_presentation_time = 100ULL << 32U,
+                        const std::uint8_t leap_indicator = 0) {
     std::vector<std::uint8_t> timestamp;
     append_u32(timestamp, mpu_sequence);
-    append_u64(timestamp, 100ULL << 32U);
+    append_u64(timestamp, mpu_presentation_time);
     descriptor(value, 0x0001, timestamp);
 
     std::vector<std::uint8_t> extended{0x03};
     append_u32(extended, timescale);
     append_u16(extended, 3000);
     append_u32(extended, mpu_sequence);
-    extended.push_back(0);
+    extended.push_back(static_cast<std::uint8_t>(leap_indicator << 6U));
     append_u16(extended, 0);
     extended.push_back(au_count);
     for (std::uint16_t index = 0; index < au_count; ++index) append_u16(extended, 0);
+    descriptor(value, 0x8026, extended);
+}
+
+// Unlike timing_descriptors() above, this carries a distinct dts_pts_offset per
+// access unit (pts_offset_type == 2), so tests can prove the descriptor is indexed
+// by sample_number rather than by emission order. pts_offsets must be uniform across
+// entries unless a test is specifically exercising the non-uniform rejection, since
+// emit_access_unit() only accumulates it correctly when it is constant across the MPU.
+void per_au_timing_descriptors(std::vector<std::uint8_t>& value,
+                               const std::uint32_t mpu_sequence,
+                               const std::uint32_t timescale,
+                               const std::vector<std::uint16_t>& dts_pts_offsets,
+                               const std::vector<std::uint16_t>& pts_offsets) {
+    std::vector<std::uint8_t> timestamp;
+    append_u32(timestamp, mpu_sequence);
+    append_u64(timestamp, 100ULL << 32U);
+    descriptor(value, 0x0001, timestamp);
+
+    std::vector<std::uint8_t> extended{0x05}; // timescale present, pts_offset_type == 2
+    append_u32(extended, timescale);
+    append_u32(extended, mpu_sequence);
+    extended.push_back(0);
+    append_u16(extended, 0);
+    extended.push_back(static_cast<std::uint8_t>(dts_pts_offsets.size()));
+    for (std::size_t index = 0; index < dts_pts_offsets.size(); ++index) {
+        append_u16(extended, dts_pts_offsets[index]);
+        append_u16(extended, pts_offsets[index]);
+    }
+    descriptor(value, 0x8026, extended);
+}
+
+// pts_offset_type == 3 is reserved by TR-B39 Table 34.1-72: only dts_pts_offset is
+// present per access unit, with no pts_offset field at all.
+void reserved_pts_offset_type_descriptors(std::vector<std::uint8_t>& value,
+                                          const std::uint32_t mpu_sequence,
+                                          const std::uint32_t timescale,
+                                          const std::vector<std::uint16_t>& dts_pts_offsets) {
+    std::vector<std::uint8_t> timestamp;
+    append_u32(timestamp, mpu_sequence);
+    append_u64(timestamp, 100ULL << 32U);
+    descriptor(value, 0x0001, timestamp);
+
+    std::vector<std::uint8_t> extended{0x07}; // timescale present, pts_offset_type == 3
+    append_u32(extended, timescale);
+    append_u32(extended, mpu_sequence);
+    extended.push_back(0);
+    append_u16(extended, 0);
+    extended.push_back(static_cast<std::uint8_t>(dts_pts_offsets.size()));
+    for (const auto dts_pts : dts_pts_offsets) append_u16(extended, dts_pts);
     descriptor(value, 0x8026, extended);
 }
 
@@ -357,7 +408,7 @@ std::vector<std::uint8_t> discovery_message() {
     descriptor(subtitle_descriptors, 0x8020,
                {0x00, 0x20, 0x30, 0x08, 'j', 'p', 'n', 0x02, 0x2a, 0x10,
                 0x00, 0x00, 0x00, 0x05,
-                0x00, 0x00, 0x00, 0x64, 0x80, 0x00, 0x00, 0x00});
+                0x00, 0x00, 0x00, 0x64, 0x80, 0x00, 0x00, 0x00, 0x7f});
 
     std::vector<std::uint8_t> application_descriptors;
     descriptor(application_descriptors, 0x8011, {0x12, 0x40});
@@ -395,6 +446,118 @@ std::vector<std::uint8_t> video_discovery_message(
 
     std::vector<std::uint8_t> mpt_body{0xfc, 2, 0x00, 0x65, 0x00, 0x00, 1};
     asset(mpt_body, 0xf300, "hev1", descriptors);
+    std::vector<std::uint8_t> mpt{0x20, 8};
+    append_u16(mpt, mpt_body.size());
+    mpt.insert(mpt.end(), mpt_body.begin(), mpt_body.end());
+
+    std::vector<std::uint8_t> pa{0x00, 0x00, 0x00};
+    append_u32(pa, 1 + mpt.size());
+    pa.push_back(0);
+    pa.insert(pa.end(), mpt.begin(), mpt.end());
+    return pa;
+}
+
+// Sibling of video_discovery_message() that lets a fixture pick the pts_offset_type
+// == 1 descriptor's access-unit count, for comparison against the pts_offset_type
+// == 2 descriptors below.
+std::vector<std::uint8_t> video_discovery_message_with_au_count(
+    const std::uint32_t mpu_sequence, const std::uint8_t au_count) {
+    std::vector<std::uint8_t> descriptors;
+    descriptor(descriptors, 0x8011, {0x00, 0x00});
+    descriptor(descriptors, 0x8010, {0, 0, 0, 0, 0, 'j', 'p', 'n'});
+    timing_descriptors(descriptors, mpu_sequence, 180000, au_count);
+
+    std::vector<std::uint8_t> mpt_body{0xfc, 2, 0x00, 0x65, 0x00, 0x00, 1};
+    asset(mpt_body, 0xf300, "hev1", descriptors);
+    std::vector<std::uint8_t> mpt{0x20, 8};
+    append_u16(mpt, mpt_body.size());
+    mpt.insert(mpt.end(), mpt_body.begin(), mpt_body.end());
+
+    std::vector<std::uint8_t> pa{0x00, 0x00, 0x00};
+    append_u32(pa, 1 + mpt.size());
+    pa.push_back(0);
+    pa.insert(pa.end(), mpt.begin(), mpt.end());
+    return pa;
+}
+
+std::vector<std::uint8_t> video_discovery_message_with_offsets(
+    const std::uint32_t mpu_sequence, const std::vector<std::uint16_t>& dts_pts_offsets,
+    const std::vector<std::uint16_t>& pts_offsets) {
+    std::vector<std::uint8_t> descriptors;
+    descriptor(descriptors, 0x8011, {0x00, 0x00});
+    descriptor(descriptors, 0x8010, {0, 0, 0, 0, 0, 'j', 'p', 'n'});
+    per_au_timing_descriptors(descriptors, mpu_sequence, 180000, dts_pts_offsets, pts_offsets);
+
+    std::vector<std::uint8_t> mpt_body{0xfc, 2, 0x00, 0x65, 0x00, 0x00, 1};
+    asset(mpt_body, 0xf300, "hev1", descriptors);
+    std::vector<std::uint8_t> mpt{0x20, 8};
+    append_u16(mpt, mpt_body.size());
+    mpt.insert(mpt.end(), mpt_body.begin(), mpt_body.end());
+
+    std::vector<std::uint8_t> pa{0x00, 0x00, 0x00};
+    append_u32(pa, 1 + mpt.size());
+    pa.push_back(0);
+    pa.insert(pa.end(), mpt.begin(), mpt.end());
+    return pa;
+}
+
+std::vector<std::uint8_t> video_discovery_message_with_reserved_pts_offset_type(
+    const std::uint32_t mpu_sequence, const std::vector<std::uint16_t>& dts_pts_offsets) {
+    std::vector<std::uint8_t> descriptors;
+    descriptor(descriptors, 0x8011, {0x00, 0x00});
+    descriptor(descriptors, 0x8010, {0, 0, 0, 0, 0, 'j', 'p', 'n'});
+    reserved_pts_offset_type_descriptors(descriptors, mpu_sequence, 180000, dts_pts_offsets);
+
+    std::vector<std::uint8_t> mpt_body{0xfc, 2, 0x00, 0x65, 0x00, 0x00, 1};
+    asset(mpt_body, 0xf300, "hev1", descriptors);
+    std::vector<std::uint8_t> mpt{0x20, 8};
+    append_u16(mpt, mpt_body.size());
+    mpt.insert(mpt.end(), mpt_body.begin(), mpt_body.end());
+
+    std::vector<std::uint8_t> pa{0x00, 0x00, 0x00};
+    append_u32(pa, 1 + mpt.size());
+    pa.push_back(0);
+    pa.insert(pa.end(), mpt.begin(), mpt.end());
+    return pa;
+}
+
+std::vector<std::uint8_t> audio_discovery_message_with_offsets(
+    const std::uint32_t mpu_sequence, const std::vector<std::uint16_t>& dts_pts_offsets,
+    const std::vector<std::uint16_t>& pts_offsets) {
+    std::vector<std::uint8_t> descriptors;
+    descriptor(descriptors, 0x8011, {0x01, 0x10});
+    descriptor(descriptors, 0x8014,
+               {0xf3, 0x03, 0x01, 0x10, 0x11, 0xff, 0x5f, 'j', 'p', 'n'});
+    per_au_timing_descriptors(descriptors, mpu_sequence, 180000, dts_pts_offsets, pts_offsets);
+
+    std::vector<std::uint8_t> mpt_body{0xfc, 2, 0x00, 0x66, 0x00, 0x00, 1};
+    asset(mpt_body, 0xf310, "mp4a", descriptors);
+    std::vector<std::uint8_t> mpt{0x20, 8};
+    append_u16(mpt, mpt_body.size());
+    mpt.insert(mpt.end(), mpt_body.begin(), mpt_body.end());
+
+    std::vector<std::uint8_t> pa{0x00, 0x00, 0x00};
+    append_u32(pa, 1 + mpt.size());
+    pa.push_back(0);
+    pa.insert(pa.end(), mpt.begin(), mpt.end());
+    return pa;
+}
+
+// Sibling of audio_discovery_message_with_offsets() that lets a fixture pick
+// the MPU's mpu_presentation_time and mpu_presentation_time_leap_indicator
+// directly, for exercising the leap-second correction in emit_access_unit().
+std::vector<std::uint8_t> audio_discovery_message_with_leap(
+    const std::uint32_t mpu_sequence, const std::uint64_t mpu_presentation_time,
+    const std::uint8_t leap_indicator) {
+    std::vector<std::uint8_t> descriptors;
+    descriptor(descriptors, 0x8011, {0x01, 0x10});
+    descriptor(descriptors, 0x8014,
+               {0xf3, 0x03, 0x01, 0x10, 0x11, 0xff, 0x5f, 'j', 'p', 'n'});
+    timing_descriptors(descriptors, mpu_sequence, 180000, 1, mpu_presentation_time,
+                       leap_indicator);
+
+    std::vector<std::uint8_t> mpt_body{0xfc, 2, 0x00, 0x66, 0x00, 0x00, 1};
+    asset(mpt_body, 0xf310, "mp4a", descriptors);
     std::vector<std::uint8_t> mpt{0x20, 8};
     append_u16(mpt, mpt_body.size());
     mpt.insert(mpt.end(), mpt_body.begin(), mpt_body.end());
@@ -1010,7 +1173,8 @@ void test_track_discovery_and_deduplication() {
               sink.tracks[2].subtitle->resolution == 1 &&
               sink.tracks[2].subtitle->start_mpu_sequence_number == 5 &&
               sink.tracks[2].subtitle->reference_start_ntp ==
-                  std::optional<std::uint64_t>{(100ULL << 32U) | 0x80000000ULL},
+                  std::optional<std::uint64_t>{(100ULL << 32U) | 0x80000000ULL} &&
+              sink.tracks[2].subtitle->reference_start_time_leap_indicator == 1,
           "ARIB B62 subtitle timing metadata was not exposed on the subtitle track");
 
     const auto stable_id = sink.tracks[0].track_id;
@@ -1020,6 +1184,58 @@ void test_track_discovery_and_deduplication() {
     check(sink.tracks.size() == 6 && sink.tracks[3].track_id == stable_id &&
               sink.layouts.size() == 2,
           "reset changed a track's Demuxer-lifetime stable identity");
+}
+
+// ARIB STD-B60 Table 9-3's TMD == 0010 branch of Additional_Arib_Subtitle_Info()
+// is 9 bytes (reference_start_time plus the leap indicator/reserved byte); here
+// it is cut back to 8, one byte short of the standard.
+std::vector<std::uint8_t> truncated_subtitle_message() {
+    std::vector<std::uint8_t> subtitle_descriptors;
+    descriptor(subtitle_descriptors, 0x8011, {0x12, 0x30});
+    descriptor(subtitle_descriptors, 0x8020,
+               {0x00, 0x20, 0x30, 0x08, 'j', 'p', 'n', 0x02, 0x2a, 0x10,
+                0x00, 0x00, 0x00, 0x05,
+                0x00, 0x00, 0x00, 0x64, 0x80, 0x00, 0x00, 0x00});
+
+    std::vector<std::uint8_t> mpt_body{0xfc, 2, 0x00, 0x65};
+    append_u16(mpt_body, 0);
+    mpt_body.push_back(1);
+    asset(mpt_body, 0xf330, "stpp", subtitle_descriptors);
+    std::vector<std::uint8_t> mpt{0x20, 8};
+    append_u16(mpt, mpt_body.size());
+    mpt.insert(mpt.end(), mpt_body.begin(), mpt_body.end());
+
+    std::vector<std::uint8_t> pa{0x00, 0x00, 0x00};
+    append_u32(pa, 1 + mpt.size());
+    pa.push_back(0);
+    pa.insert(pa.end(), mpt.begin(), mpt.end());
+    return pa;
+}
+
+std::vector<std::uint8_t> truncated_subtitle_stream() {
+    const auto pa = truncated_subtitle_message();
+    const auto mmtp = signalling_mmtp(1, 0, pa);
+    std::vector<std::uint8_t> compressed_payload{0x00, 0x10, 0x61};
+    compressed_payload.insert(compressed_payload.end(), mmtp.begin(), mmtp.end());
+    return tlv(0x03, compressed_payload);
+}
+
+void test_truncated_subtitle_reference_start_time_is_rejected() {
+    const auto data = truncated_subtitle_stream();
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(data.data(), data.size());
+    demuxer.flush();
+    // parse_mpt() rejects the whole MPT on a malformed asset descriptor, so the
+    // subtitle track is never installed and the PA message never reaches onSignallingMessage.
+    check(sink.tracks.empty(),
+          "subtitle track was exposed despite a truncated reference_start_time block");
+    check(sink.signalling_messages.empty(),
+          "MPT with a truncated subtitle descriptor was still reported as a valid signalling "
+          "message");
+    check(!sink.errors.empty() && sink.errors[0].code == tlvdemux::ErrorCode::MalformedInput &&
+              sink.errors[0].recoverable,
+          "truncated reference_start_time block did not raise a recoverable parse error");
 }
 
 void test_service_selection_clears_layout_state() {
@@ -1255,17 +1471,33 @@ std::vector<std::uint8_t> authenticated_mmtp_packet(
 }
 
 std::vector<std::uint8_t> mpu_payload(const std::uint32_t mpu_sequence,
-                                      const std::vector<std::uint8_t>& mfu) {
+                                      const std::vector<std::uint8_t>& mfu,
+                                      const std::uint32_t sample_number = 0) {
     std::vector<std::uint8_t> result;
     append_u16(result, 6 + 14 + mfu.size());
     result.push_back(0x28);
     result.push_back(0);
     append_u32(result, mpu_sequence);
     append_u32(result, 0);
-    append_u32(result, 0);
+    append_u32(result, sample_number);
     append_u32(result, 0);
     result.push_back(0);
     result.push_back(0);
+    result.insert(result.end(), mfu.begin(), mfu.end());
+    return result;
+}
+
+// Non-timed MFU: fragment_type=2, timed=0. Its 4-byte header carries an opaque
+// item_id, not an MMT sample_number, per the MMTP/MPU wire format.
+std::vector<std::uint8_t> non_timed_mpu_payload(const std::uint32_t mpu_sequence,
+                                                const std::vector<std::uint8_t>& mfu,
+                                                const std::uint32_t item_id = 0) {
+    std::vector<std::uint8_t> result;
+    append_u16(result, 6 + 4 + mfu.size());
+    result.push_back(0x20);
+    result.push_back(0);
+    append_u32(result, mpu_sequence);
+    append_u32(result, item_id);
     result.insert(result.end(), mfu.begin(), mfu.end());
     return result;
 }
@@ -1815,6 +2047,544 @@ void test_restart_offset_includes_timestamp_mapping_origin() {
           "timestamp-origin restart checkpoint could not reproduce its RAP");
 }
 
+void test_extended_timestamp_indexed_by_sample_number() {
+    // dts_pts_offsets[0] == 0 keeps the first AU's own PTS at the Demuxer's
+    // presentation-timeline origin, so the remaining assertions can compare
+    // directly against the raw per-AU descriptor offsets below. pts_offsets is
+    // uniform, as required for pts_offset_type == 2 (see emit_access_unit()).
+    const std::vector<std::uint16_t> dts_pts_offsets{0, 20, 30, 40};
+    const std::vector<std::uint16_t> pts_offsets{111, 111, 111, 111};
+    auto stream = signalling_tlv(
+        1, 0, video_discovery_message_with_offsets(1, dts_pts_offsets, pts_offsets));
+
+    std::uint32_t sequence = 1;
+    const auto add_mfu = [&](const std::uint32_t sample_number, const bool rap,
+                             const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf300, sequence++, 100U << 16U, rap,
+                           mpu_payload(1, mfu, sample_number)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_mfu(1, true, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(1, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    add_mfu(2, false, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(2, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    // sample_number 3 is intentionally never delivered, leaving a hole.
+    add_mfu(4, false, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(4, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+
+    std::vector<const tlvdemux::AccessUnit*> video;
+    for (const auto& unit : sink.access_units) {
+        if (unit.codec == tlvdemux::Codec::Hevc) video.push_back(&unit);
+    }
+    check(video.size() == 3, "expected exactly three HEVC access units around the dropped AU");
+    check(video[0]->dts.value == 0 && video[0]->pts.value == 0,
+          "first access unit did not use its own sample_number offsets");
+    check(video[1]->dts.value == 111 && video[1]->pts.value == 131,
+          "second access unit did not use its own sample_number offsets");
+    check(video[2]->dts.value == 333 && video[2]->pts.value == 373,
+          "access unit after the dropped sample_number was shifted onto the wrong "
+          "descriptor entry");
+}
+
+void test_mpu_au_count_mismatch_flags_discontinuity() {
+    const std::vector<std::uint16_t> dts_pts_offsets{10, 20};
+    const std::vector<std::uint16_t> pts_offsets{111, 222};
+    auto stream = signalling_tlv(
+        1, 0, video_discovery_message_with_offsets(1, dts_pts_offsets, pts_offsets));
+    const auto next_mpu_signalling = signalling_tlv(2, 0, video_discovery_message(2));
+
+    std::uint32_t sequence = 1;
+    const auto add_mfu = [&](const std::uint32_t mpu_sequence, const std::uint32_t sample_number,
+                             const bool rap, const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf300, sequence++, 100U << 16U, rap,
+                           mpu_payload(mpu_sequence, mfu, sample_number)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    // MPU 1's descriptor declares two access units, but only one is delivered
+    // before MPU 2 begins.
+    add_mfu(1, 1, true, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(1, 1, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    stream.insert(stream.end(), next_mpu_signalling.begin(), next_mpu_signalling.end());
+    add_mfu(2, 1, false, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(2, 1, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+
+    check(std::any_of(sink.errors.begin(), sink.errors.end(), [](const auto& error) {
+              return error.code == tlvdemux::ErrorCode::Discontinuity && error.recoverable;
+          }),
+          "short MPU access-unit count did not raise a recoverable discontinuity error");
+    const auto second_mpu_video = std::find_if(
+        sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
+            return unit.codec == tlvdemux::Codec::Hevc &&
+                unit.mpu_sequence_number == std::optional<std::uint32_t>{2};
+        });
+    check(second_mpu_video != sink.access_units.end() && second_mpu_video->discontinuity,
+          "MPU access-unit count mismatch did not mark the next access unit discontinuous");
+}
+
+void test_non_timed_media_mfu_ignores_opaque_header_as_sample_number() {
+    const std::vector<std::uint16_t> dts_pts_offsets{0, 20};
+    const std::vector<std::uint16_t> pts_offsets{111, 111};
+    auto stream = signalling_tlv(
+        1, 0, video_discovery_message_with_offsets(1, dts_pts_offsets, pts_offsets));
+
+    std::uint32_t sequence = 1;
+    const auto add_mfu = [&](const std::uint32_t item_id, const bool rap,
+                             const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf300, sequence++, 100U << 16U, rap,
+                           non_timed_mpu_payload(1, mfu, item_id)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    // Non-timed MFUs carry an opaque item_id in the same header slot a timed
+    // MFU's sample_number occupies. Large/out-of-range values here must not
+    // be treated as descriptor indices; the parser must fall back to the
+    // emission counter exactly as it did before sample_number indexing.
+    add_mfu(99, true, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(99, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    add_mfu(1, false, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(1, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+
+    std::vector<const tlvdemux::AccessUnit*> video;
+    for (const auto& unit : sink.access_units) {
+        if (unit.codec == tlvdemux::Codec::Hevc) video.push_back(&unit);
+    }
+    check(video.size() == 2,
+          "non-timed media MFUs were misindexed by their opaque header field");
+    check(video[0]->dts.value == 0 && video[0]->pts.value == 0,
+          "first non-timed access unit did not fall back to the emission counter");
+    check(video[1]->dts.value == 111 && video[1]->pts.value == 131,
+          "second non-timed access unit did not fall back to the emission counter");
+}
+
+void test_aac_extended_timestamp_indexed_by_sample_number() {
+    const std::vector<std::uint16_t> dts_pts_offsets{0, 20, 30, 40};
+    const std::vector<std::uint16_t> pts_offsets{111, 111, 111, 111};
+    auto stream = signalling_tlv(
+        1, 0, audio_discovery_message_with_offsets(1, dts_pts_offsets, pts_offsets));
+
+    std::uint32_t sequence = 1;
+    const auto add_mfu = [&](const std::uint32_t sample_number,
+                             const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf310, sequence++, 100U << 16U, false,
+                           mpu_payload(1, mfu, sample_number)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_mfu(1, {0x11, 0x22});
+    add_mfu(2, {0x33, 0x44});
+    // sample_number 3 is intentionally never delivered, leaving a hole.
+    add_mfu(4, {0x55, 0x66});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+
+    std::vector<const tlvdemux::AccessUnit*> audio;
+    for (const auto& unit : sink.access_units) {
+        if (unit.codec == tlvdemux::Codec::AacLatm) audio.push_back(&unit);
+    }
+    check(audio.size() == 3, "expected exactly three AAC access units around the dropped AU");
+    check(audio[0]->dts.value == 0 && audio[0]->pts.value == 0,
+          "first AAC access unit did not use its own sample_number offsets");
+    check(audio[1]->dts.value == 111 && audio[1]->pts.value == 131,
+          "second AAC access unit did not use its own sample_number offsets");
+    check(audio[2]->dts.value == 333 && audio[2]->pts.value == 373,
+          "AAC access unit after the dropped sample_number was shifted onto the wrong "
+          "descriptor entry");
+}
+
+void test_out_of_order_sample_number_is_dropped() {
+    // dts_offset is au_index * pts_offsets[0] (see emit_access_unit()), which
+    // strictly increases with au_index; pts_offsets must stay uniform across
+    // the MPU or emit_access_unit() rejects the whole descriptor entry instead.
+    // Delivering sample_number 4 before 2 therefore produces a decreasing
+    // dts_offset that the guard must reject; sample_number 5 afterward proves
+    // the following access unit is still emitted, marked discontinuous.
+    const std::vector<std::uint16_t> dts_pts_offsets{0, 20, 30, 40, 50};
+    const std::vector<std::uint16_t> pts_offsets{111, 111, 111, 111, 111};
+    auto stream = signalling_tlv(
+        1, 0, video_discovery_message_with_offsets(1, dts_pts_offsets, pts_offsets));
+
+    std::uint32_t sequence = 1;
+    const auto add_mfu = [&](const std::uint32_t sample_number, const bool rap,
+                             const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf300, sequence++, 100U << 16U, rap,
+                           mpu_payload(1, mfu, sample_number)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_mfu(1, true, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(1, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    add_mfu(4, false, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(4, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    add_mfu(2, false, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(2, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    add_mfu(5, false, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(5, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+
+    std::vector<const tlvdemux::AccessUnit*> video;
+    for (const auto& unit : sink.access_units) {
+        if (unit.codec == tlvdemux::Codec::Hevc) video.push_back(&unit);
+    }
+    check(video.size() == 3, "out-of-order sample_number 2 access unit was emitted");
+    check(video[0]->dts.value == 0 && video[1]->dts.value == 333 && video[2]->dts.value == 444,
+          "surviving access units did not use their own sample_number offsets");
+    check(video[2]->discontinuity,
+          "access unit after the dropped decode timestamp was not marked discontinuous");
+    check(std::any_of(sink.errors.begin(), sink.errors.end(), [](const auto& error) {
+              return error.code == tlvdemux::ErrorCode::MalformedInput && error.recoverable &&
+                  error.message ==
+                      "dropped access unit with a decreasing decode timestamp inside an MPU";
+          }),
+          "out-of-order sample_number did not raise a recoverable decreasing-DTS error");
+}
+
+void test_sample_number_change_starts_a_new_access_unit() {
+    // Neither AU carries an AUD (NAL 35) or a parameter-set/prefix-SEI NAL,
+    // and the second AU's VCL NAL has first_slice_segment_in_pic_flag CLEAR
+    // (the top bit of its third byte is 0), so the other three boundary
+    // terms all stay false. Only the sample_number change can split them.
+    const std::vector<std::uint16_t> dts_pts_offsets{0, 20};
+    const std::vector<std::uint16_t> pts_offsets{111, 111};
+    auto stream = signalling_tlv(
+        1, 0, video_discovery_message_with_offsets(1, dts_pts_offsets, pts_offsets));
+
+    std::uint32_t sequence = 1;
+    const auto add_mfu = [&](const std::uint32_t sample_number, const bool rap,
+                             const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf300, sequence++, 100U << 16U, rap,
+                           mpu_payload(1, mfu, sample_number)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    // A freshly-installed video track waits for a RAP before emitting, so
+    // the first AU must be delivered as MMTP random-access.
+    add_mfu(1, true, {0, 0, 0, 3, 0x02, 0x01, 0x80}); // pending empty, first_slice irrelevant
+    add_mfu(2, false, {0, 0, 0, 3, 0x02, 0x01, 0x00}); // first_slice_segment_in_pic_flag CLEAR
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+
+    std::vector<const tlvdemux::AccessUnit*> video;
+    for (const auto& unit : sink.access_units) {
+        if (unit.codec == tlvdemux::Codec::Hevc) video.push_back(&unit);
+    }
+    check(video.size() == 2,
+          "sample_number change did not split two plain VCL NAL units into separate "
+          "access units");
+    check(video[0]->dts.value == 0 && video[0]->pts.value == 0,
+          "first access unit did not carry its own descriptor entry");
+    check(video[1]->dts.value == 111 && video[1]->pts.value == 131,
+          "second access unit did not carry its own descriptor entry");
+}
+
+void test_pts_offset_type_2_uniform_matches_pts_offset_type_1() {
+    // A pts_offset_type == 2 descriptor whose per-AU pts_offset is uniform must
+    // produce identical timestamps to the equivalent pts_offset_type == 1
+    // descriptor: TR-B39 fixes pts_offset_type at '01' and replicates a single
+    // default_pts_offset across the MPU, so accumulating either one over a
+    // decode-order prefix sums the same constant regardless of order (see the
+    // citation above MmtpParser::emit_access_unit).
+    const std::uint8_t au_count = 3;
+    const std::vector<std::uint16_t> dts_pts_offsets(au_count, 0);
+    const std::vector<std::uint16_t> pts_offsets(au_count, 3000);
+
+    struct Emitted {
+        std::int64_t dts = 0;
+        std::int64_t pts = 0;
+    };
+    const auto run = [](std::vector<std::uint8_t> discovery) {
+        auto stream = signalling_tlv(1, 0, std::move(discovery));
+        std::uint32_t sequence = 1;
+        const auto add_mfu = [&](const std::uint32_t sample_number, const bool rap,
+                                 const std::vector<std::uint8_t>& mfu) {
+            const auto packet = tlv_for_mmtp(
+                1, mmtp_packet(0xf300, sequence++, 100U << 16U, rap,
+                               mpu_payload(1, mfu, sample_number)));
+            stream.insert(stream.end(), packet.begin(), packet.end());
+        };
+        add_mfu(1, true, {0, 0, 0, 2, 0x46, 0x01});
+        add_mfu(1, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+        add_mfu(2, false, {0, 0, 0, 2, 0x46, 0x01});
+        add_mfu(2, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+        add_mfu(3, false, {0, 0, 0, 2, 0x46, 0x01});
+        add_mfu(3, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+
+        TestSink sink;
+        tlvdemux::Demuxer demuxer(sink);
+        demuxer.push(stream.data(), stream.size());
+        demuxer.flush();
+
+        std::vector<Emitted> emitted;
+        for (const auto& unit : sink.access_units) {
+            if (unit.codec == tlvdemux::Codec::Hevc) {
+                emitted.push_back(Emitted{unit.dts.value, unit.pts.value});
+            }
+        }
+        return emitted;
+    };
+
+    const auto type1 = run(video_discovery_message_with_au_count(1, au_count));
+    const auto type2 = run(video_discovery_message_with_offsets(1, dts_pts_offsets, pts_offsets));
+
+    check(type1.size() == 3 && type2.size() == 3,
+          "expected three access units from both the pts_offset_type 1 and 2 streams");
+    for (std::size_t index = 0; index < type1.size(); ++index) {
+        check(type1[index].dts == type2[index].dts && type1[index].pts == type2[index].pts,
+              "uniform pts_offset_type == 2 produced different timestamps than the "
+              "equivalent pts_offset_type == 1 descriptor");
+    }
+}
+
+void test_pts_offset_type_2_non_uniform_is_rejected() {
+    // Once an MPU's pts_offset stops being constant across access units,
+    // emit_access_unit() can no longer recover presentation order from a
+    // decode-order prefix sum, and must drop the access units instead of
+    // silently reusing the (wrong) pts_offset_type == 1 arithmetic.
+    const std::vector<std::uint16_t> dts_pts_offsets{0, 10, 20};
+    const std::vector<std::uint16_t> pts_offsets{111, 222, 333};
+    auto stream = signalling_tlv(
+        1, 0, video_discovery_message_with_offsets(1, dts_pts_offsets, pts_offsets));
+
+    std::uint32_t sequence = 1;
+    const auto add_mfu = [&](const std::uint32_t sample_number, const bool rap,
+                             const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf300, sequence++, 100U << 16U, rap,
+                           mpu_payload(1, mfu, sample_number)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_mfu(1, true, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(1, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    add_mfu(2, false, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(2, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    add_mfu(3, false, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(3, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+
+    check(std::none_of(sink.access_units.begin(), sink.access_units.end(),
+                       [](const auto& unit) { return unit.codec == tlvdemux::Codec::Hevc; }),
+          "non-uniform pts_offset_type == 2 still emitted an access unit for the MPU");
+    check(std::any_of(sink.errors.begin(), sink.errors.end(), [](const auto& error) {
+              return error.code == tlvdemux::ErrorCode::UnsupportedFeature && error.recoverable &&
+                  error.message ==
+                      "dropped access unit: pts_offset_type 2 supplied a non-uniform "
+                      "pts_offset, which needs the bitstream presentation order that "
+                      "this parser does not derive";
+          }),
+          "non-uniform pts_offset_type == 2 did not raise the expected recoverable error");
+}
+
+void test_pts_offset_type_3_is_rejected() {
+    // pts_offset_type == 3 is reserved by TR-B39 Table 34.1-72 and must not be
+    // silently treated as though every access unit shares one decode timestamp.
+    const std::vector<std::uint16_t> dts_pts_offsets{0, 20};
+    auto stream = signalling_tlv(
+        1, 0, video_discovery_message_with_reserved_pts_offset_type(1, dts_pts_offsets));
+
+    std::uint32_t sequence = 1;
+    const auto add_mfu = [&](const std::uint32_t sample_number, const bool rap,
+                             const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf300, sequence++, 100U << 16U, rap,
+                           mpu_payload(1, mfu, sample_number)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_mfu(1, true, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(1, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+    add_mfu(2, false, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(2, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+
+    check(std::none_of(sink.access_units.begin(), sink.access_units.end(),
+                       [](const auto& unit) { return unit.codec == tlvdemux::Codec::Hevc; }),
+          "reserved pts_offset_type == 3 still built a timestamp mapping and emitted "
+          "access units");
+    check(std::any_of(sink.errors.begin(), sink.errors.end(), [](const auto& error) {
+              return error.code == tlvdemux::ErrorCode::UnsupportedFeature && error.recoverable &&
+                  error.message ==
+                      "mpu_extended_timestamp_descriptor: pts_offset_type 3 is reserved by "
+                      "TR-B39 Table 34.1-72 and defines no pts_offset semantics; skipping it";
+          }),
+          "reserved pts_offset_type == 3 did not raise the expected recoverable error");
+}
+
+void test_leap_second_insertion_corrects_presentation_timeline() {
+    // MPU1 is normal (100s, indicator 0). MPU2 enters the leap window (101s,
+    // indicator 1, "the day before"). MPU3 repeats MPU2's wire
+    // mpu_presentation_time (101s again, the inserted duplicate second) but
+    // is where the indicator switches 1->0, so it is where TR-B39 Appendix 1
+    // section 2.1 says the +1s correction begins. MPU4 (102s, indicator 0) proves
+    // the correction persists past the transition MPU.
+    auto stream =
+        signalling_tlv(1, 0, audio_discovery_message_with_leap(1, 100ULL << 32U, 0));
+    const auto mpu2 =
+        signalling_tlv(2, 0, audio_discovery_message_with_leap(2, 101ULL << 32U, 1));
+    const auto mpu3 =
+        signalling_tlv(3, 0, audio_discovery_message_with_leap(3, 101ULL << 32U, 0));
+    const auto mpu4 =
+        signalling_tlv(4, 0, audio_discovery_message_with_leap(4, 102ULL << 32U, 0));
+
+    std::uint32_t sequence = 1;
+    const auto add_mfu = [&](const std::uint32_t mpu_sequence,
+                             const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf310, sequence++, 100U << 16U, false, mpu_payload(mpu_sequence, mfu)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_mfu(1, {0x11, 0x22});
+    stream.insert(stream.end(), mpu2.begin(), mpu2.end());
+    add_mfu(2, {0x33, 0x44});
+    stream.insert(stream.end(), mpu3.begin(), mpu3.end());
+    add_mfu(3, {0x55, 0x66});
+    stream.insert(stream.end(), mpu4.begin(), mpu4.end());
+    add_mfu(4, {0x77, 0x88});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+
+    std::vector<const tlvdemux::AccessUnit*> audio;
+    for (const auto& unit : sink.access_units) {
+        if (unit.codec == tlvdemux::Codec::AacLatm) audio.push_back(&unit);
+    }
+    check(audio.size() == 4, "leap-second insertion test did not produce four AAC access units");
+    check(audio[0]->pts.value == 0 && audio[0]->dts.value == 0,
+          "first access unit was not normalized to the presentation-timeline origin");
+    check(audio[1]->pts.value == 180000 && audio[1]->dts.value == 180000,
+          "step before the transition was not the normal one-second inter-MPU step");
+    check(audio[2]->pts.value == 360000 && audio[2]->dts.value == 360000,
+          "leap-second insertion was not corrected away at the 1->0 transition MPU");
+    check(audio[3]->pts.value == 540000 && audio[3]->dts.value == 540000,
+          "the +1s leap correction did not persist past the transition MPU");
+}
+
+void test_leap_second_deletion_corrects_presentation_timeline() {
+    // MPU1 is normal (100s, indicator 0). MPU2 enters the deletion window
+    // (101s, indicator 2). MPU3 jumps straight to 103s -- 102s is the
+    // deleted wire second -- and is where the indicator switches 2->0, so
+    // TR-B39 Appendix 1 section 2.2 says the -1s correction begins there. MPU4
+    // (104s, indicator 0) proves the correction persists.
+    auto stream =
+        signalling_tlv(1, 0, audio_discovery_message_with_leap(1, 100ULL << 32U, 0));
+    const auto mpu2 =
+        signalling_tlv(2, 0, audio_discovery_message_with_leap(2, 101ULL << 32U, 2));
+    const auto mpu3 =
+        signalling_tlv(3, 0, audio_discovery_message_with_leap(3, 103ULL << 32U, 0));
+    const auto mpu4 =
+        signalling_tlv(4, 0, audio_discovery_message_with_leap(4, 104ULL << 32U, 0));
+
+    std::uint32_t sequence = 1;
+    const auto add_mfu = [&](const std::uint32_t mpu_sequence,
+                             const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf310, sequence++, 100U << 16U, false, mpu_payload(mpu_sequence, mfu)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_mfu(1, {0x11, 0x22});
+    stream.insert(stream.end(), mpu2.begin(), mpu2.end());
+    add_mfu(2, {0x33, 0x44});
+    stream.insert(stream.end(), mpu3.begin(), mpu3.end());
+    add_mfu(3, {0x55, 0x66});
+    stream.insert(stream.end(), mpu4.begin(), mpu4.end());
+    add_mfu(4, {0x77, 0x88});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+
+    std::vector<const tlvdemux::AccessUnit*> audio;
+    for (const auto& unit : sink.access_units) {
+        if (unit.codec == tlvdemux::Codec::AacLatm) audio.push_back(&unit);
+    }
+    check(audio.size() == 4, "leap-second deletion test did not produce four AAC access units");
+    check(audio[0]->pts.value == 0 && audio[0]->dts.value == 0,
+          "first access unit was not normalized to the presentation-timeline origin");
+    check(audio[1]->pts.value == 180000 && audio[1]->dts.value == 180000,
+          "step before the transition was not the normal one-second inter-MPU step");
+    check(audio[2]->pts.value == 360000 && audio[2]->dts.value == 360000,
+          "leap-second deletion's two-second jump was not corrected at the 2->0 transition MPU");
+    check(audio[3]->pts.value == 540000 && audio[3]->dts.value == 540000,
+          "the -1s leap correction did not persist past the transition MPU");
+}
+
+void test_leap_indicator_zero_is_inert() {
+    // The indicator stays 0 throughout, so the correction must never engage:
+    // the emitted timing must match plain, unadjusted mpu_presentation_time
+    // arithmetic exactly.
+    auto stream =
+        signalling_tlv(1, 0, audio_discovery_message_with_leap(1, 100ULL << 32U, 0));
+    const auto mpu2 =
+        signalling_tlv(2, 0, audio_discovery_message_with_leap(2, 101ULL << 32U, 0));
+    const auto mpu3 =
+        signalling_tlv(3, 0, audio_discovery_message_with_leap(3, 102ULL << 32U, 0));
+
+    std::uint32_t sequence = 1;
+    const auto add_mfu = [&](const std::uint32_t mpu_sequence,
+                             const std::vector<std::uint8_t>& mfu) {
+        const auto packet = tlv_for_mmtp(
+            1, mmtp_packet(0xf310, sequence++, 100U << 16U, false, mpu_payload(mpu_sequence, mfu)));
+        stream.insert(stream.end(), packet.begin(), packet.end());
+    };
+    add_mfu(1, {0x11, 0x22});
+    stream.insert(stream.end(), mpu2.begin(), mpu2.end());
+    add_mfu(2, {0x33, 0x44});
+    stream.insert(stream.end(), mpu3.begin(), mpu3.end());
+    add_mfu(3, {0x55, 0x66});
+
+    TestSink sink;
+    tlvdemux::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+
+    std::vector<const tlvdemux::AccessUnit*> audio;
+    for (const auto& unit : sink.access_units) {
+        if (unit.codec == tlvdemux::Codec::AacLatm) audio.push_back(&unit);
+    }
+    check(audio.size() == 3, "leap-indicator-zero test did not produce three AAC access units");
+    check(audio[0]->pts.value == 0 && audio[0]->dts.value == 0,
+          "leap indicator 0 changed the first access unit's timing");
+    check(audio[1]->pts.value == 180000 && audio[1]->dts.value == 180000,
+          "leap indicator 0 changed the second access unit's timing");
+    check(audio[2]->pts.value == 360000 && audio[2]->dts.value == 360000,
+          "leap indicator 0 changed the third access unit's timing");
+}
+
 } // namespace
 
 int main() {
@@ -1827,6 +2597,7 @@ int main() {
     test_signalling_fragmentation_aggregation_and_m2();
     test_global_packet_state_budget();
     test_track_discovery_and_deduplication();
+    test_truncated_subtitle_reference_start_time_is_rejected();
     test_service_selection_clears_layout_state();
     test_application_and_data_transmission_signalling();
     test_mpt_snapshot_removes_missing_service_state();
@@ -1848,6 +2619,18 @@ int main() {
     test_reposition_drops_orphan_hevc_irap_continuation();
     test_access_unit_restart_offset_is_snapshotted();
     test_restart_offset_includes_timestamp_mapping_origin();
+    test_extended_timestamp_indexed_by_sample_number();
+    test_mpu_au_count_mismatch_flags_discontinuity();
+    test_non_timed_media_mfu_ignores_opaque_header_as_sample_number();
+    test_aac_extended_timestamp_indexed_by_sample_number();
+    test_out_of_order_sample_number_is_dropped();
+    test_sample_number_change_starts_a_new_access_unit();
+    test_pts_offset_type_2_uniform_matches_pts_offset_type_1();
+    test_pts_offset_type_2_non_uniform_is_rejected();
+    test_pts_offset_type_3_is_rejected();
+    test_leap_second_insertion_corrects_presentation_timeline();
+    test_leap_second_deletion_corrects_presentation_timeline();
+    test_leap_indicator_zero_is_inert();
     std::cout << "all tests passed\n";
     return 0;
 }
