@@ -237,7 +237,15 @@ cannot grow memory without limit.
   --subtitle subtitle.ttml test.tlv
 ./build/tlvdemux-inspect --audio secondary.loas \
   --audio-packet-id 0xf311 test.tlv
+./build/tlvanalyze test.tlv
 ```
+
+`tlvanalyze` scans the complete recording and inventories reconstructed
+ARIB-HTML5 resources. For each virtual file it reports its path, MIME type,
+decoded size and CRC32, carousel occurrence count, exact duplicate count, and
+duplicate payload bytes. Duplicate classification compares the complete wire
+payload; unknown, discontinuous, or changed units are reported but never
+counted as removable.
 
 Use Mirakurun's raw 4K path with `decode=0` when capturing validation input:
 

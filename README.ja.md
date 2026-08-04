@@ -233,7 +233,14 @@ request に応答できます。WASM の利用側では通常、同じイベン�
   --subtitle subtitle.ttml test.tlv
 ./build/tlvdemux-inspect --audio secondary.loas \
   --audio-packet-id 0xf311 test.tlv
+./build/tlvanalyze test.tlv
 ```
+
+`tlvanalyze` は録画全体を走査し、再構成した ARIB-HTML5 resource を一覧化します。
+各 virtual file について path、MIME type、展開後 size と CRC32、carousel 上の
+出現回数、完全一致した重複回数、および重複 payload byte 数を表示します。
+重複判定では完全な wire payload を比較し、対応不明、discontinuity、または内容が
+変化した unit は報告だけ行い、削除可能量には含めません。
 
 検証用の入力を収録する際は、Mirakurun の raw 4K 経路を `decode=0` で使用します。
 
