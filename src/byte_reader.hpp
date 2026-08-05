@@ -6,7 +6,7 @@
 
 #include "parser_common.hpp"
 
-namespace tlvdemux::detail {
+namespace aribtlv::detail {
 
 class ByteReader {
 public:
@@ -69,5 +69,5 @@ private:
     std::size_t position_ = 0;
 };
 
-} // namespace tlvdemux::detail
+} // namespace aribtlv::detail
 

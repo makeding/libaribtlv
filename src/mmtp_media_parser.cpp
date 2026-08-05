@@ -5,7 +5,7 @@
 
 #include "byte_reader.hpp"
 
-namespace tlvdemux::detail {
+namespace aribtlv::detail {
 
 namespace {
 
@@ -812,4 +812,4 @@ void MmtpParser::parse_mpu(const std::uint16_t packet_id,
     }
 }
 
-} // namespace tlvdemux::detail
+} // namespace aribtlv::detail

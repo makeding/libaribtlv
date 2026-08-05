@@ -2,7 +2,7 @@
 
 #include <utility>
 
-namespace tlvdemux::detail {
+namespace aribtlv::detail {
 
 CompressedIpParser::CompressedIpParser(const Limits& limits, ServiceCallback on_service,
                                        TrackCallback on_track, AccessUnitCallback on_access_unit,
@@ -183,4 +183,4 @@ void CompressedIpParser::parse_compressed(const TlvPacketView& packet) {
     parser->push(packet.payload + cursor, packet.size - cursor, packet.input_offset);
 }
 
-} // namespace tlvdemux::detail
+} // namespace aribtlv::detail

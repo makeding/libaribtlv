@@ -5,9 +5,9 @@
 #include <functional>
 #include <string>
 
-#include <tlvdemux/types.hpp>
+#include <aribtlv/types.hpp>
 
-namespace tlvdemux::detail {
+namespace aribtlv::detail {
 
 using ErrorCallback = std::function<void(ErrorCode, std::uint64_t, bool, std::string)>;
 
@@ -29,4 +29,4 @@ inline std::uint64_t read_be64(const std::uint8_t* data) noexcept {
            static_cast<std::uint64_t>(read_be32(data + 4));
 }
 
-} // namespace tlvdemux::detail
+} // namespace aribtlv::detail

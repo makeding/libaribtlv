@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace tlvdemux {
+namespace aribtlv {
 
 enum class Codec { Hevc, AacLatm, Ttml };
 enum class TrackKind { Video, Audio, Subtitle };
@@ -553,4 +553,4 @@ struct Limits {
     std::size_t max_application_resources = 4096;
 };
 
-} // namespace tlvdemux
+} // namespace aribtlv

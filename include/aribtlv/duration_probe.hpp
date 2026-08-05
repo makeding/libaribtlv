@@ -5,9 +5,9 @@
 #include <memory>
 #include <optional>
 
-#include <tlvdemux/recording.hpp>
+#include <aribtlv/recording.hpp>
 
-namespace tlvdemux {
+namespace aribtlv {
 
 struct RangeRequest {
     std::uint64_t generation = 0;
@@ -71,4 +71,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace tlvdemux
+} // namespace aribtlv

@@ -5,10 +5,10 @@
 #include <memory>
 #include <optional>
 
-#include <tlvdemux/types.hpp>
-#include <tlvdemux/application_resources.hpp>
+#include <aribtlv/types.hpp>
+#include <aribtlv/application_resources.hpp>
 
-namespace tlvdemux {
+namespace aribtlv {
 
 struct RepositionOptions {
     std::uint64_t input_offset = 0;
@@ -76,4 +76,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace tlvdemux
+} // namespace aribtlv

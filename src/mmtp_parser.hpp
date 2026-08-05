@@ -11,7 +11,7 @@
 
 #include "parser_common.hpp"
 
-namespace tlvdemux::detail {
+namespace aribtlv::detail {
 
 struct TimestampMapping {
     std::uint64_t ntp = 0;
@@ -314,4 +314,4 @@ private:
     std::optional<std::uint64_t> latest_full_ntp_;
 };
 
-} // namespace tlvdemux::detail
+} // namespace aribtlv::detail

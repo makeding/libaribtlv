@@ -8,9 +8,9 @@
 #include <string>
 #include <vector>
 
-#include <tlvdemux/types.hpp>
+#include <aribtlv/types.hpp>
 
-namespace tlvdemux {
+namespace aribtlv {
 
 enum class ApplicationCollectionState {
     Discovered,
@@ -146,4 +146,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace tlvdemux
+} // namespace aribtlv

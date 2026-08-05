@@ -1,4 +1,4 @@
-#include <tlvdemux/application_resources.hpp>
+#include <aribtlv/application_resources.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -12,25 +12,25 @@
 
 namespace {
 
-struct TestSink final : tlvdemux::ApplicationResourceSink {
-    std::vector<tlvdemux::ApplicationState> states;
-    std::vector<tlvdemux::ApplicationResource> resources;
-    std::vector<tlvdemux::ApplicationResourceRemoval> removals;
-    std::vector<tlvdemux::Error> errors;
+struct TestSink final : aribtlv::ApplicationResourceSink {
+    std::vector<aribtlv::ApplicationState> states;
+    std::vector<aribtlv::ApplicationResource> resources;
+    std::vector<aribtlv::ApplicationResourceRemoval> removals;
+    std::vector<aribtlv::Error> errors;
     std::size_t resets = 0;
 
-    void onApplicationState(const tlvdemux::ApplicationState& value) override {
+    void onApplicationState(const aribtlv::ApplicationState& value) override {
         states.push_back(value);
     }
-    void onApplicationResource(tlvdemux::ApplicationResource&& value) override {
+    void onApplicationResource(aribtlv::ApplicationResource&& value) override {
         resources.push_back(std::move(value));
     }
     void onApplicationResourceRemoved(
-        const tlvdemux::ApplicationResourceRemoval& value) override {
+        const aribtlv::ApplicationResourceRemoval& value) override {
         removals.push_back(value);
     }
     void onApplicationResourcesReset() override { ++resets; }
-    void onApplicationResourceError(const tlvdemux::Error& value) override {
+    void onApplicationResourceError(const aribtlv::Error& value) override {
         errors.push_back(value);
     }
 };
@@ -91,7 +91,7 @@ std::vector<std::uint8_t> two_index_items(const std::uint32_t first_item,
     return first;
 }
 
-tlvdemux::DataDirectoryTable directory(const std::uint32_t context,
+aribtlv::DataDirectoryTable directory(const std::uint32_t context,
                                        const std::uint8_t session = 0,
                                        const std::uint8_t version = 0,
                                        const std::uint8_t section = 0,
@@ -99,21 +99,21 @@ tlvdemux::DataDirectoryTable directory(const std::uint32_t context,
                                        const std::uint16_t node_tag = 7,
                                        const std::string& base_path = "/sh4/60/001",
                                        const std::string& node_path = "top/source") {
-    tlvdemux::DataDirectoryTable value;
+    aribtlv::DataDirectoryTable value;
     value.context_id = context;
     value.session_id = session;
     value.version = version;
     value.section_number = section;
     value.last_section_number = last_section;
     value.base_path = base_path;
-    tlvdemux::DataDirectoryNode node;
+    aribtlv::DataDirectoryNode node;
     node.node_tag = node_tag;
     node.path = node_path;
     value.directories.push_back(std::move(node));
     return value;
 }
 
-tlvdemux::DataAssetManagementTable management(const std::uint32_t context,
+aribtlv::DataAssetManagementTable management(const std::uint32_t context,
                                                const std::uint32_t transaction,
                                                const std::uint32_t download,
                                                const std::uint32_t sequence = 9,
@@ -124,7 +124,7 @@ tlvdemux::DataAssetManagementTable management(const std::uint32_t context,
                                                const std::uint16_t component = 0x40,
                                                const std::uint16_t node_tag = 7,
                                                const bool include_mpu = true) {
-    tlvdemux::DataAssetManagementTable value;
+    aribtlv::DataAssetManagementTable value;
     value.context_id = context;
     value.session_id = session;
     value.version = version;
@@ -134,11 +134,11 @@ tlvdemux::DataAssetManagementTable management(const std::uint32_t context,
     value.component_tag = component;
     value.download_id = download;
     if (!include_mpu) return value;
-    tlvdemux::DataAssetMpu mpu;
+    aribtlv::DataAssetMpu mpu;
     mpu.sequence_number = sequence;
     mpu.index_item = true;
     mpu.index_item_id = 99;
-    tlvdemux::DataAssetItem item;
+    aribtlv::DataAssetItem item;
     item.node_tag = node_tag;
     item.item_id = 5;
     mpu.items.push_back(std::move(item));
@@ -146,12 +146,12 @@ tlvdemux::DataAssetManagementTable management(const std::uint32_t context,
     return value;
 }
 
-tlvdemux::DataUnit unit(const std::uint32_t context, const std::uint32_t item,
+aribtlv::DataUnit unit(const std::uint32_t context, const std::uint32_t item,
                         std::vector<std::uint8_t> bytes,
                         const std::uint32_t sequence = 9,
                         const std::uint32_t download = 20,
                         const std::uint16_t component = 0x40) {
-    tlvdemux::DataUnit value;
+    aribtlv::DataUnit value;
     value.context_id = context;
     value.component_tag = component;
     value.mpu_sequence_number = sequence;
@@ -161,8 +161,8 @@ tlvdemux::DataUnit unit(const std::uint32_t context, const std::uint32_t item,
     return value;
 }
 
-tlvdemux::ApplicationInfo application(const std::uint32_t context) {
-    tlvdemux::ApplicationInfo value;
+aribtlv::ApplicationInfo application(const std::uint32_t context) {
+    aribtlv::ApplicationInfo value;
     value.context_id = context;
     value.application_type = 1;
     value.organization_id = 2;
@@ -176,7 +176,7 @@ tlvdemux::ApplicationInfo application(const std::uint32_t context) {
 
 void test_out_of_order_collection_and_update() {
     TestSink sink;
-    tlvdemux::ApplicationResourceAssembler assembler(sink);
+    aribtlv::ApplicationResourceAssembler assembler(sink);
     const std::vector<std::uint8_t> first{'o', 'n', 'e'};
 
     assembler.onApplication(application(1));
@@ -192,21 +192,21 @@ void test_out_of_order_collection_and_update() {
           "resource path was not normalized");
     check(sink.resources[0].data == first, "resource bytes changed during assembly");
     check(!sink.states.empty() && sink.states.back().entry_ready &&
-              sink.states.back().state == tlvdemux::ApplicationCollectionState::Ready &&
+              sink.states.back().state == aribtlv::ApplicationCollectionState::Ready &&
               sink.states.back().lifecycle ==
-                  tlvdemux::ApplicationLifecycleState::AutostartReady,
+                  aribtlv::ApplicationLifecycleState::AutostartReady,
           "entry resource did not make the application ready");
 
     auto prefetched = application(1);
     prefetched.control_code = 0x05;
     assembler.onApplication(prefetched);
     check(sink.states.back().lifecycle ==
-              tlvdemux::ApplicationLifecycleState::Prefetched,
+              aribtlv::ApplicationLifecycleState::Prefetched,
           "PREFETCH application did not retain its ready resource state");
     auto killed = application(1);
     killed.control_code = 0x04;
     assembler.onApplication(killed);
-    check(sink.states.back().lifecycle == tlvdemux::ApplicationLifecycleState::Killed,
+    check(sink.states.back().lifecycle == aribtlv::ApplicationLifecycleState::Killed,
           "KILL application control was not exposed separately from collection state");
 
     assembler.onDataUnit(unit(1, 5, first));
@@ -237,13 +237,13 @@ void test_out_of_order_collection_and_update() {
 }
 
 void test_virtual_resource_store() {
-    tlvdemux::ApplicationResourceStore store;
-    auto state = tlvdemux::ApplicationState{};
+    aribtlv::ApplicationResourceStore store;
+    auto state = aribtlv::ApplicationState{};
     state.application = application(4);
     state.entry_ready = true;
-    state.state = tlvdemux::ApplicationCollectionState::Ready;
+    state.state = aribtlv::ApplicationCollectionState::Ready;
     store.onApplicationState(state);
-    tlvdemux::ApplicationResource resource;
+    aribtlv::ApplicationResource resource;
     resource.context_id = 4;
     resource.path = "sh4/60/001/top/source/index.html";
     resource.content_type = "text/html";
@@ -263,7 +263,7 @@ void test_virtual_resource_store() {
           "virtual resource store did not resolve the ready application entry");
     check(store.get(4, "../escape") == nullptr,
           "virtual resource store accepted path traversal");
-    store.onApplicationResourceRemoved(tlvdemux::ApplicationResourceRemoval{
+    store.onApplicationResourceRemoved(aribtlv::ApplicationResourceRemoval{
         4, 0, 0, 0, 0, 0, "sh4/60/001/top/source/index.html"});
     check(store.list(4).empty(), "virtual resource removal left a stale VFS entry");
     store.clear();
@@ -279,7 +279,7 @@ void test_compression_and_limit() {
     compressed.resize(compressed_size);
 
     TestSink sink;
-    tlvdemux::ApplicationResourceAssembler assembler(sink);
+    aribtlv::ApplicationResourceAssembler assembler(sink);
     assembler.onDataDirectoryTable(directory(2));
     assembler.onDataAssetManagementTable(management(2, 1, 1));
     assembler.onDataUnit(unit(2, 99, index_item(5, compressed.size(), 1,
@@ -288,23 +288,23 @@ void test_compression_and_limit() {
     check(sink.resources.size() == 1 && sink.resources[0].data == source,
           "zlib application resource was not decompressed");
 
-    tlvdemux::Limits limits;
+    aribtlv::Limits limits;
     limits.max_application_resource = 3;
     TestSink limited_sink;
-    tlvdemux::ApplicationResourceAssembler limited(limited_sink, limits);
+    aribtlv::ApplicationResourceAssembler limited(limited_sink, limits);
     limited.onDataDirectoryTable(directory(3));
     limited.onDataAssetManagementTable(management(3, 1, 1));
     limited.onDataUnit(unit(3, 99, index_item(5, source.size(), 1,
         "index.html", "text/html"), 9, 1));
     limited.onDataUnit(unit(3, 5, source, 9, 1));
     check(limited_sink.resources.empty() && !limited_sink.errors.empty() &&
-              limited_sink.errors.back().code == tlvdemux::ErrorCode::ResourceLimit,
+              limited_sink.errors.back().code == aribtlv::ErrorCode::ResourceLimit,
           "resource size limit was not enforced");
 }
 
 void test_session_snapshot_and_reposition_lifecycle() {
     TestSink sink;
-    tlvdemux::ApplicationResourceAssembler assembler(sink);
+    aribtlv::ApplicationResourceAssembler assembler(sink);
     const std::vector<std::uint8_t> old_bytes{'o', 'l', 'd'};
 
     assembler.onDataDirectoryTable(directory(10, 1, 1));
@@ -340,7 +340,7 @@ void test_session_snapshot_and_reposition_lifecycle() {
 
 void test_same_session_single_table_update() {
     TestSink sink;
-    tlvdemux::ApplicationResourceAssembler assembler(sink);
+    aribtlv::ApplicationResourceAssembler assembler(sink);
     const std::vector<std::uint8_t> bytes{'o', 'k'};
 
     assembler.onDataDirectoryTable(directory(11, 4, 3));
@@ -362,7 +362,7 @@ void test_same_session_single_table_update() {
 
 void test_download_id_and_snapshot_diff() {
     TestSink sink;
-    tlvdemux::ApplicationResourceAssembler assembler(sink);
+    aribtlv::ApplicationResourceAssembler assembler(sink);
     const std::vector<std::uint8_t> bytes{'x'};
 
     assembler.onDataDirectoryTable(directory(12, 5, 1));

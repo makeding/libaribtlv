@@ -6,7 +6,7 @@
 
 #include "byte_reader.hpp"
 
-namespace tlvdemux::detail {
+namespace aribtlv::detail {
 
 bool MmtpParser::append(SignallingAssembler& assembler, const std::uint8_t* data,
                         const std::size_t size, const std::uint64_t input_offset) {
@@ -1525,4 +1525,4 @@ void MmtpParser::parse_signalling(const std::uint16_t packet_id,
     }
 }
 
-} // namespace tlvdemux::detail
+} // namespace aribtlv::detail

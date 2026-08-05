@@ -4,10 +4,20 @@
 #include <optional>
 #include <vector>
 
-#include <tlvdemux/playback.hpp>
-#include <tlvdemux/types.hpp>
+#include <aribtlv/types.hpp>
 
-namespace tlvdemux {
+namespace aribtlv {
+
+enum class IndexState {
+    Absent,
+    Loading,
+    Building,
+    Partial,
+    Following,
+    Complete,
+    Stale,
+    Failed,
+};
 
 enum class DurationStatus { Unknown, Provisional, Complete };
 enum class SeekMode { PreviousSync, ExactFrame };
@@ -73,4 +83,4 @@ private:
     bool growing_ = false;
 };
 
-} // namespace tlvdemux
+} // namespace aribtlv

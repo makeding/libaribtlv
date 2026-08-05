@@ -4,7 +4,7 @@
 #include <limits>
 #include <utility>
 
-namespace tlvdemux::detail {
+namespace aribtlv::detail {
 
 TlvParser::TlvParser(const Limits& limits, PacketCallback on_packet, ErrorCallback on_error)
     : limits_(limits), on_packet_(std::move(on_packet)), on_error_(std::move(on_error)) {}
@@ -243,4 +243,4 @@ void TlvParser::process(const bool end_of_stream) {
     }
 }
 
-} // namespace tlvdemux::detail
+} // namespace aribtlv::detail

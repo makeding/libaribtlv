@@ -7,7 +7,7 @@
 
 #include "parser_common.hpp"
 
-namespace tlvdemux::detail {
+namespace aribtlv::detail {
 
 struct TlvPacketView {
     std::uint8_t type = 0;
@@ -44,4 +44,4 @@ private:
     bool synchronized_ = false;
 };
 
-} // namespace tlvdemux::detail
+} // namespace aribtlv::detail

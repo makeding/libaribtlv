@@ -1,4 +1,4 @@
-#include <tlvdemux/demuxer.hpp>
+#include <aribtlv/demuxer.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -10,88 +10,88 @@
 
 namespace {
 
-struct TestSink final : tlvdemux::Sink {
-    std::vector<tlvdemux::ServiceInfo> services;
-    std::vector<tlvdemux::TrackInfo> tracks;
-    std::vector<tlvdemux::AccessUnit> access_units;
-    std::vector<tlvdemux::ApplicationServiceInfo> application_services;
-    std::vector<tlvdemux::LayoutConfiguration> layouts;
-    std::vector<tlvdemux::DataAssetInfo> data_assets;
-    std::vector<tlvdemux::TrackInfo> removed_tracks;
-    std::vector<tlvdemux::ApplicationServiceInfo> removed_application_services;
-    std::vector<tlvdemux::DataAssetInfo> removed_data_assets;
-    std::vector<tlvdemux::SignallingMessage> signalling_messages;
-    std::vector<tlvdemux::EventInfo> events;
-    std::vector<tlvdemux::MhSdtSnapshot> mh_sdt_snapshots;
-    std::vector<tlvdemux::MhTotInfo> mh_tot;
-    std::vector<tlvdemux::StreamEvent> stream_events;
-    std::vector<tlvdemux::ViewerParticipationNotification>
+struct TestSink final : aribtlv::Sink {
+    std::vector<aribtlv::ServiceInfo> services;
+    std::vector<aribtlv::TrackInfo> tracks;
+    std::vector<aribtlv::AccessUnit> access_units;
+    std::vector<aribtlv::ApplicationServiceInfo> application_services;
+    std::vector<aribtlv::LayoutConfiguration> layouts;
+    std::vector<aribtlv::DataAssetInfo> data_assets;
+    std::vector<aribtlv::TrackInfo> removed_tracks;
+    std::vector<aribtlv::ApplicationServiceInfo> removed_application_services;
+    std::vector<aribtlv::DataAssetInfo> removed_data_assets;
+    std::vector<aribtlv::SignallingMessage> signalling_messages;
+    std::vector<aribtlv::EventInfo> events;
+    std::vector<aribtlv::MhSdtSnapshot> mh_sdt_snapshots;
+    std::vector<aribtlv::MhTotInfo> mh_tot;
+    std::vector<aribtlv::StreamEvent> stream_events;
+    std::vector<aribtlv::ViewerParticipationNotification>
         viewer_participation_notifications;
-    std::vector<tlvdemux::ApplicationInfo> applications;
-    std::vector<tlvdemux::ApplicationInfo> removed_applications;
-    std::vector<tlvdemux::MptSnapshot> mpt_snapshots;
-    std::vector<tlvdemux::MhAitSnapshot> mh_ait_snapshots;
-    std::vector<tlvdemux::ServiceStateReset> service_resets;
-    std::vector<tlvdemux::DataTransmissionTable> data_transmission_tables;
-    std::vector<tlvdemux::Error> errors;
-    void onService(const tlvdemux::ServiceInfo& value) override { services.push_back(value); }
-    void onTrack(const tlvdemux::TrackInfo& value) override { tracks.push_back(value); }
-    void onTrackRemoved(const tlvdemux::TrackInfo& value) override {
+    std::vector<aribtlv::ApplicationInfo> applications;
+    std::vector<aribtlv::ApplicationInfo> removed_applications;
+    std::vector<aribtlv::MptSnapshot> mpt_snapshots;
+    std::vector<aribtlv::MhAitSnapshot> mh_ait_snapshots;
+    std::vector<aribtlv::ServiceStateReset> service_resets;
+    std::vector<aribtlv::DataTransmissionTable> data_transmission_tables;
+    std::vector<aribtlv::Error> errors;
+    void onService(const aribtlv::ServiceInfo& value) override { services.push_back(value); }
+    void onTrack(const aribtlv::TrackInfo& value) override { tracks.push_back(value); }
+    void onTrackRemoved(const aribtlv::TrackInfo& value) override {
         removed_tracks.push_back(value);
     }
-    void onAccessUnit(tlvdemux::AccessUnit&& value) override {
+    void onAccessUnit(aribtlv::AccessUnit&& value) override {
         access_units.push_back(std::move(value));
     }
-    void onApplicationService(const tlvdemux::ApplicationServiceInfo& value) override {
+    void onApplicationService(const aribtlv::ApplicationServiceInfo& value) override {
         application_services.push_back(value);
     }
     void onApplicationServiceRemoved(
-        const tlvdemux::ApplicationServiceInfo& value) override {
+        const aribtlv::ApplicationServiceInfo& value) override {
         removed_application_services.push_back(value);
     }
-    void onLayoutConfiguration(const tlvdemux::LayoutConfiguration& value) override {
+    void onLayoutConfiguration(const aribtlv::LayoutConfiguration& value) override {
         layouts.push_back(value);
     }
-    void onDataAsset(const tlvdemux::DataAssetInfo& value) override {
+    void onDataAsset(const aribtlv::DataAssetInfo& value) override {
         data_assets.push_back(value);
     }
-    void onDataAssetRemoved(const tlvdemux::DataAssetInfo& value) override {
+    void onDataAssetRemoved(const aribtlv::DataAssetInfo& value) override {
         removed_data_assets.push_back(value);
     }
-    void onSignallingMessage(tlvdemux::SignallingMessage&& value) override {
+    void onSignallingMessage(aribtlv::SignallingMessage&& value) override {
         signalling_messages.push_back(std::move(value));
     }
-    void onEventInfo(const tlvdemux::EventInfo& value) override { events.push_back(value); }
-    void onMhSdtSnapshot(const tlvdemux::MhSdtSnapshot& value) override {
+    void onEventInfo(const aribtlv::EventInfo& value) override { events.push_back(value); }
+    void onMhSdtSnapshot(const aribtlv::MhSdtSnapshot& value) override {
         mh_sdt_snapshots.push_back(value);
     }
-    void onMhTot(const tlvdemux::MhTotInfo& value) override { mh_tot.push_back(value); }
-    void onStreamEvent(const tlvdemux::StreamEvent& value) override {
+    void onMhTot(const aribtlv::MhTotInfo& value) override { mh_tot.push_back(value); }
+    void onStreamEvent(const aribtlv::StreamEvent& value) override {
         stream_events.push_back(value);
     }
     void onViewerParticipationNotification(
-        const tlvdemux::ViewerParticipationNotification& value) override {
+        const aribtlv::ViewerParticipationNotification& value) override {
         viewer_participation_notifications.push_back(value);
     }
-    void onApplication(const tlvdemux::ApplicationInfo& value) override {
+    void onApplication(const aribtlv::ApplicationInfo& value) override {
         applications.push_back(value);
     }
-    void onApplicationRemoved(const tlvdemux::ApplicationInfo& value) override {
+    void onApplicationRemoved(const aribtlv::ApplicationInfo& value) override {
         removed_applications.push_back(value);
     }
-    void onMptSnapshot(const tlvdemux::MptSnapshot& value) override {
+    void onMptSnapshot(const aribtlv::MptSnapshot& value) override {
         mpt_snapshots.push_back(value);
     }
-    void onMhAitSnapshot(const tlvdemux::MhAitSnapshot& value) override {
+    void onMhAitSnapshot(const aribtlv::MhAitSnapshot& value) override {
         mh_ait_snapshots.push_back(value);
     }
-    void onServiceStateReset(const tlvdemux::ServiceStateReset& value) override {
+    void onServiceStateReset(const aribtlv::ServiceStateReset& value) override {
         service_resets.push_back(value);
     }
-    void onDataTransmissionTable(tlvdemux::DataTransmissionTable&& value) override {
+    void onDataTransmissionTable(aribtlv::DataTransmissionTable&& value) override {
         data_transmission_tables.push_back(std::move(value));
     }
-    void onError(const tlvdemux::Error& value) override { errors.push_back(value); }
+    void onError(const aribtlv::Error& value) override { errors.push_back(value); }
 };
 
 [[noreturn]] void fail(const std::string& message) {
@@ -151,7 +151,7 @@ void test_split_at_every_boundary() {
     const auto data = stream_for_contexts(1, 2);
     for (std::size_t split = 0; split <= data.size(); ++split) {
         TestSink sink;
-        tlvdemux::Demuxer demuxer(sink);
+        aribtlv::Demuxer demuxer(sink);
         demuxer.push(data.data(), split);
         demuxer.push(data.data() + split, data.size() - split);
         demuxer.flush();
@@ -162,7 +162,7 @@ void test_split_at_every_boundary() {
 void test_one_byte_input() {
     const auto data = stream_for_contexts(7, 8);
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     for (const auto byte : data) demuxer.push(&byte, 1);
     demuxer.flush();
     check(sink.services.size() == 2, "one-byte pushes did not match whole-stream parsing");
@@ -175,19 +175,19 @@ void test_garbage_recovery() {
     data.insert(data.end(), third.begin(), third.end());
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(data.data(), data.size());
     demuxer.flush();
     check(sink.services.size() == 4, "parser did not recover after middle garbage");
     check(std::any_of(sink.errors.begin(), sink.errors.end(), [](const auto& error) {
-        return error.code == tlvdemux::ErrorCode::MalformedInput;
+        return error.code == aribtlv::ErrorCode::MalformedInput;
     }), "garbage recovery did not report a recoverable error");
 }
 
 void test_service_selection_and_reset() {
     const auto data = stream_for_contexts(10, 11);
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.selectService(11);
     demuxer.push(data.data(), data.size());
     demuxer.flush();
@@ -204,7 +204,7 @@ void test_incomplete_flush() {
     auto data = stream_for_contexts(1, 2);
     data.resize(data.size() - 3);
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(data.data(), data.size());
     demuxer.flush();
     check(!sink.errors.empty(), "flush did not report incomplete trailing data");
@@ -223,21 +223,21 @@ void test_mode_60_and_resource_limit() {
     }
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
     check(sink.services.size() == 1 && sink.services[0].context_id == 0x123,
           "compressed-IP modes did not preserve their shared context ID");
 
-    tlvdemux::Limits limits;
+    aribtlv::Limits limits;
     limits.max_resync_buffer = 16;
     TestSink limited_sink;
-    tlvdemux::Demuxer limited(limited_sink, limits);
+    aribtlv::Demuxer limited(limited_sink, limits);
     std::vector<std::uint8_t> garbage(128, 0x55);
     limited.push(garbage.data(), garbage.size());
     limited.flush();
     check(std::any_of(limited_sink.errors.begin(), limited_sink.errors.end(), [](const auto& error) {
-        return error.code == tlvdemux::ErrorCode::ResourceLimit;
+        return error.code == aribtlv::ErrorCode::ResourceLimit;
     }), "TLV resynchronization buffer limit was not enforced");
 
     const auto unsupported_packet = tlv(0x03, {0x00, 0x10, 0x22});
@@ -246,12 +246,12 @@ void test_mode_60_and_resource_limit() {
         noisy_stream.insert(noisy_stream.end(), unsupported_packet.begin(), unsupported_packet.end());
     }
     TestSink noisy_sink;
-    tlvdemux::Demuxer noisy(noisy_sink);
+    aribtlv::Demuxer noisy(noisy_sink);
     noisy.push(noisy_stream.data(), noisy_stream.size());
     noisy.flush();
     const auto unsupported_callbacks = std::count_if(
         noisy_sink.errors.begin(), noisy_sink.errors.end(), [](const auto& error) {
-            return error.code == tlvdemux::ErrorCode::MalformedInput;
+            return error.code == aribtlv::ErrorCode::MalformedInput;
         });
     check(unsupported_callbacks > 0 && unsupported_callbacks < 10,
           "identical recoverable errors were not rate-limited");
@@ -823,7 +823,7 @@ void test_independent_m2_sdt_and_tot() {
     const auto tot = signalling_tlv(1, 0, mh_tot_message(), 0x8005);
     stream.insert(stream.end(), tot.begin(), tot.end());
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
     check(sink.mh_sdt_snapshots.size() == 1 &&
@@ -855,7 +855,7 @@ void test_mh_eit_program_events() {
     stream.insert(stream.end(), repeated.begin(), repeated.end());
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
     check(sink.events.size() == 1, "repeated MH-EIT event was not deduplicated");
@@ -950,7 +950,7 @@ void test_emt_stream_events() {
     stream.insert(stream.end(), updated.begin(), updated.end());
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
     check(sink.stream_events.size() == 2,
@@ -978,7 +978,7 @@ void test_viewer_participation_notifications() {
     stream.insert(stream.end(), not_current.begin(), not_current.end());
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
     check(sink.viewer_participation_notifications.size() == 2,
@@ -1004,15 +1004,15 @@ void test_viewer_participation_notifications() {
 
 void test_global_packet_state_budget() {
     const auto data = discovery_stream();
-    tlvdemux::Limits limits;
+    aribtlv::Limits limits;
     limits.max_packet_states = 3; // one signalling PID plus two track states
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink, limits);
+    aribtlv::Demuxer demuxer(sink, limits);
     demuxer.push(data.data(), data.size());
     demuxer.flush();
     check(sink.tracks.size() == 2 &&
               std::any_of(sink.errors.begin(), sink.errors.end(), [](const auto& error) {
-                  return error.code == tlvdemux::ErrorCode::ResourceLimit;
+                  return error.code == aribtlv::ErrorCode::ResourceLimit;
               }),
           "global MMTP packet/track-state budget was not shared by signalling and tracks");
 }
@@ -1032,7 +1032,7 @@ void test_signalling_fragmentation_aggregation_and_m2() {
     first.insert(first.end(), last.begin(), last.end());
     first.insert(first.end(), last.begin(), last.end()); // duplicate is ignored
     TestSink fragmented_sink;
-    tlvdemux::Demuxer fragmented(fragmented_sink);
+    aribtlv::Demuxer fragmented(fragmented_sink);
     fragmented.push(first.data(), first.size());
     fragmented.flush();
     check(fragmented_sink.tracks.size() == 3,
@@ -1047,7 +1047,7 @@ void test_signalling_fragmentation_aggregation_and_m2() {
     const auto aggregate_tail = signalling_tlv(21, 0x01, aggregate);
     aggregated_stream.insert(aggregated_stream.end(), aggregate_tail.begin(), aggregate_tail.end());
     TestSink aggregated_sink;
-    tlvdemux::Demuxer aggregated(aggregated_sink);
+    aribtlv::Demuxer aggregated(aggregated_sink);
     aggregated.push(aggregated_stream.data(), aggregated_stream.size());
     aggregated.flush();
     check(aggregated_sink.tracks.size() == 3,
@@ -1061,7 +1061,7 @@ void test_signalling_fragmentation_aggregation_and_m2() {
     const auto m2_tail = signalling_tlv(31, 0, m2);
     m2_stream.insert(m2_stream.end(), m2_tail.begin(), m2_tail.end());
     TestSink m2_sink;
-    tlvdemux::Demuxer m2_demuxer(m2_sink);
+    aribtlv::Demuxer m2_demuxer(m2_sink);
     m2_demuxer.push(m2_stream.data(), m2_stream.size());
     m2_demuxer.flush();
     check(m2_sink.tracks.size() == 3, "M2 section message did not carry its MPT");
@@ -1074,12 +1074,12 @@ void test_signalling_fragmentation_aggregation_and_m2() {
     gap_stream.insert(gap_stream.end(), gap_last.begin(), gap_last.end());
     gap_stream.insert(gap_stream.end(), recovered.begin(), recovered.end());
     TestSink gap_sink;
-    tlvdemux::Demuxer gap_demuxer(gap_sink);
+    aribtlv::Demuxer gap_demuxer(gap_sink);
     gap_demuxer.push(gap_stream.data(), gap_stream.size());
     gap_demuxer.flush();
     check(gap_sink.tracks.size() == 3 &&
               std::any_of(gap_sink.errors.begin(), gap_sink.errors.end(), [](const auto& error) {
-                  return error.code == tlvdemux::ErrorCode::Discontinuity;
+                  return error.code == aribtlv::ErrorCode::Discontinuity;
               }),
           "signalling sequence gap did not discard the fragment and recover at a complete message");
 
@@ -1091,12 +1091,12 @@ void test_signalling_fragmentation_aggregation_and_m2() {
     malformed_stream.insert(malformed_stream.end(),
                             valid_after_malformed.begin(), valid_after_malformed.end());
     TestSink malformed_sink;
-    tlvdemux::Demuxer malformed_demuxer(malformed_sink);
+    aribtlv::Demuxer malformed_demuxer(malformed_sink);
     malformed_demuxer.push(malformed_stream.data(), malformed_stream.size());
     malformed_demuxer.flush();
     check(malformed_sink.tracks.size() == 3 &&
               std::any_of(malformed_sink.errors.begin(), malformed_sink.errors.end(), [](const auto& error) {
-                  return error.code == tlvdemux::ErrorCode::MalformedInput;
+                  return error.code == aribtlv::ErrorCode::MalformedInput;
               }),
           "malformed nested MPT length damaged later signalling recovery");
 }
@@ -1104,7 +1104,7 @@ void test_signalling_fragmentation_aggregation_and_m2() {
 void test_track_discovery_and_deduplication() {
     const auto data = discovery_stream();
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(data.data(), data.size());
     demuxer.flush();
     check(sink.tracks.size() == 3, "MPT did not discover exactly three supported tracks");
@@ -1141,27 +1141,27 @@ void test_track_discovery_and_deduplication() {
               sink.data_assets[0].asset_type == "aapp" &&
               sink.data_assets[0].component_tag == 0x1240 &&
               sink.data_assets[0].presentation_regions ==
-                  std::vector<tlvdemux::MpuPresentationRegion>{{9, 2, 1}},
+                  std::vector<aribtlv::MpuPresentationRegion>{{9, 2, 1}},
           "MMT application data asset was not exposed");
     check(sink.signalling_messages.size() == 1 &&
               sink.signalling_messages[0].message_id == 0x0000 &&
               sink.signalling_messages[0].packet_id == 0xff02,
           "completed MMTP signalling message was not exposed");
-    check(sink.tracks[0].codec == tlvdemux::Codec::Hevc && sink.tracks[0].timescale == 180000,
+    check(sink.tracks[0].codec == aribtlv::Codec::Hevc && sink.tracks[0].timescale == 180000,
           "HEVC metadata was not parsed from MPT descriptors");
     check(sink.tracks[0].presentation_regions ==
-              std::vector<tlvdemux::MpuPresentationRegion>{{1, 2, 1}, {2, 3, 4}},
+              std::vector<aribtlv::MpuPresentationRegion>{{1, 2, 1}, {2, 3, 4}},
           "MPU presentation-region descriptor was not exposed on the track");
-    check(sink.tracks[1].codec == tlvdemux::Codec::AacLatm && sink.tracks[1].language == "jpn",
+    check(sink.tracks[1].codec == aribtlv::Codec::AacLatm && sink.tracks[1].language == "jpn",
           "AAC-LATM metadata was not parsed from MPT descriptors");
     check(sink.tracks[1].audio.has_value() &&
-              sink.tracks[1].audio->channel_layout == tlvdemux::AudioChannelLayout::Stereo &&
+              sink.tracks[1].audio->channel_layout == aribtlv::AudioChannelLayout::Stereo &&
               sink.tracks[1].component_tag == 0x0110 &&
               sink.tracks[1].audio->component_tag == 0x0110 &&
               sink.tracks[1].audio->main_component &&
               sink.tracks[1].audio->sample_rate == 48000,
           "MH audio component metadata was not exposed on the audio track");
-    check(sink.tracks[2].codec == tlvdemux::Codec::Ttml &&
+    check(sink.tracks[2].codec == aribtlv::Codec::Ttml &&
               sink.tracks[2].component_tag == 0x1230,
           "TTML metadata was not parsed from MPT descriptors");
     check(sink.tracks[2].timescale == 65536,
@@ -1223,7 +1223,7 @@ std::vector<std::uint8_t> truncated_subtitle_stream() {
 void test_truncated_subtitle_reference_start_time_is_rejected() {
     const auto data = truncated_subtitle_stream();
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(data.data(), data.size());
     demuxer.flush();
     // parse_mpt() rejects the whole MPT on a malformed asset descriptor, so the
@@ -1233,7 +1233,7 @@ void test_truncated_subtitle_reference_start_time_is_rejected() {
     check(sink.signalling_messages.empty(),
           "MPT with a truncated subtitle descriptor was still reported as a valid signalling "
           "message");
-    check(!sink.errors.empty() && sink.errors[0].code == tlvdemux::ErrorCode::MalformedInput &&
+    check(!sink.errors.empty() && sink.errors[0].code == aribtlv::ErrorCode::MalformedInput &&
               sink.errors[0].recoverable,
           "truncated reference_start_time block did not raise a recoverable parse error");
 }
@@ -1241,7 +1241,7 @@ void test_truncated_subtitle_reference_start_time_is_rejected() {
 void test_service_selection_clears_layout_state() {
     const auto data = discovery_stream();
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(data.data(), data.size());
     demuxer.flush();
     demuxer.selectService(1);
@@ -1257,7 +1257,7 @@ void test_application_and_data_transmission_signalling() {
     stream.insert(stream.end(), data_message.begin(), data_message.end());
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
     check(sink.applications.size() == 1 &&
@@ -1301,7 +1301,7 @@ void test_application_and_data_transmission_signalling() {
 
 void test_mpt_snapshot_removes_missing_service_state() {
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     const auto initial = discovery_stream();
     demuxer.push(initial.data(), initial.size());
     const auto ait = signalling_tlv(2, 0, application_control_message());
@@ -1326,7 +1326,7 @@ void test_mpt_snapshot_removes_missing_service_state() {
 
 void test_mh_ait_snapshot_completion_empty_and_reposition() {
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
 
     auto arib_single = signalling_tlv(
         1, 0, application_control_message(1, 1, 10));
@@ -1362,7 +1362,7 @@ void test_mh_ait_snapshot_completion_empty_and_reposition() {
               sink.mh_ait_snapshots.back().applications.size() == 1,
           "out-of-order complete MH-AIT sub-table was not committed atomically");
 
-    demuxer.reposition(tlvdemux::RepositionOptions{0, true});
+    demuxer.reposition(aribtlv::RepositionOptions{0, true});
     auto historical = signalling_tlv(
         1, 0, application_control_message(1, 1, 2, true, 0x0011, 0x02));
     const auto historical_repeat = signalling_tlv(
@@ -1377,14 +1377,14 @@ void test_mh_ait_snapshot_completion_empty_and_reposition() {
 
 void test_service_state_reset_notifications() {
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.selectService(1);
     demuxer.reset();
     check(sink.service_resets.size() == 2 &&
               sink.service_resets[0].reason ==
-                  tlvdemux::ServiceStateResetReason::ServiceSelection &&
+                  aribtlv::ServiceStateResetReason::ServiceSelection &&
               sink.service_resets[1].reason ==
-                  tlvdemux::ServiceStateResetReason::FullReset,
+                  aribtlv::ServiceStateResetReason::FullReset,
           "service selection/full reset did not expose explicit reset ownership");
 }
 
@@ -1402,20 +1402,20 @@ void test_dynamic_audio_layout_metadata() {
     data.insert(data.end(), update.begin(), update.end());
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(data.data(), data.size());
     demuxer.flush();
     check(sink.tracks.size() == 4,
           "three signalled audio tracks plus one metadata update were not reported");
 
-    const auto find_layout = [&](const tlvdemux::AudioChannelLayout layout) {
+    const auto find_layout = [&](const aribtlv::AudioChannelLayout layout) {
         return std::find_if(sink.tracks.begin(), sink.tracks.end(), [&](const auto& track) {
             return track.audio.has_value() && track.audio->channel_layout == layout;
         });
     };
-    const auto surround22 = find_layout(tlvdemux::AudioChannelLayout::Channels22_2);
-    const auto surround51 = find_layout(tlvdemux::AudioChannelLayout::Channels5_1);
-    const auto stereo = find_layout(tlvdemux::AudioChannelLayout::Stereo);
+    const auto surround22 = find_layout(aribtlv::AudioChannelLayout::Channels22_2);
+    const auto surround51 = find_layout(aribtlv::AudioChannelLayout::Channels5_1);
+    const auto stereo = find_layout(aribtlv::AudioChannelLayout::Stereo);
     check(surround22 != sink.tracks.end() && surround22->packet_id == 0xe210 &&
               surround22->component_tag == 0x0110 &&
               surround22->audio->component_tag == 0x0110 &&
@@ -1431,7 +1431,7 @@ void test_dynamic_audio_layout_metadata() {
     check(sink.tracks.back().packet_id == 0xe210 &&
               sink.tracks.back().track_id == surround22->track_id &&
               sink.tracks.back().audio->channel_layout ==
-                  tlvdemux::AudioChannelLayout::Channels5_1,
+                  aribtlv::AudioChannelLayout::Channels5_1,
           "audio descriptor update did not preserve track identity and emit replacement metadata");
 }
 
@@ -1529,12 +1529,12 @@ void test_authenticated_mmtp_payload_bounds() {
     valid_stream.insert(valid_stream.end(), valid_packet.begin(), valid_packet.end());
 
     TestSink valid_sink;
-    tlvdemux::Demuxer valid_demuxer(valid_sink);
+    aribtlv::Demuxer valid_demuxer(valid_sink);
     valid_demuxer.push(valid_stream.data(), valid_stream.size());
     valid_demuxer.flush();
     check(std::any_of(valid_sink.access_units.begin(), valid_sink.access_units.end(),
                       [](const auto& unit) {
-                          return unit.codec == tlvdemux::Codec::AacLatm;
+                          return unit.codec == aribtlv::Codec::AacLatm;
                       }),
           "B61 message-authentication code was treated as MMTP media payload");
 
@@ -1544,12 +1544,12 @@ void test_authenticated_mmtp_payload_bounds() {
                                      media, static_cast<std::uint16_t>(media.size() + 32)));
     invalid_stream.insert(invalid_stream.end(), invalid_packet.begin(), invalid_packet.end());
     TestSink invalid_sink;
-    tlvdemux::Demuxer invalid_demuxer(invalid_sink);
+    aribtlv::Demuxer invalid_demuxer(invalid_sink);
     invalid_demuxer.push(invalid_stream.data(), invalid_stream.size());
     invalid_demuxer.flush();
     check(std::any_of(invalid_sink.errors.begin(), invalid_sink.errors.end(),
                       [](const auto& error) {
-                          return error.code == tlvdemux::ErrorCode::MalformedInput;
+                          return error.code == aribtlv::ErrorCode::MalformedInput;
                       }),
           "out-of-bounds authenticated MMTP payload length was accepted");
 }
@@ -1588,19 +1588,19 @@ void test_codec_output_and_timeline() {
                                  'd', 'e', 'f'});
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
 
     check(sink.access_units.size() >= 4, "supported codec MFUs did not produce access units");
     const auto video = std::find_if(sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
-        return unit.codec == tlvdemux::Codec::Hevc;
+        return unit.codec == aribtlv::Codec::Hevc;
     });
     const auto audio = std::find_if(sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
-        return unit.codec == tlvdemux::Codec::AacLatm;
+        return unit.codec == aribtlv::Codec::AacLatm;
     });
     const auto subtitle = std::find_if(sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
-        return unit.codec == tlvdemux::Codec::Ttml;
+        return unit.codec == aribtlv::Codec::Ttml;
     });
     check(video != sink.access_units.end() &&
               video->data == std::vector<std::uint8_t>({0, 0, 1, 0x46, 0x01,
@@ -1610,7 +1610,7 @@ void test_codec_output_and_timeline() {
               audio->data == std::vector<std::uint8_t>({0x56, 0xe0, 0x02, 0x11, 0x22}),
           "AAC MFU was not wrapped in a valid LOAS header");
     const auto second_audio = std::find_if(audio + 1, sink.access_units.end(), [](const auto& unit) {
-        return unit.codec == tlvdemux::Codec::AacLatm;
+        return unit.codec == aribtlv::Codec::AacLatm;
     });
     check(second_audio != sink.access_units.end() && second_audio->pts.value == 3000,
           "multi-AU timestamp offsets were not applied in presentation order");
@@ -1629,15 +1629,15 @@ void test_codec_output_and_timeline() {
           "first selected media timestamp was not normalized to zero");
 
     TestSink passthrough_sink;
-    tlvdemux::Demuxer passthrough_demuxer(passthrough_sink);
-    passthrough_demuxer.selectTrack(tlvdemux::TrackKind::Subtitle,
+    aribtlv::Demuxer passthrough_demuxer(passthrough_sink);
+    passthrough_demuxer.selectTrack(aribtlv::TrackKind::Subtitle,
                                     std::numeric_limits<std::uint64_t>::max());
     passthrough_demuxer.setSubtitlePassthroughEnabled(true);
     passthrough_demuxer.push(stream.data(), stream.size());
     passthrough_demuxer.flush();
     check(std::any_of(passthrough_sink.access_units.begin(),
                       passthrough_sink.access_units.end(), [](const auto& unit) {
-                          return unit.codec == tlvdemux::Codec::Ttml;
+                          return unit.codec == aribtlv::Codec::Ttml;
                       }),
           "subtitle passthrough did not bypass selected-track filtering");
 }
@@ -1677,14 +1677,14 @@ void test_timestamp_overflow_rejection() {
     add_media(0xf310, 1, true, {0x11, 0x22});
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
     check(std::count_if(sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
-              return unit.codec == tlvdemux::Codec::AacLatm;
+              return unit.codec == aribtlv::Codec::AacLatm;
           }) == 0 &&
               std::any_of(sink.errors.begin(), sink.errors.end(), [](const auto& error) {
-                  return error.code == tlvdemux::ErrorCode::Discontinuity;
+                  return error.code == aribtlv::ErrorCode::Discontinuity;
               }),
           "timestamp normalization overflow was not rejected recoverably");
 }
@@ -1692,7 +1692,7 @@ void test_timestamp_overflow_rejection() {
 void test_track_selection_clears_incomplete_media() {
     const auto discovery = discovery_stream();
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(discovery.data(), discovery.size());
     demuxer.flush();
     const auto video_track = sink.tracks[0].track_id;
@@ -1705,7 +1705,7 @@ void test_track_selection_clears_incomplete_media() {
     partial_stream.insert(partial_stream.end(), boundary.begin(), boundary.end());
     demuxer.push(partial_stream.data(), partial_stream.size());
 
-    demuxer.selectTrack(tlvdemux::TrackKind::Video, video_track);
+    demuxer.selectTrack(aribtlv::TrackKind::Video, video_track);
 
     const auto stale_last = tlv_for_mmtp(
         1, mmtp_packet(0xf300, 2, 100U << 16U, false,
@@ -1729,7 +1729,7 @@ void test_track_selection_clears_incomplete_media() {
     demuxer.flush();
 
     check(std::count_if(sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
-              return unit.codec == tlvdemux::Codec::Hevc;
+              return unit.codec == aribtlv::Codec::Hevc;
           }) == 1,
           "track selection retained stale fragmented media or failed to resume at a fresh RAP");
 }
@@ -1767,12 +1767,12 @@ void test_fragmented_signalling_restart_offset() {
     add_video(3, false, {0, 0, 0, 2, 0x46, 0x01});
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
     const auto video = std::find_if(sink.access_units.begin(), sink.access_units.end(),
                                     [](const auto& unit) {
-                                        return unit.codec == tlvdemux::Codec::Hevc;
+                                        return unit.codec == aribtlv::Codec::Hevc;
                                     });
     check(video != sink.access_units.end() && video->restart_offset == prefix.size() &&
               video->input_offset > video->restart_offset,
@@ -1784,12 +1784,12 @@ void test_reposition_preserves_timeline_and_absolute_offsets() {
     append_video_access_unit(initial, 1);
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(initial.data(), initial.size());
     demuxer.flush();
     const auto initial_video = std::find_if(
         sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
-            return unit.codec == tlvdemux::Codec::Hevc;
+            return unit.codec == aribtlv::Codec::Hevc;
         });
     check(initial_video != sink.access_units.end() && initial_video->pts.value == 0,
           "initial video did not establish the recording timeline");
@@ -1819,14 +1819,14 @@ void test_reposition_preserves_timeline_and_absolute_offsets() {
     append_video_access_unit(shifted, 1000);
 
     constexpr std::uint64_t source_offset = 500000;
-    demuxer.reposition(tlvdemux::RepositionOptions{source_offset, true});
+    demuxer.reposition(aribtlv::RepositionOptions{source_offset, true});
     demuxer.push(shifted.data(), shifted.size());
     demuxer.flush();
 
     const auto second_video = std::find_if(
         sink.access_units.begin() + static_cast<std::ptrdiff_t>(initial_video_index + 1),
         sink.access_units.end(), [](const auto& unit) {
-            return unit.codec == tlvdemux::Codec::Hevc;
+            return unit.codec == aribtlv::Codec::Hevc;
         });
     check(second_video != sink.access_units.end() && second_video->pts.value == 180000,
           "reposition reset the recording timeline instead of preserving it");
@@ -1844,12 +1844,12 @@ void test_track_selection_preserves_timeline_and_waits_for_rap() {
     append_video_access_unit(initial, 1);
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(initial.data(), initial.size());
     demuxer.flush();
     const auto initial_video = std::find_if(
         sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
-            return unit.codec == tlvdemux::Codec::Hevc;
+            return unit.codec == aribtlv::Codec::Hevc;
         });
     check(initial_video != sink.access_units.end() && initial_video->pts.value == 0,
           "initial video did not establish the track-switch timeline");
@@ -1857,7 +1857,7 @@ void test_track_selection_preserves_timeline_and_waits_for_rap() {
         static_cast<std::size_t>(initial_video - sink.access_units.begin());
     const auto video_track = initial_video->track_id;
 
-    demuxer.selectTrack(tlvdemux::TrackKind::Video, video_track);
+    demuxer.selectTrack(aribtlv::TrackKind::Video, video_track);
 
     auto shifted_pa = discovery_message();
     const std::vector<std::uint8_t> timestamp_pattern{0x00, 0x01, 0x0c, 0, 0, 0, 1};
@@ -1882,7 +1882,7 @@ void test_track_selection_preserves_timeline_and_waits_for_rap() {
     const auto selected_video = std::find_if(
         sink.access_units.begin() + static_cast<std::ptrdiff_t>(initial_video_index + 1),
         sink.access_units.end(), [](const auto& unit) {
-            return unit.codec == tlvdemux::Codec::Hevc;
+            return unit.codec == aribtlv::Codec::Hevc;
         });
     check(selected_video != sink.access_units.end() &&
               selected_video->track_id == video_track &&
@@ -1904,12 +1904,12 @@ void test_hevc_irap_detection_without_mmtp_rap() {
     add_video(3, {0, 0, 0, 2, 0x46, 0x01});
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
     const auto video = std::find_if(
         sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
-            return unit.codec == tlvdemux::Codec::Hevc;
+            return unit.codec == aribtlv::Codec::Hevc;
         });
     check(video != sink.access_units.end() && video->random_access,
           "HEVC IRAP NAL was not exposed as a random-access AU without MMTP RAP");
@@ -1920,7 +1920,7 @@ void test_reposition_drops_orphan_hevc_irap_continuation() {
     append_video_access_unit(initial, 1);
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(initial.data(), initial.size());
     demuxer.flush();
     const auto initial_access_unit_count = sink.access_units.size();
@@ -1945,7 +1945,7 @@ void test_reposition_drops_orphan_hevc_irap_continuation() {
     add_video(5, false, {0, 0, 0, 3, 0x2a, 0x01, 0x80});
 
     constexpr std::uint64_t source_offset = 500000;
-    demuxer.reposition(tlvdemux::RepositionOptions{source_offset, true});
+    demuxer.reposition(aribtlv::RepositionOptions{source_offset, true});
     demuxer.push(restarted.data(), restarted.size());
     demuxer.flush();
 
@@ -1953,11 +1953,11 @@ void test_reposition_drops_orphan_hevc_irap_continuation() {
         static_cast<std::ptrdiff_t>(initial_access_unit_count);
     const auto restarted_video_count = std::count_if(
         first_restarted, sink.access_units.end(), [](const auto& unit) {
-            return unit.codec == tlvdemux::Codec::Hevc;
+            return unit.codec == aribtlv::Codec::Hevc;
         });
     const auto video = std::find_if(
         first_restarted, sink.access_units.end(), [](const auto& unit) {
-            return unit.codec == tlvdemux::Codec::Hevc;
+            return unit.codec == aribtlv::Codec::Hevc;
         });
     check(restarted_video_count == 1 && video != sink.access_units.end(),
           "reposition emitted an orphan HEVC IRAP continuation as an access unit");
@@ -1986,12 +1986,12 @@ void test_access_unit_restart_offset_is_snapshotted() {
     add_video(3, {0, 0, 0, 2, 0x46, 0x01});
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
     const auto video = std::find_if(
         sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
-            return unit.codec == tlvdemux::Codec::Hevc;
+            return unit.codec == aribtlv::Codec::Hevc;
         });
     check(video != sink.access_units.end() &&
               video->restart_offset == first_checkpoint &&
@@ -2021,12 +2021,12 @@ void test_restart_offset_includes_timestamp_mapping_origin() {
     add_video(3, {0, 0, 0, 2, 0x46, 0x01});
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
     const auto video = std::find_if(
         sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
-            return unit.codec == tlvdemux::Codec::Hevc;
+            return unit.codec == aribtlv::Codec::Hevc;
         });
     check(video != sink.access_units.end() && video->random_access &&
               video->restart_offset == 0 &&
@@ -2034,14 +2034,14 @@ void test_restart_offset_includes_timestamp_mapping_origin() {
           "AU restart offset omitted the earlier timestamp mapping origin");
 
     TestSink restarted_sink;
-    tlvdemux::Demuxer restarted(restarted_sink);
-    restarted.reposition(tlvdemux::RepositionOptions{video->restart_offset, true});
+    aribtlv::Demuxer restarted(restarted_sink);
+    restarted.reposition(aribtlv::RepositionOptions{video->restart_offset, true});
     restarted.push(stream.data() + video->restart_offset,
                    stream.size() - static_cast<std::size_t>(video->restart_offset));
     restarted.flush();
     check(std::any_of(restarted_sink.access_units.begin(),
                       restarted_sink.access_units.end(), [](const auto& unit) {
-                          return unit.codec == tlvdemux::Codec::Hevc &&
+                          return unit.codec == aribtlv::Codec::Hevc &&
                               unit.random_access;
                       }),
           "timestamp-origin restart checkpoint could not reproduce its RAP");
@@ -2074,13 +2074,13 @@ void test_extended_timestamp_indexed_by_sample_number() {
     add_mfu(4, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
 
-    std::vector<const tlvdemux::AccessUnit*> video;
+    std::vector<const aribtlv::AccessUnit*> video;
     for (const auto& unit : sink.access_units) {
-        if (unit.codec == tlvdemux::Codec::Hevc) video.push_back(&unit);
+        if (unit.codec == aribtlv::Codec::Hevc) video.push_back(&unit);
     }
     check(video.size() == 3, "expected exactly three HEVC access units around the dropped AU");
     check(video[0]->dts.value == 0 && video[0]->pts.value == 0,
@@ -2116,17 +2116,17 @@ void test_mpu_au_count_mismatch_flags_discontinuity() {
     add_mfu(2, 1, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
 
     check(std::any_of(sink.errors.begin(), sink.errors.end(), [](const auto& error) {
-              return error.code == tlvdemux::ErrorCode::Discontinuity && error.recoverable;
+              return error.code == aribtlv::ErrorCode::Discontinuity && error.recoverable;
           }),
           "short MPU access-unit count did not raise a recoverable discontinuity error");
     const auto second_mpu_video = std::find_if(
         sink.access_units.begin(), sink.access_units.end(), [](const auto& unit) {
-            return unit.codec == tlvdemux::Codec::Hevc &&
+            return unit.codec == aribtlv::Codec::Hevc &&
                 unit.mpu_sequence_number == std::optional<std::uint32_t>{2};
         });
     check(second_mpu_video != sink.access_units.end() && second_mpu_video->discontinuity,
@@ -2157,13 +2157,13 @@ void test_non_timed_media_mfu_ignores_opaque_header_as_sample_number() {
     add_mfu(1, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
 
-    std::vector<const tlvdemux::AccessUnit*> video;
+    std::vector<const aribtlv::AccessUnit*> video;
     for (const auto& unit : sink.access_units) {
-        if (unit.codec == tlvdemux::Codec::Hevc) video.push_back(&unit);
+        if (unit.codec == aribtlv::Codec::Hevc) video.push_back(&unit);
     }
     check(video.size() == 2,
           "non-timed media MFUs were misindexed by their opaque header field");
@@ -2193,13 +2193,13 @@ void test_aac_extended_timestamp_indexed_by_sample_number() {
     add_mfu(4, {0x55, 0x66});
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
 
-    std::vector<const tlvdemux::AccessUnit*> audio;
+    std::vector<const aribtlv::AccessUnit*> audio;
     for (const auto& unit : sink.access_units) {
-        if (unit.codec == tlvdemux::Codec::AacLatm) audio.push_back(&unit);
+        if (unit.codec == aribtlv::Codec::AacLatm) audio.push_back(&unit);
     }
     check(audio.size() == 3, "expected exactly three AAC access units around the dropped AU");
     check(audio[0]->dts.value == 0 && audio[0]->pts.value == 0,
@@ -2241,13 +2241,13 @@ void test_out_of_order_sample_number_is_dropped() {
     add_mfu(5, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
 
-    std::vector<const tlvdemux::AccessUnit*> video;
+    std::vector<const aribtlv::AccessUnit*> video;
     for (const auto& unit : sink.access_units) {
-        if (unit.codec == tlvdemux::Codec::Hevc) video.push_back(&unit);
+        if (unit.codec == aribtlv::Codec::Hevc) video.push_back(&unit);
     }
     check(video.size() == 3, "out-of-order sample_number 2 access unit was emitted");
     check(video[0]->dts.value == 0 && video[1]->dts.value == 333 && video[2]->dts.value == 444,
@@ -2255,7 +2255,7 @@ void test_out_of_order_sample_number_is_dropped() {
     check(video[2]->discontinuity,
           "access unit after the dropped decode timestamp was not marked discontinuous");
     check(std::any_of(sink.errors.begin(), sink.errors.end(), [](const auto& error) {
-              return error.code == tlvdemux::ErrorCode::MalformedInput && error.recoverable &&
+              return error.code == aribtlv::ErrorCode::MalformedInput && error.recoverable &&
                   error.message ==
                       "dropped access unit with a decreasing decode timestamp inside an MPU";
           }),
@@ -2286,13 +2286,13 @@ void test_sample_number_change_starts_a_new_access_unit() {
     add_mfu(2, false, {0, 0, 0, 3, 0x02, 0x01, 0x00}); // first_slice_segment_in_pic_flag CLEAR
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
 
-    std::vector<const tlvdemux::AccessUnit*> video;
+    std::vector<const aribtlv::AccessUnit*> video;
     for (const auto& unit : sink.access_units) {
-        if (unit.codec == tlvdemux::Codec::Hevc) video.push_back(&unit);
+        if (unit.codec == aribtlv::Codec::Hevc) video.push_back(&unit);
     }
     check(video.size() == 2,
           "sample_number change did not split two plain VCL NAL units into separate "
@@ -2336,13 +2336,13 @@ void test_pts_offset_type_2_uniform_matches_pts_offset_type_1() {
         add_mfu(3, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
 
         TestSink sink;
-        tlvdemux::Demuxer demuxer(sink);
+        aribtlv::Demuxer demuxer(sink);
         demuxer.push(stream.data(), stream.size());
         demuxer.flush();
 
         std::vector<Emitted> emitted;
         for (const auto& unit : sink.access_units) {
-            if (unit.codec == tlvdemux::Codec::Hevc) {
+            if (unit.codec == aribtlv::Codec::Hevc) {
                 emitted.push_back(Emitted{unit.dts.value, unit.pts.value});
             }
         }
@@ -2387,15 +2387,15 @@ void test_pts_offset_type_2_non_uniform_is_rejected() {
     add_mfu(3, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
 
     check(std::none_of(sink.access_units.begin(), sink.access_units.end(),
-                       [](const auto& unit) { return unit.codec == tlvdemux::Codec::Hevc; }),
+                       [](const auto& unit) { return unit.codec == aribtlv::Codec::Hevc; }),
           "non-uniform pts_offset_type == 2 still emitted an access unit for the MPU");
     check(std::any_of(sink.errors.begin(), sink.errors.end(), [](const auto& error) {
-              return error.code == tlvdemux::ErrorCode::UnsupportedFeature && error.recoverable &&
+              return error.code == aribtlv::ErrorCode::UnsupportedFeature && error.recoverable &&
                   error.message ==
                       "dropped access unit: pts_offset_type 2 supplied a non-uniform "
                       "pts_offset, which needs the bitstream presentation order that "
@@ -2425,16 +2425,16 @@ void test_pts_offset_type_3_is_rejected() {
     add_mfu(2, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
 
     check(std::none_of(sink.access_units.begin(), sink.access_units.end(),
-                       [](const auto& unit) { return unit.codec == tlvdemux::Codec::Hevc; }),
+                       [](const auto& unit) { return unit.codec == aribtlv::Codec::Hevc; }),
           "reserved pts_offset_type == 3 still built a timestamp mapping and emitted "
           "access units");
     check(std::any_of(sink.errors.begin(), sink.errors.end(), [](const auto& error) {
-              return error.code == tlvdemux::ErrorCode::UnsupportedFeature && error.recoverable &&
+              return error.code == aribtlv::ErrorCode::UnsupportedFeature && error.recoverable &&
                   error.message ==
                       "mpu_extended_timestamp_descriptor: pts_offset_type 3 is reserved by "
                       "TR-B39 Table 34.1-72 and defines no pts_offset semantics; skipping it";
@@ -2474,13 +2474,13 @@ void test_leap_second_insertion_corrects_presentation_timeline() {
     add_mfu(4, {0x77, 0x88});
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
 
-    std::vector<const tlvdemux::AccessUnit*> audio;
+    std::vector<const aribtlv::AccessUnit*> audio;
     for (const auto& unit : sink.access_units) {
-        if (unit.codec == tlvdemux::Codec::AacLatm) audio.push_back(&unit);
+        if (unit.codec == aribtlv::Codec::AacLatm) audio.push_back(&unit);
     }
     check(audio.size() == 4, "leap-second insertion test did not produce four AAC access units");
     check(audio[0]->pts.value == 0 && audio[0]->dts.value == 0,
@@ -2524,13 +2524,13 @@ void test_leap_second_deletion_corrects_presentation_timeline() {
     add_mfu(4, {0x77, 0x88});
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
 
-    std::vector<const tlvdemux::AccessUnit*> audio;
+    std::vector<const aribtlv::AccessUnit*> audio;
     for (const auto& unit : sink.access_units) {
-        if (unit.codec == tlvdemux::Codec::AacLatm) audio.push_back(&unit);
+        if (unit.codec == aribtlv::Codec::AacLatm) audio.push_back(&unit);
     }
     check(audio.size() == 4, "leap-second deletion test did not produce four AAC access units");
     check(audio[0]->pts.value == 0 && audio[0]->dts.value == 0,
@@ -2568,13 +2568,13 @@ void test_leap_indicator_zero_is_inert() {
     add_mfu(3, {0x55, 0x66});
 
     TestSink sink;
-    tlvdemux::Demuxer demuxer(sink);
+    aribtlv::Demuxer demuxer(sink);
     demuxer.push(stream.data(), stream.size());
     demuxer.flush();
 
-    std::vector<const tlvdemux::AccessUnit*> audio;
+    std::vector<const aribtlv::AccessUnit*> audio;
     for (const auto& unit : sink.access_units) {
-        if (unit.codec == tlvdemux::Codec::AacLatm) audio.push_back(&unit);
+        if (unit.codec == aribtlv::Codec::AacLatm) audio.push_back(&unit);
     }
     check(audio.size() == 3, "leap-indicator-zero test did not produce three AAC access units");
     check(audio[0]->pts.value == 0 && audio[0]->dts.value == 0,

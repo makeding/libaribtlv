@@ -1,11 +1,11 @@
-#include <tlvdemux/recording.hpp>
+#include <aribtlv/recording.hpp>
 
 #include <algorithm>
 #include <iterator>
 #include <limits>
 #include <utility>
 
-namespace tlvdemux {
+namespace aribtlv {
 namespace {
 
 constexpr std::uint32_t microsecond_timescale = 1000000;
@@ -335,4 +335,4 @@ void RecordingIndex::update_duration_status() {
     }
 }
 
-} // namespace tlvdemux
+} // namespace aribtlv

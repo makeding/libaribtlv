@@ -1,4 +1,4 @@
-#include <tlvdemux/demuxer.hpp>
+#include <aribtlv/demuxer.hpp>
 
 #include <array>
 #include <limits>
@@ -8,7 +8,7 @@
 
 #include "compressed_ip_parser.hpp"
 
-namespace tlvdemux {
+namespace aribtlv {
 
 namespace {
 
@@ -973,4 +973,4 @@ std::optional<BroadcastClock> Demuxer::broadcastClock() const {
     return impl_->broadcast_clock();
 }
 
-} // namespace tlvdemux
+} // namespace aribtlv

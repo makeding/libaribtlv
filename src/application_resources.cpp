@@ -1,4 +1,4 @@
-#include <tlvdemux/application_resources.hpp>
+#include <aribtlv/application_resources.hpp>
 
 #include <algorithm>
 #include <condition_variable>
@@ -13,7 +13,7 @@
 
 #include <zlib.h>
 
-namespace tlvdemux {
+namespace aribtlv {
 namespace {
 
 std::uint16_t be16(const std::uint8_t* data) {
@@ -1016,4 +1016,4 @@ void ApplicationResourceStore::clear() {
     impl_->changed.notify_all();
 }
 
-} // namespace tlvdemux
+} // namespace aribtlv

@@ -7,7 +7,7 @@
 
 #include "byte_reader.hpp"
 
-namespace tlvdemux::detail {
+namespace aribtlv::detail {
 
 namespace {
 
@@ -244,4 +244,4 @@ void MmtpParser::push(const std::uint8_t* data, const std::size_t size,
 }
 
 
-} // namespace tlvdemux::detail
+} // namespace aribtlv::detail

@@ -1,26 +1,23 @@
-#include <tlvdemux/demuxer.hpp>
-#include <tlvdemux/playback.hpp>
-#include <tlvdemux/recording.hpp>
+#include <aribtlv/demuxer.hpp>
+#include <aribtlv/recording.hpp>
 
 namespace {
 
-class NullSink final : public tlvdemux::Sink {
+class NullSink final : public aribtlv::Sink {
 public:
-    void onService(const tlvdemux::ServiceInfo&) override {}
-    void onTrack(const tlvdemux::TrackInfo&) override {}
-    void onAccessUnit(tlvdemux::AccessUnit&&) override {}
-    void onError(const tlvdemux::Error&) override {}
+    void onService(const aribtlv::ServiceInfo&) override {}
+    void onTrack(const aribtlv::TrackInfo&) override {}
+    void onAccessUnit(aribtlv::AccessUnit&&) override {}
+    void onError(const aribtlv::Error&) override {}
 };
 
 } // namespace
 
 int main() {
     NullSink sink;
-    tlvdemux::Demuxer demuxer(sink);
-    tlvdemux::PlaybackStateMachine playback;
-    tlvdemux::RecordingIndex index;
+    aribtlv::Demuxer demuxer(sink);
+    aribtlv::RecordingIndex index;
     index.begin(false);
-    (void)playback;
     demuxer.flush();
     return 0;
 }

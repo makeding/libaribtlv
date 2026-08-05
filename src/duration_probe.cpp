@@ -1,13 +1,13 @@
-#include <tlvdemux/duration_probe.hpp>
+#include <aribtlv/duration_probe.hpp>
 
-#include <tlvdemux/demuxer.hpp>
+#include <aribtlv/demuxer.hpp>
 
 #include <algorithm>
 #include <limits>
 #include <string>
 #include <utility>
 
-namespace tlvdemux {
+namespace aribtlv {
 namespace {
 
 constexpr std::uint32_t microsecond_timescale = 1000000;
@@ -382,4 +382,4 @@ std::uint64_t DurationProbe::transferredBytes() const noexcept {
     return impl_->transferred_bytes();
 }
 
-} // namespace tlvdemux
+} // namespace aribtlv

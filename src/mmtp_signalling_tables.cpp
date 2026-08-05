@@ -4,7 +4,7 @@
 
 #include "byte_reader.hpp"
 
-namespace tlvdemux::detail {
+namespace aribtlv::detail {
 namespace {
 
 bool descriptor_length(ByteReader& reader, const std::uint16_t tag,
@@ -244,4 +244,4 @@ bool MmtpParser::parse_emt(const std::uint8_t* data, const std::size_t size,
     return true;
 }
 
-} // namespace tlvdemux::detail
+} // namespace aribtlv::detail

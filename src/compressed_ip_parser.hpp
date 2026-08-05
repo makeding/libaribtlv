@@ -10,7 +10,7 @@
 #include "mmtp_parser.hpp"
 #include "tlv_parser.hpp"
 
-namespace tlvdemux::detail {
+namespace aribtlv::detail {
 
 class CompressedIpParser {
 public:
@@ -80,4 +80,4 @@ private:
     std::unordered_map<std::uint32_t, std::unique_ptr<MmtpParser>> contexts_;
 };
 
-} // namespace tlvdemux::detail
+} // namespace aribtlv::detail
