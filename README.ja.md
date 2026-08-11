@@ -3,7 +3,7 @@
 [English](README.md) | 日本語
 
 `libaribtlv` は、復号済み ARIB MMT/TLV ストリームをインクリメンタルに
-解析する C++20 ライブラリです。ネイティブ受信機、コマンドラインツール、
+解析するライブラリです。ネイティブ受信機、コマンドラインツール、
 WebAssembly アダプターで共有する次のコア機能を提供します。
 
 - TLV 再同期、圧縮 IP コンテキスト、MMTP 分割・集約処理
@@ -33,10 +33,38 @@ Zlib のみで、Emscripten では組み込みの zlib port を利用します�
 cmake --install build --prefix /desired/prefix
 ```
 
-利用側は `find_package(aribtlv CONFIG REQUIRED)` を行い、
-`aribtlv::aribtlv` にリンクします。
+利用側は `pkg-config --cflags --libs libaribtlv`、または
+`find_package(aribtlv CONFIG REQUIRED)` と `aribtlv::aribtlv` を使用します。
+静的リンクでは pkg-config に `--static` を追加してください。
 
-## 使用例
+## 安定 C API
+
+C API は FFmpeg などのメディアフレームワーク向けの安定した連携境界です。
+C++ 型や FFmpeg 型を公開しません。
+
+```c
+#include <aribtlv/aribtlv.h>
+
+static void on_access_unit(void *opaque, const aribtlv_access_unit *unit) {
+    /* callback 後も必要なデータはここでコピーします。 */
+}
+
+aribtlv_callbacks callbacks;
+aribtlv_callbacks_init(&callbacks);
+callbacks.on_access_unit = on_access_unit;
+
+aribtlv_demuxer *demuxer = aribtlv_demuxer_create(&callbacks, NULL, NULL);
+aribtlv_demuxer_push(demuxer, data, size);
+aribtlv_demuxer_flush(demuxer);
+aribtlv_demuxer_destroy(demuxer);
+```
+
+解析と callback は同期実行され、`aribtlv_demuxer_push()` の返却後に入力
+ポインターは保持されません。callback に渡される構造体とバイト列はその
+callback 中だけ有効な view なので、キューに残す場合はコピーしてください。
+version 付き設定・callback 構造体は対応する `_init()` で初期化します。
+
+## C++ API
 
 ```cpp
 #include <aribtlv/demuxer.hpp>
@@ -59,8 +87,17 @@ demuxer.flush();
 同じソース内のシークには `reposition()`、ソース交換には `reset()`、実際の
 入力境界または EOF には `flush()` を使用します。
 
-公開 ABI は C++20 です。動的リンクする場合は互換性のあるコンパイラと
-C++ 標準ライブラリを使用してください。
+C++ API は C++20 が必要です。動的リンクする C++ consumer は互換性のある
+コンパイラと C++ 標準ライブラリを使用してください。toolchain に依存しない
+安定 ABI が必要な場合は C API を使用します。
+
+## FFmpeg 連携とライセンス
+
+FFmpeg 側には `AVInputFormat` の薄い adapter だけを置き、解析は install 済み
+C API に委譲します。`libaribtlv` は独立した MIT ライセンスであり、LGPL/GPL
+の FFmpeg build からリンクされても本 repository のライセンスは変わりません。
+FFmpeg のコードをこのライブラリへコピーすると元のライセンスが残るため、
+core 実装には取り込みません。
 
 ## ライセンス
 

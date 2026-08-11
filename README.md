@@ -2,7 +2,7 @@
 
 English | [日本語](README.ja.md)
 
-`libaribtlv` is a C++20 library for incrementally decoding already-descrambled
+`libaribtlv` is a library for incrementally decoding already-descrambled
 ARIB MMT/TLV streams. It owns the transport and broadcast-domain core shared by
 native receivers, command-line tools, and WebAssembly adapters:
 
@@ -29,16 +29,45 @@ Shared libraries are enabled by default and produce `libaribtlv.so.0` or
 Zlib is the only non-standard runtime dependency. Emscripten builds use its
 built-in zlib port.
 
-Install the library, headers, and CMake package with:
+Install the library, headers, CMake package, and `libaribtlv.pc` with:
 
 ```sh
 cmake --install build --prefix /desired/prefix
 ```
 
-Consumers use `find_package(aribtlv CONFIG REQUIRED)` and link
-`aribtlv::aribtlv`.
+Consumers can use either `pkg-config --cflags --libs libaribtlv`, or
+`find_package(aribtlv CONFIG REQUIRED)` and link `aribtlv::aribtlv`. Add
+`--static` to the pkg-config command when linking `libaribtlv.a`.
 
-## Usage
+## Stable C API
+
+The C API is the stable integration boundary for FFmpeg and other media
+frameworks. It does not expose C++ types or FFmpeg types.
+
+```c
+#include <aribtlv/aribtlv.h>
+
+static void on_access_unit(void *opaque, const aribtlv_access_unit *unit) {
+    /* Copy data that must outlive this callback. */
+}
+
+aribtlv_callbacks callbacks;
+aribtlv_callbacks_init(&callbacks);
+callbacks.on_access_unit = on_access_unit;
+
+aribtlv_demuxer *demuxer = aribtlv_demuxer_create(&callbacks, NULL, NULL);
+aribtlv_demuxer_push(demuxer, data, size);
+aribtlv_demuxer_flush(demuxer);
+aribtlv_demuxer_destroy(demuxer);
+```
+
+Parsing and callbacks are synchronous. Input bytes are not retained after
+`aribtlv_demuxer_push()` returns. Structures and byte strings passed to a
+callback are views valid only for that callback; copy anything that must be
+queued by the consumer. Initialize versioned configuration and callback
+structures with their `_init()` functions.
+
+## C++ API
 
 ```cpp
 #include <aribtlv/demuxer.hpp>
@@ -66,8 +95,17 @@ explicitly with `ApplicationResourceAssembler`. `Limits` bounds parser and
 resource memory, and can disable built-in application-resource collection when
 an adapter needs to drain that work asynchronously.
 
-The public ABI is C++20. Dynamically linked consumers must use a compatible
-compiler and C++ standard library.
+The C++ API requires C++20. Dynamically linked C++ consumers must use a
+compatible compiler and C++ standard library; consumers that need a stable
+toolchain-neutral ABI should use the C API.
+
+## FFmpeg integration and licensing
+
+An FFmpeg integration should keep only an `AVInputFormat` adapter in the FFmpeg
+tree and use the installed C API for parsing. `libaribtlv` is independently MIT
+licensed; linking it from an LGPL/GPL FFmpeg build does not change the license
+of this repository. Code copied from FFmpeg into this library would retain its
+original license and therefore must not be used for the core implementation.
 
 ## License
 

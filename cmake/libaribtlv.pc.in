@@ -1,0 +1,11 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: libaribtlv
+Description: ARIB MMT/TLV transport and broadcast-domain core
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -laribtlv
+Libs.private: -lz @ARIBTLV_CXX_RUNTIME_LIBRARY@
+Cflags: -I${includedir}

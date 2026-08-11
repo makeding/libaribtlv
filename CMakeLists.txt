@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(aribtlv VERSION 0.1.0 LANGUAGES CXX)
+project(aribtlv VERSION 0.1.0 LANGUAGES C CXX)
 
 include(CTest)
 include(GNUInstallDirs)
@@ -13,6 +13,7 @@ if(NOT EMSCRIPTEN)
 endif()
 
 add_library(aribtlv
+    src/c_api.cpp
     src/application_resources.cpp
     src/compressed_ip_parser.cpp
     src/demuxer.cpp
@@ -34,6 +35,12 @@ set_target_properties(aribtlv PROPERTIES
 )
 
 target_compile_features(aribtlv PUBLIC cxx_std_20)
+target_compile_definitions(aribtlv PRIVATE
+    ARIBTLV_BUILDING_LIBRARY
+    ARIBTLV_VERSION_STRING="${PROJECT_VERSION}")
+if(NOT BUILD_SHARED_LIBS)
+    target_compile_definitions(aribtlv PUBLIC ARIBTLV_STATIC)
+endif()
 if(EMSCRIPTEN)
     target_compile_options(aribtlv PRIVATE "-sUSE_ZLIB=1")
     target_link_options(aribtlv PUBLIC "-sUSE_ZLIB=1")
@@ -85,6 +92,17 @@ install(FILES
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/aribtlv
 )
 
+if(APPLE)
+    set(ARIBTLV_CXX_RUNTIME_LIBRARY "-lc++")
+elseif(MSVC)
+    set(ARIBTLV_CXX_RUNTIME_LIBRARY "")
+else()
+    set(ARIBTLV_CXX_RUNTIME_LIBRARY "-lstdc++")
+endif()
+configure_file(cmake/libaribtlv.pc.in libaribtlv.pc @ONLY)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libaribtlv.pc
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+
 if(BUILD_TESTING)
     add_executable(aribtlv-application-resources-tests
         tests/application_resources_tests.cpp)
@@ -99,11 +117,15 @@ if(BUILD_TESTING)
     add_executable(aribtlv-package-api-tests tests/package/main.cpp)
     target_link_libraries(aribtlv-package-api-tests PRIVATE aribtlv::aribtlv)
 
+    add_executable(aribtlv-c-api-tests tests/c_api_tests.c)
+    target_link_libraries(aribtlv-c-api-tests PRIVATE aribtlv::aribtlv)
+
     foreach(test_target IN ITEMS
             aribtlv-application-resources-tests
             aribtlv-demuxer-tests
             aribtlv-recording-tests
-            aribtlv-package-api-tests)
+            aribtlv-package-api-tests
+            aribtlv-c-api-tests)
         if(MSVC)
             target_compile_options(${test_target} PRIVATE /W4 /permissive-)
         else()
@@ -116,4 +138,5 @@ if(BUILD_TESTING)
     add_test(NAME aribtlv-demuxer-tests COMMAND aribtlv-demuxer-tests)
     add_test(NAME aribtlv-recording-tests COMMAND aribtlv-recording-tests)
     add_test(NAME aribtlv-package-api-tests COMMAND aribtlv-package-api-tests)
+    add_test(NAME aribtlv-c-api-tests COMMAND aribtlv-c-api-tests)
 endif()
