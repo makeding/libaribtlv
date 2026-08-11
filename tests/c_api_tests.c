@@ -25,7 +25,7 @@ int main(void)
     const uint8_t incomplete_tlv[] = {0x7f, 0x03, 0x00, 0x08, 0x00};
 
     CHECK(aribtlv_version() == ARIBTLV_VERSION_INT);
-    CHECK(strcmp(aribtlv_version_string(), "0.1.0") == 0);
+    CHECK(strcmp(aribtlv_version_string(), "0.1.1") == 0);
 
     aribtlv_callbacks_init(&callbacks);
     callbacks.on_error = on_error;
