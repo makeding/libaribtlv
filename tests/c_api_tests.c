@@ -25,7 +25,7 @@ int main(void)
     const uint8_t incomplete_tlv[] = {0x7f, 0x03, 0x00, 0x08, 0x00};
 
     CHECK(aribtlv_version() == ARIBTLV_VERSION_INT);
-    CHECK(strcmp(aribtlv_version_string(), "0.1.1") == 0);
+    CHECK(strcmp(aribtlv_version_string(), "0.2.0") == 0);
 
     aribtlv_callbacks_init(&callbacks);
     callbacks.on_error = on_error;
@@ -43,6 +43,23 @@ int main(void)
     CHECK(aribtlv_demuxer_reset(demuxer) == ARIBTLV_OK);
     CHECK(aribtlv_demuxer_last_error(demuxer)[0] == '\0');
     aribtlv_demuxer_destroy(demuxer);
+
+    aribtlv_duration_probe_options probe_options;
+    aribtlv_duration_probe_options_init(&probe_options);
+    probe_options.initial_range_size = 4;
+    probe_options.max_range_size = 8;
+    aribtlv_duration_probe *probe = aribtlv_duration_probe_create();
+    CHECK(probe != NULL);
+    CHECK(aribtlv_duration_probe_begin(probe, 16, &probe_options) == ARIBTLV_OK);
+    CHECK(aribtlv_duration_probe_get_state(probe) == ARIBTLV_DURATION_PROBE_NEED_RANGE);
+    aribtlv_range_request request;
+    CHECK(aribtlv_duration_probe_next_range(probe, &request) == 1);
+    CHECK(request.offset == 0 && request.length == 4);
+    CHECK(aribtlv_duration_probe_fail_range(probe, request.request_id) == ARIBTLV_OK);
+    CHECK(aribtlv_duration_probe_get_state(probe) == ARIBTLV_DURATION_PROBE_FAILED);
+    CHECK(aribtlv_duration_probe_get_failure(probe) ==
+          ARIBTLV_DURATION_PROBE_FAILURE_SOURCE_ERROR);
+    aribtlv_duration_probe_destroy(probe);
 
     CHECK(aribtlv_demuxer_push(NULL, NULL, 0) == ARIBTLV_ERROR_INVALID_ARGUMENT);
     return 0;

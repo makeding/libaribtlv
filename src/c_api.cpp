@@ -1,6 +1,7 @@
 #include <aribtlv/aribtlv.h>
 
 #include <aribtlv/demuxer.hpp>
+#include <aribtlv/duration_probe.hpp>
 
 #include <algorithm>
 #include <cstring>
@@ -51,6 +52,51 @@ aribtlv_error_code error_code(const aribtlv::ErrorCode value) noexcept {
 
 aribtlv_timestamp timestamp(const aribtlv::Timestamp value) noexcept {
     return {value.value, value.timescale};
+}
+
+aribtlv_duration_probe_state duration_probe_state(
+    const aribtlv::DurationProbeState value) noexcept {
+    switch (value) {
+    case aribtlv::DurationProbeState::Idle: return ARIBTLV_DURATION_PROBE_IDLE;
+    case aribtlv::DurationProbeState::NeedRange: return ARIBTLV_DURATION_PROBE_NEED_RANGE;
+    case aribtlv::DurationProbeState::Complete: return ARIBTLV_DURATION_PROBE_COMPLETE;
+    case aribtlv::DurationProbeState::Unknown: return ARIBTLV_DURATION_PROBE_UNKNOWN;
+    case aribtlv::DurationProbeState::Failed: return ARIBTLV_DURATION_PROBE_FAILED;
+    case aribtlv::DurationProbeState::Cancelled: return ARIBTLV_DURATION_PROBE_CANCELLED;
+    }
+    return ARIBTLV_DURATION_PROBE_FAILED;
+}
+
+aribtlv_duration_probe_failure duration_probe_failure(
+    const aribtlv::DurationProbeFailure value) noexcept {
+    switch (value) {
+    case aribtlv::DurationProbeFailure::None:
+        return ARIBTLV_DURATION_PROBE_FAILURE_NONE;
+    case aribtlv::DurationProbeFailure::InvalidSource:
+        return ARIBTLV_DURATION_PROBE_FAILURE_INVALID_SOURCE;
+    case aribtlv::DurationProbeFailure::InvalidResponse:
+        return ARIBTLV_DURATION_PROBE_FAILURE_INVALID_RESPONSE;
+    case aribtlv::DurationProbeFailure::SourceError:
+        return ARIBTLV_DURATION_PROBE_FAILURE_SOURCE_ERROR;
+    case aribtlv::DurationProbeFailure::NoVideo:
+        return ARIBTLV_DURATION_PROBE_FAILURE_NO_VIDEO;
+    case aribtlv::DurationProbeFailure::NoTailTimestamp:
+        return ARIBTLV_DURATION_PROBE_FAILURE_NO_TAIL_TIMESTAMP;
+    case aribtlv::DurationProbeFailure::RangeLimit:
+        return ARIBTLV_DURATION_PROBE_FAILURE_RANGE_LIMIT;
+    case aribtlv::DurationProbeFailure::ParseError:
+        return ARIBTLV_DURATION_PROBE_FAILURE_PARSE_ERROR;
+    }
+    return ARIBTLV_DURATION_PROBE_FAILURE_PARSE_ERROR;
+}
+
+aribtlv_duration_status duration_status(const aribtlv::DurationStatus value) noexcept {
+    switch (value) {
+    case aribtlv::DurationStatus::Unknown: return ARIBTLV_DURATION_UNKNOWN;
+    case aribtlv::DurationStatus::Provisional: return ARIBTLV_DURATION_PROVISIONAL;
+    case aribtlv::DurationStatus::Complete: return ARIBTLV_DURATION_COMPLETE;
+    }
+    return ARIBTLV_DURATION_UNKNOWN;
 }
 
 aribtlv_track_info track_info(const aribtlv::TrackInfo& source) noexcept {
@@ -158,6 +204,10 @@ struct aribtlv_demuxer {
     aribtlv::Demuxer implementation;
 };
 
+struct aribtlv_duration_probe {
+    aribtlv::DurationProbe implementation;
+};
+
 namespace {
 
 template <typename Operation>
@@ -198,6 +248,14 @@ void aribtlv_config_init(aribtlv_config* config) {
     std::memset(config, 0, sizeof(*config));
     config->struct_size = sizeof(*config);
     config->collect_application_resources = 1;
+}
+
+void aribtlv_duration_probe_options_init(aribtlv_duration_probe_options* options) {
+    if (!options) return;
+    std::memset(options, 0, sizeof(*options));
+    options->struct_size = sizeof(*options);
+    options->initial_range_size = 4ULL * 1024ULL * 1024ULL;
+    options->max_range_size = 64ULL * 1024ULL * 1024ULL;
 }
 
 aribtlv_demuxer* aribtlv_demuxer_create(
@@ -278,6 +336,109 @@ int aribtlv_demuxer_set_subtitle_passthrough(aribtlv_demuxer* demuxer,
 
 const char* aribtlv_demuxer_last_error(const aribtlv_demuxer* demuxer) {
     return demuxer ? demuxer->sink.lastError().c_str() : "invalid demuxer";
+}
+
+aribtlv_duration_probe* aribtlv_duration_probe_create(void) {
+    try {
+        return new aribtlv_duration_probe;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+void aribtlv_duration_probe_destroy(aribtlv_duration_probe* probe) { delete probe; }
+
+int aribtlv_duration_probe_begin(aribtlv_duration_probe* probe, const uint64_t source_size,
+                                 const aribtlv_duration_probe_options* options) {
+    if (!probe) return ARIBTLV_ERROR_INVALID_ARGUMENT;
+    try {
+        aribtlv::DurationProbeOptions converted;
+        if (options) {
+            const auto required = offsetof(aribtlv_duration_probe_options, max_range_size) +
+                sizeof(options->max_range_size);
+            if (options->struct_size < required) return ARIBTLV_ERROR_INVALID_ARGUMENT;
+            converted.initial_range_size = options->initial_range_size;
+            converted.max_range_size = options->max_range_size;
+            const auto service_end = offsetof(aribtlv_duration_probe_options,
+                                              service_context_id) +
+                sizeof(options->service_context_id);
+            if (options->struct_size >= service_end && options->has_service_context_id)
+                converted.service_context_id = options->service_context_id;
+            const auto packet_end = offsetof(aribtlv_duration_probe_options,
+                                             video_packet_id) +
+                sizeof(options->video_packet_id);
+            if (options->struct_size >= packet_end && options->has_video_packet_id)
+                converted.video_packet_id = options->video_packet_id;
+        }
+        probe->implementation.begin(source_size, converted);
+        return ARIBTLV_OK;
+    } catch (const std::bad_alloc&) {
+        return ARIBTLV_ERROR_OUT_OF_MEMORY;
+    } catch (...) {
+        return ARIBTLV_ERROR_INTERNAL;
+    }
+}
+
+int aribtlv_duration_probe_next_range(const aribtlv_duration_probe* probe,
+                                      aribtlv_range_request* request) {
+    if (!probe || !request) return ARIBTLV_ERROR_INVALID_ARGUMENT;
+    const auto value = probe->implementation.nextRange();
+    if (!value) return 0;
+    *request = {value->generation, value->request_id, value->offset, value->length};
+    return 1;
+}
+
+int aribtlv_duration_probe_push_range(aribtlv_duration_probe* probe,
+                                      const uint64_t request_id,
+                                      const uint64_t absolute_offset,
+                                      const uint8_t* data, const size_t size,
+                                      const uint8_t end_of_range) {
+    if (!probe || (!data && size != 0)) return ARIBTLV_ERROR_INVALID_ARGUMENT;
+    try {
+        return probe->implementation.pushRange(request_id, absolute_offset, data, size,
+                                               end_of_range != 0)
+            ? ARIBTLV_OK : ARIBTLV_ERROR_INVALID_ARGUMENT;
+    } catch (const std::bad_alloc&) {
+        return ARIBTLV_ERROR_OUT_OF_MEMORY;
+    } catch (...) {
+        return ARIBTLV_ERROR_INTERNAL;
+    }
+}
+
+int aribtlv_duration_probe_fail_range(aribtlv_duration_probe* probe,
+                                      const uint64_t request_id) {
+    if (!probe) return ARIBTLV_ERROR_INVALID_ARGUMENT;
+    return probe->implementation.failRange(request_id)
+        ? ARIBTLV_OK : ARIBTLV_ERROR_INVALID_ARGUMENT;
+}
+
+void aribtlv_duration_probe_cancel(aribtlv_duration_probe* probe) {
+    if (probe) probe->implementation.cancel();
+}
+
+aribtlv_duration_probe_state aribtlv_duration_probe_get_state(
+    const aribtlv_duration_probe* probe) {
+    return probe ? duration_probe_state(probe->implementation.state())
+                 : ARIBTLV_DURATION_PROBE_FAILED;
+}
+
+aribtlv_duration_probe_failure aribtlv_duration_probe_get_failure(
+    const aribtlv_duration_probe* probe) {
+    return probe ? duration_probe_failure(probe->implementation.failure())
+                 : ARIBTLV_DURATION_PROBE_FAILURE_INVALID_SOURCE;
+}
+
+int aribtlv_duration_probe_get_duration(const aribtlv_duration_probe* probe,
+                                        aribtlv_duration_info* duration) {
+    if (!probe || !duration) return ARIBTLV_ERROR_INVALID_ARGUMENT;
+    const auto value = probe->implementation.duration();
+    duration->value = timestamp(value.value);
+    duration->status = duration_status(value.status);
+    return ARIBTLV_OK;
+}
+
+uint64_t aribtlv_duration_probe_transferred_bytes(const aribtlv_duration_probe* probe) {
+    return probe ? probe->implementation.transferredBytes() : 0;
 }
 
 } // extern "C"

@@ -23,13 +23,14 @@ extern "C" {
 #endif
 
 #define ARIBTLV_VERSION_MAJOR 0
-#define ARIBTLV_VERSION_MINOR 1
-#define ARIBTLV_VERSION_PATCH 1
+#define ARIBTLV_VERSION_MINOR 2
+#define ARIBTLV_VERSION_PATCH 0
 #define ARIBTLV_VERSION_INT \
     ((ARIBTLV_VERSION_MAJOR << 16) | (ARIBTLV_VERSION_MINOR << 8) | ARIBTLV_VERSION_PATCH)
 #define ARIBTLV_C_API_VERSION 1
 
 typedef struct aribtlv_demuxer aribtlv_demuxer;
+typedef struct aribtlv_duration_probe aribtlv_duration_probe;
 
 typedef enum aribtlv_result {
     ARIBTLV_OK = 0,
@@ -120,10 +121,60 @@ typedef struct aribtlv_config {
     uint8_t collect_application_resources;
 } aribtlv_config;
 
+typedef enum aribtlv_duration_probe_state {
+    ARIBTLV_DURATION_PROBE_IDLE = 0,
+    ARIBTLV_DURATION_PROBE_NEED_RANGE = 1,
+    ARIBTLV_DURATION_PROBE_COMPLETE = 2,
+    ARIBTLV_DURATION_PROBE_UNKNOWN = 3,
+    ARIBTLV_DURATION_PROBE_FAILED = 4,
+    ARIBTLV_DURATION_PROBE_CANCELLED = 5
+} aribtlv_duration_probe_state;
+
+typedef enum aribtlv_duration_probe_failure {
+    ARIBTLV_DURATION_PROBE_FAILURE_NONE = 0,
+    ARIBTLV_DURATION_PROBE_FAILURE_INVALID_SOURCE = 1,
+    ARIBTLV_DURATION_PROBE_FAILURE_INVALID_RESPONSE = 2,
+    ARIBTLV_DURATION_PROBE_FAILURE_SOURCE_ERROR = 3,
+    ARIBTLV_DURATION_PROBE_FAILURE_NO_VIDEO = 4,
+    ARIBTLV_DURATION_PROBE_FAILURE_NO_TAIL_TIMESTAMP = 5,
+    ARIBTLV_DURATION_PROBE_FAILURE_RANGE_LIMIT = 6,
+    ARIBTLV_DURATION_PROBE_FAILURE_PARSE_ERROR = 7
+} aribtlv_duration_probe_failure;
+
+typedef enum aribtlv_duration_status {
+    ARIBTLV_DURATION_UNKNOWN = 0,
+    ARIBTLV_DURATION_PROVISIONAL = 1,
+    ARIBTLV_DURATION_COMPLETE = 2
+} aribtlv_duration_status;
+
+typedef struct aribtlv_duration_probe_options {
+    size_t struct_size;
+    uint64_t initial_range_size;
+    uint64_t max_range_size;
+    uint8_t has_service_context_id;
+    uint32_t service_context_id;
+    uint8_t has_video_packet_id;
+    uint16_t video_packet_id;
+} aribtlv_duration_probe_options;
+
+typedef struct aribtlv_range_request {
+    uint64_t generation;
+    uint64_t request_id;
+    uint64_t offset;
+    uint64_t length;
+} aribtlv_range_request;
+
+typedef struct aribtlv_duration_info {
+    aribtlv_timestamp value;
+    aribtlv_duration_status status;
+} aribtlv_duration_info;
+
 ARIBTLV_API uint32_t aribtlv_version(void);
 ARIBTLV_API const char *aribtlv_version_string(void);
 ARIBTLV_API void aribtlv_callbacks_init(aribtlv_callbacks *callbacks);
 ARIBTLV_API void aribtlv_config_init(aribtlv_config *config);
+ARIBTLV_API void aribtlv_duration_probe_options_init(
+    aribtlv_duration_probe_options *options);
 
 ARIBTLV_API aribtlv_demuxer *aribtlv_demuxer_create(
     const aribtlv_config *config,
@@ -147,6 +198,28 @@ ARIBTLV_API int aribtlv_demuxer_clear_track(
 ARIBTLV_API int aribtlv_demuxer_set_subtitle_passthrough(
     aribtlv_demuxer *demuxer, uint8_t enabled);
 ARIBTLV_API const char *aribtlv_demuxer_last_error(const aribtlv_demuxer *demuxer);
+
+ARIBTLV_API aribtlv_duration_probe *aribtlv_duration_probe_create(void);
+ARIBTLV_API void aribtlv_duration_probe_destroy(aribtlv_duration_probe *probe);
+ARIBTLV_API int aribtlv_duration_probe_begin(
+    aribtlv_duration_probe *probe, uint64_t source_size,
+    const aribtlv_duration_probe_options *options);
+ARIBTLV_API int aribtlv_duration_probe_next_range(
+    const aribtlv_duration_probe *probe, aribtlv_range_request *request);
+ARIBTLV_API int aribtlv_duration_probe_push_range(
+    aribtlv_duration_probe *probe, uint64_t request_id, uint64_t absolute_offset,
+    const uint8_t *data, size_t size, uint8_t end_of_range);
+ARIBTLV_API int aribtlv_duration_probe_fail_range(
+    aribtlv_duration_probe *probe, uint64_t request_id);
+ARIBTLV_API void aribtlv_duration_probe_cancel(aribtlv_duration_probe *probe);
+ARIBTLV_API aribtlv_duration_probe_state aribtlv_duration_probe_get_state(
+    const aribtlv_duration_probe *probe);
+ARIBTLV_API aribtlv_duration_probe_failure aribtlv_duration_probe_get_failure(
+    const aribtlv_duration_probe *probe);
+ARIBTLV_API int aribtlv_duration_probe_get_duration(
+    const aribtlv_duration_probe *probe, aribtlv_duration_info *duration);
+ARIBTLV_API uint64_t aribtlv_duration_probe_transferred_bytes(
+    const aribtlv_duration_probe *probe);
 
 #ifdef __cplusplus
 }
