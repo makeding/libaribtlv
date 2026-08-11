@@ -55,7 +55,7 @@ aribtlv_callbacks callbacks;
 aribtlv_callbacks_init(&callbacks);
 callbacks.on_access_unit = on_access_unit;
 
-aribtlv_demuxer *demuxer = aribtlv_demuxer_create(&callbacks, NULL, NULL);
+aribtlv_demuxer *demuxer = aribtlv_demuxer_create(NULL, &callbacks, NULL);
 aribtlv_demuxer_push(demuxer, data, size);
 aribtlv_demuxer_flush(demuxer);
 aribtlv_demuxer_destroy(demuxer);
