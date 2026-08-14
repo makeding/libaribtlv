@@ -49,6 +49,10 @@ void test_recording_index() {
           "indexed presentation extent did not produce provisional duration");
     check(index.seekPoints().size() == 2,
           "random-access AUs did not produce two seek points");
+    const auto before_first_rap = index.seekPointsFor(aribtlv::Timestamp{-1, 1});
+    check(before_first_rap.has_value() &&
+              before_first_rap->first.presentation_time.value == 0,
+          "seek map did not expose its first decodable RAP before the indexed range");
 
     const auto previous = index.previousSync(aribtlv::Timestamp{2500, 1000});
     check(previous.has_value() && previous->presentation_time.value == 2000000 &&

@@ -418,7 +418,8 @@ public:
         const auto target = first + offset_us;
         if (target > result_.last_presentation_time->value) return std::nullopt;
         const Timestamp target_timestamp{target, microsecond_timescale};
-        const auto point = index_.previousSync(target_timestamp);
+        auto point = index_.previousSync(target_timestamp);
+        if (!point && !result_.seek_points.empty()) point = result_.seek_points.front();
         if (!point) return std::nullopt;
         return RecordingSeekResult{target_timestamp, *point};
     }
