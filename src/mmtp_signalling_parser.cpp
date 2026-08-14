@@ -166,11 +166,17 @@ bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata,
                 }
                 metadata.presentation_regions.push_back(region);
             }
+        } else if (tag == 0x800a && length >= 13) {
+            if (!metadata.video) metadata.video.emplace();
+            metadata.video->hdr_wcg_idc = static_cast<std::uint8_t>(payload[12] & 0x03U);
         } else if (tag == 0x8011 && length >= 2) {
             metadata.component_tag = read_be16(payload);
         } else if (tag == 0x8010 && length >= 8) {
             if (metadata.component_tag == 0) metadata.component_tag = read_be16(payload + 2);
             metadata.language.assign(reinterpret_cast<const char*>(payload + 5), 3);
+            if (!metadata.video) metadata.video.emplace();
+            metadata.video->video_transfer_characteristics =
+                static_cast<std::uint8_t>((payload[4] >> 4U) & 0x0fU);
         } else if (tag == 0x8014 && length >= 10) {
             const auto stream_content = static_cast<std::uint8_t>(payload[0] & 0x0fU);
             const auto stream_type = payload[4];
@@ -1240,6 +1246,7 @@ bool MmtpParser::parse_mpt(const std::uint8_t* data, const std::size_t size,
         if (asset_type == "hev1") {
             track.kind = TrackKind::Video;
             track.codec = Codec::Hevc;
+            track.video = metadata.video;
         } else if (asset_type == "mp4a" && metadata.aac_latm) {
             track.kind = TrackKind::Audio;
             track.codec = Codec::AacLatm;

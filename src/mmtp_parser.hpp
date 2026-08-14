@@ -34,6 +34,7 @@ struct AssetMetadata {
     std::string language;
     std::uint16_t component_tag = 0;
     std::uint32_t timescale = 1;
+    std::optional<VideoInfo> video;
     std::optional<AudioInfo> audio;
     std::optional<SubtitleInfo> subtitle;
     std::vector<MpuPresentationRegion> presentation_regions;

@@ -66,6 +66,14 @@ struct AudioInfo {
     bool operator==(const AudioInfo&) const = default;
 };
 
+// Colour-related programme signalling from ARIB STD-B60 descriptors.  These
+// are descriptor values, not a complete CICP tuple for coded video samples.
+struct VideoInfo {
+    std::optional<std::uint8_t> hdr_wcg_idc;
+    std::optional<std::uint8_t> video_transfer_characteristics;
+    bool operator==(const VideoInfo&) const = default;
+};
+
 struct Timestamp {
     std::int64_t value = 0;
     std::uint32_t timescale = 1;
@@ -460,6 +468,7 @@ struct TrackInfo {
     std::string language;
     std::uint16_t component_tag = 0;
     std::uint32_t timescale = 1;
+    std::optional<VideoInfo> video;
     std::optional<AudioInfo> audio;
     std::optional<SubtitleInfo> subtitle;
     std::vector<MpuPresentationRegion> presentation_regions;

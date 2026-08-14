@@ -228,7 +228,8 @@ private:
                left.packet_id == right.packet_id && left.asset_id == right.asset_id &&
                left.kind == right.kind && left.codec == right.codec &&
                left.language == right.language && left.component_tag == right.component_tag &&
-               left.timescale == right.timescale && same_audio(left.audio, right.audio) &&
+               left.timescale == right.timescale && left.video == right.video &&
+               same_audio(left.audio, right.audio) &&
                same_subtitle(left.subtitle, right.subtitle) &&
                left.presentation_regions == right.presentation_regions;
     }

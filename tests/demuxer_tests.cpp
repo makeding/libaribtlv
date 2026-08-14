@@ -391,7 +391,9 @@ std::vector<std::uint8_t> discovery_message() {
     std::vector<std::uint8_t> video_descriptors;
     descriptor(video_descriptors, 0x8011, {0x00, 0x00});
     descriptor(video_descriptors, 0x8abc, {0xde, 0xad, 0xbe});
-    descriptor(video_descriptors, 0x8010, {0, 0, 0, 0, 0, 'j', 'p', 'n'});
+    descriptor(video_descriptors, 0x800a,
+               {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02});
+    descriptor(video_descriptors, 0x8010, {0, 0, 0, 0, 0x50, 'j', 'p', 'n'});
     descriptor(video_descriptors, 0x8003,
                {0, 0, 0, 1, 2, 1, 0,
                 0, 0, 0, 2, 3, 4, 2, 0xaa, 0xbb});
@@ -1149,6 +1151,10 @@ void test_track_discovery_and_deduplication() {
           "completed MMTP signalling message was not exposed");
     check(sink.tracks[0].codec == aribtlv::Codec::Hevc && sink.tracks[0].timescale == 180000,
           "HEVC metadata was not parsed from MPT descriptors");
+    check(sink.tracks[0].video.has_value() &&
+              sink.tracks[0].video->hdr_wcg_idc == 2 &&
+              sink.tracks[0].video->video_transfer_characteristics == 5,
+          "HEVC colour signalling was not parsed from MPT descriptors");
     check(sink.tracks[0].presentation_regions ==
               std::vector<aribtlv::MpuPresentationRegion>{{1, 2, 1}, {2, 3, 4}},
           "MPU presentation-region descriptor was not exposed on the track");
