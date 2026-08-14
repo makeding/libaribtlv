@@ -64,6 +64,12 @@ aribtlv_demuxer_destroy(demuxer);
 callback 中だけ有効な view なので、キューに残す場合はコピーしてください。
 version 付き設定・callback 構造体は対応する `_init()` で初期化します。
 
+字幕トラックでは `aribtlv_track_info.subtitle` から B60 の追加字幕情報を
+取得できます。各 TTML `aribtlv_access_unit` には、該当する timing / operation /
+display / compression mode、MPU sequence、reference-start の media timestamp、
+同一 MPU の resource view も含まれます。これらは callback 中だけ有効な view で、
+C++ ABI に依存しない FFmpeg などの adapter から利用できます。
+
 ## C++ API
 
 ```cpp

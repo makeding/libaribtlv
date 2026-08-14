@@ -67,6 +67,13 @@ callback are views valid only for that callback; copy anything that must be
 queued by the consumer. Initialize versioned configuration and callback
 structures with their `_init()` functions.
 
+For a subtitle track, `aribtlv_track_info.subtitle` exposes the complete B60
+additional subtitle information. Each TTML `aribtlv_access_unit` also carries
+the applicable timing, operation, display, and compression modes, the MPU
+sequence, the reference-start media timestamp, and same-MPU resource views.
+These fields are callback-lifetime views and are intended for adapters such as
+FFmpeg without requiring C++ ABI access.
+
 ## C++ API
 
 ```cpp
