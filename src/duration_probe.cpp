@@ -1,3 +1,4 @@
+#include <aribtlv/asset_layers.hpp>
 #include <aribtlv/duration_probe.hpp>
 
 #include <aribtlv/demuxer.hpp>
@@ -321,22 +322,8 @@ private:
         std::int64_t tail_frame_duration_us = 0;
     };
 
-    static bool same_group(const VideoCandidate& candidate,
-                           const std::uint8_t group_identification) noexcept {
-        return std::any_of(candidate.info.asset_groups.begin(),
-                           candidate.info.asset_groups.end(),
-                           [group_identification](const AssetGroupInfo& group) {
-                               return group.group_identification == group_identification;
-                           });
-    }
-
     static unsigned selection_level(const VideoCandidate& candidate) noexcept {
-        if (candidate.info.asset_groups.empty()) return 0;
-        return std::min_element(
-            candidate.info.asset_groups.begin(), candidate.info.asset_groups.end(),
-            [](const AssetGroupInfo& left, const AssetGroupInfo& right) {
-                return left.selection_level < right.selection_level;
-            })->selection_level;
+        return assetSelectionLevel(candidate.info).value_or(0);
     }
 
     const VideoCandidate* choose_candidate(const bool tail) const noexcept {
@@ -388,7 +375,8 @@ private:
         for (const auto& candidate : candidates_) {
             const auto implicit_base = candidate.info.asset_groups.empty() &&
                 candidate.info.context_id == grouped->info.context_id;
-            if ((implicit_base || same_group(candidate, group_identification)) &&
+            if ((implicit_base || belongsToAssetGroup(
+                                      candidate.info, group_identification)) &&
                 has_stats(candidate) &&
                 better(&candidate, selected)) {
                 selected = &candidate;

@@ -13,6 +13,7 @@ if(NOT EMSCRIPTEN)
 endif()
 
 add_library(aribtlv
+    src/asset_layers.cpp
     src/c_api.cpp
     src/application_resources.cpp
     src/compressed_ip_parser.cpp
@@ -104,6 +105,9 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libaribtlv.pc
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
 
 if(BUILD_TESTING)
+    add_executable(aribtlv-asset-layers-tests tests/asset_layers_tests.cpp)
+    target_link_libraries(aribtlv-asset-layers-tests PRIVATE aribtlv::aribtlv)
+
     add_executable(aribtlv-application-resources-tests
         tests/application_resources_tests.cpp)
     target_link_libraries(aribtlv-application-resources-tests PRIVATE aribtlv::aribtlv)
@@ -121,6 +125,7 @@ if(BUILD_TESTING)
     target_link_libraries(aribtlv-c-api-tests PRIVATE aribtlv::aribtlv)
 
     foreach(test_target IN ITEMS
+            aribtlv-asset-layers-tests
             aribtlv-application-resources-tests
             aribtlv-demuxer-tests
             aribtlv-recording-tests
@@ -133,6 +138,7 @@ if(BUILD_TESTING)
         endif()
     endforeach()
 
+    add_test(NAME aribtlv-asset-layers-tests COMMAND aribtlv-asset-layers-tests)
     add_test(NAME aribtlv-application-resources-tests
              COMMAND aribtlv-application-resources-tests)
     add_test(NAME aribtlv-demuxer-tests COMMAND aribtlv-demuxer-tests)
