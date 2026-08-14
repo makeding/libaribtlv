@@ -6,6 +6,7 @@
 #include <limits>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace aribtlv {
 namespace {
@@ -62,13 +63,10 @@ public:
         request_.reset();
         request_received_ = 0;
         head_end_ = 0;
-        head_video_count_ = 0;
-        head_previous_pts_us_.reset();
-        head_maximum_pts_us_.reset();
-        head_frame_duration_us_ = 0;
-        selected_video_track_.reset();
         tail_window_ = 0;
+        candidates_.clear();
         reset_tail_statistics();
+        selected_video_packet_id_.reset();
         demuxer_.reset();
 
         if (source_size_ == 0 || options_.initial_range_size == 0 ||
@@ -139,6 +137,9 @@ public:
     DurationProbeState state() const noexcept { return state_; }
     DurationProbeFailure failure() const noexcept { return failure_; }
     DurationInfo duration() const noexcept { return duration_; }
+    std::optional<std::uint16_t> selected_video_packet_id() const noexcept {
+        return selected_video_packet_id_;
+    }
     std::uint64_t generation() const noexcept { return generation_; }
     std::uint64_t transferred_bytes() const noexcept { return transferred_bytes_; }
 
@@ -150,27 +151,36 @@ public:
             info.packet_id != *options_.video_packet_id) {
             return;
         }
-        if (!selected_video_track_.has_value()) {
-            selected_video_track_ = info.track_id;
+        if (std::find_if(candidates_.begin(), candidates_.end(),
+                         [&info](const VideoCandidate& candidate) {
+                             return candidate.info.track_id == info.track_id;
+                         }) != candidates_.end()) return;
+        VideoCandidate candidate;
+        candidate.info = info;
+        candidates_.push_back(std::move(candidate));
+        if (options_.video_packet_id.has_value()) {
             demuxer_.selectTrack(TrackKind::Video, info.track_id);
         }
     }
 
     void onAccessUnit(AccessUnit&& unit) override {
-        if (!selected_video_track_.has_value() || unit.track_id != *selected_video_track_ ||
-            unit.codec != Codec::Hevc) {
-            return;
-        }
+        if (unit.codec != Codec::Hevc) return;
+        const auto found = std::find_if(
+            candidates_.begin(), candidates_.end(),
+            [&unit](const VideoCandidate& candidate) {
+                return candidate.info.track_id == unit.track_id;
+            });
+        if (found == candidates_.end()) return;
         std::int64_t pts_us = 0;
         if (!timestamp_microseconds(unit.pts, pts_us)) return;
         if (phase_ == Phase::Head || phase_ == Phase::SequentialTail) {
-            ++head_video_count_;
-            observe_timestamp(pts_us, head_previous_pts_us_, head_maximum_pts_us_,
-                              head_frame_duration_us_);
+            ++found->head_count;
+            observe_timestamp(pts_us, found->head_previous_pts_us,
+                              found->head_maximum_pts_us, found->head_frame_duration_us);
         } else if (phase_ == Phase::Tail) {
-            ++tail_video_count_;
-            observe_timestamp(pts_us, tail_previous_pts_us_, tail_maximum_pts_us_,
-                              tail_frame_duration_us_);
+            ++found->tail_count;
+            observe_timestamp(pts_us, found->tail_previous_pts_us,
+                              found->tail_maximum_pts_us, found->tail_frame_duration_us);
         }
     }
 
@@ -217,29 +227,25 @@ private:
         if (phase_ == Phase::SequentialTail) {
             demuxer_.flush();
             if (state_ != DurationProbeState::NeedRange) return;
-            complete_from_statistics(head_video_count_, head_maximum_pts_us_,
-                                     head_frame_duration_us_);
+            complete_from_candidates(false);
             return;
         }
 
         demuxer_.flush();
         if (state_ != DurationProbeState::NeedRange) return;
-        if (tail_video_count_ >= 2 && tail_maximum_pts_us_.has_value() &&
-            tail_frame_duration_us_ > 0) {
-            complete_from_statistics(tail_video_count_, tail_maximum_pts_us_,
-                                     tail_frame_duration_us_);
+        if (has_complete_candidate(true)) {
+            complete_from_candidates(true);
             return;
         }
         widen_tail();
     }
 
     void finish_head_range() {
-        if (selected_video_track_.has_value() && head_video_count_ != 0) {
+        if (has_head_video()) {
             if (head_end_ == source_size_) {
                 demuxer_.flush();
                 if (state_ != DurationProbeState::NeedRange) return;
-                complete_from_statistics(head_video_count_, head_maximum_pts_us_,
-                                         head_frame_duration_us_);
+                complete_from_candidates(false);
                 return;
             }
             const auto remaining = source_size_ - head_end_;
@@ -275,7 +281,7 @@ private:
 
     void widen_tail() {
         if (tail_window_ >= options_.max_range_size || tail_window_ >= source_size_) {
-            unknown(tail_video_count_ == 0
+            unknown(!has_tail_video()
                         ? DurationProbeFailure::NoTailTimestamp
                         : DurationProbeFailure::RangeLimit);
             return;
@@ -303,11 +309,137 @@ private:
         failure_ = DurationProbeFailure::None;
     }
 
+    struct VideoCandidate {
+        TrackInfo info;
+        std::uint64_t head_count = 0;
+        std::optional<std::int64_t> head_previous_pts_us;
+        std::optional<std::int64_t> head_maximum_pts_us;
+        std::int64_t head_frame_duration_us = 0;
+        std::uint64_t tail_count = 0;
+        std::optional<std::int64_t> tail_previous_pts_us;
+        std::optional<std::int64_t> tail_maximum_pts_us;
+        std::int64_t tail_frame_duration_us = 0;
+    };
+
+    static bool same_group(const VideoCandidate& candidate,
+                           const std::uint8_t group_identification) noexcept {
+        return std::any_of(candidate.info.asset_groups.begin(),
+                           candidate.info.asset_groups.end(),
+                           [group_identification](const AssetGroupInfo& group) {
+                               return group.group_identification == group_identification;
+                           });
+    }
+
+    static unsigned selection_level(const VideoCandidate& candidate) noexcept {
+        if (candidate.info.asset_groups.empty()) return 0;
+        return std::min_element(
+            candidate.info.asset_groups.begin(), candidate.info.asset_groups.end(),
+            [](const AssetGroupInfo& left, const AssetGroupInfo& right) {
+                return left.selection_level < right.selection_level;
+            })->selection_level;
+    }
+
+    const VideoCandidate* choose_candidate(const bool tail) const noexcept {
+        const auto has_stats = [tail](const VideoCandidate& candidate) {
+            const auto count = tail ? candidate.tail_count : candidate.head_count;
+            const auto& maximum = tail ? candidate.tail_maximum_pts_us
+                                       : candidate.head_maximum_pts_us;
+            const auto frame_duration = tail ? candidate.tail_frame_duration_us
+                                             : candidate.head_frame_duration_us;
+            return count >= 2 && maximum.has_value() && frame_duration > 0;
+        };
+        const auto duration = [tail](const VideoCandidate& candidate) {
+            const auto maximum = tail ? candidate.tail_maximum_pts_us
+                                      : candidate.head_maximum_pts_us;
+            const auto frame_duration = tail ? candidate.tail_frame_duration_us
+                                             : candidate.head_frame_duration_us;
+            return maximum.value() + frame_duration;
+        };
+        const auto better = [&duration](const VideoCandidate* left,
+                                        const VideoCandidate* right) {
+            if (right == nullptr) return true;
+            const auto left_duration = duration(*left);
+            const auto right_duration = duration(*right);
+            if (left_duration != right_duration) return left_duration > right_duration;
+            const auto left_level = selection_level(*left);
+            const auto right_level = selection_level(*right);
+            return left_level < right_level;
+        };
+
+        const VideoCandidate* selected = nullptr;
+        if (options_.video_packet_id.has_value()) {
+            for (const auto& candidate : candidates_) {
+                if (candidate.info.packet_id == *options_.video_packet_id &&
+                    has_stats(candidate)) return &candidate;
+            }
+            return nullptr;
+        }
+        if (candidates_.empty()) return nullptr;
+        const auto grouped = std::find_if(
+            candidates_.begin(), candidates_.end(),
+            [](const VideoCandidate& candidate) {
+                return !candidate.info.asset_groups.empty();
+            });
+        if (grouped == candidates_.end()) {
+            return has_stats(candidates_.front()) ? &candidates_.front() : nullptr;
+        }
+        const auto group_identification =
+            grouped->info.asset_groups.front().group_identification;
+        for (const auto& candidate : candidates_) {
+            const auto implicit_base = candidate.info.asset_groups.empty() &&
+                candidate.info.context_id == grouped->info.context_id;
+            if ((implicit_base || same_group(candidate, group_identification)) &&
+                has_stats(candidate) &&
+                better(&candidate, selected)) {
+                selected = &candidate;
+            }
+        }
+        return selected;
+    }
+
+    bool has_head_video() const noexcept {
+        return std::any_of(candidates_.begin(), candidates_.end(),
+                           [](const VideoCandidate& candidate) {
+                               return candidate.head_count != 0;
+                           });
+    }
+
+    bool has_complete_candidate(const bool tail) const noexcept {
+        return choose_candidate(tail) != nullptr;
+    }
+
+    void complete_from_candidates(const bool tail) {
+        const auto* candidate = choose_candidate(tail);
+        if (candidate == nullptr) {
+            unknown(tail ? DurationProbeFailure::NoTailTimestamp
+                         : DurationProbeFailure::NoVideo);
+            return;
+        }
+        const auto maximum = tail ? candidate->tail_maximum_pts_us
+                                  : candidate->head_maximum_pts_us;
+        const auto frame_duration = tail ? candidate->tail_frame_duration_us
+                                         : candidate->head_frame_duration_us;
+        complete_from_statistics(tail ? candidate->tail_count : candidate->head_count,
+                                 maximum, frame_duration);
+        if (state_ == DurationProbeState::Complete) {
+            selected_video_packet_id_ = candidate->info.packet_id;
+        }
+    }
+
     void reset_tail_statistics() noexcept {
-        tail_video_count_ = 0;
-        tail_previous_pts_us_.reset();
-        tail_maximum_pts_us_.reset();
-        tail_frame_duration_us_ = 0;
+        for (auto& candidate : candidates_) {
+            candidate.tail_count = 0;
+            candidate.tail_previous_pts_us.reset();
+            candidate.tail_maximum_pts_us.reset();
+            candidate.tail_frame_duration_us = 0;
+        }
+    }
+
+    bool has_tail_video() const noexcept {
+        return std::any_of(candidates_.begin(), candidates_.end(),
+                           [](const VideoCandidate& candidate) {
+                               return candidate.tail_count != 0;
+                           });
     }
 
     void unknown(const DurationProbeFailure failure) noexcept {
@@ -337,16 +469,9 @@ private:
     std::uint64_t request_received_ = 0;
     std::uint64_t transferred_bytes_ = 0;
     std::uint64_t head_end_ = 0;
-    std::uint64_t head_video_count_ = 0;
-    std::optional<std::uint64_t> selected_video_track_;
-    std::optional<std::int64_t> head_previous_pts_us_;
-    std::optional<std::int64_t> head_maximum_pts_us_;
-    std::int64_t head_frame_duration_us_ = 0;
     std::uint64_t tail_window_ = 0;
-    std::uint64_t tail_video_count_ = 0;
-    std::optional<std::int64_t> tail_previous_pts_us_;
-    std::optional<std::int64_t> tail_maximum_pts_us_;
-    std::int64_t tail_frame_duration_us_ = 0;
+    std::vector<VideoCandidate> candidates_;
+    std::optional<std::uint16_t> selected_video_packet_id_;
 };
 
 DurationProbe::DurationProbe() : impl_(std::make_unique<Impl>()) {}
@@ -377,6 +502,9 @@ void DurationProbe::cancel() noexcept { impl_->cancel(); }
 DurationProbeState DurationProbe::state() const noexcept { return impl_->state(); }
 DurationProbeFailure DurationProbe::failure() const noexcept { return impl_->failure(); }
 DurationInfo DurationProbe::duration() const noexcept { return impl_->duration(); }
+std::optional<std::uint16_t> DurationProbe::selectedVideoPacketId() const noexcept {
+    return impl_->selected_video_packet_id();
+}
 std::uint64_t DurationProbe::generation() const noexcept { return impl_->generation(); }
 std::uint64_t DurationProbe::transferredBytes() const noexcept {
     return impl_->transferred_bytes();

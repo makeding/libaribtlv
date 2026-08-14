@@ -46,6 +46,7 @@ public:
     void reset();
     void begin(bool growing);
     void selectVideoTrack(std::optional<std::uint64_t> track_id);
+    void switchVideoTrack(std::uint64_t track_id);
     bool observe(const AccessUnit&);
     bool addSeekPoint(SeekPoint);
     bool updateDuration(DurationInfo);

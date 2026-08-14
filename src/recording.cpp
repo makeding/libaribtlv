@@ -94,6 +94,13 @@ void RecordingIndex::selectVideoTrack(std::optional<std::uint64_t> track_id) {
     duration_status_ = DurationStatus::Unknown;
 }
 
+void RecordingIndex::switchVideoTrack(const std::uint64_t track_id) {
+    if (selected_video_track_ == track_id) return;
+    selected_video_track_ = track_id;
+    previous_pts_us_.reset();
+    inferred_frame_duration_us_ = 0;
+}
+
 bool RecordingIndex::observe(const AccessUnit& unit) {
     if (state_ != IndexState::Building || unit.codec != Codec::Hevc) return false;
     if (!selected_video_track_.has_value()) selected_video_track_ = unit.track_id;
