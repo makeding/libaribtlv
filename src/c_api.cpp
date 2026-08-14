@@ -103,7 +103,8 @@ aribtlv_duration_status duration_status(const aribtlv::DurationStatus value) noe
 
 aribtlv_track_info track_info(
     const aribtlv::TrackInfo& source,
-    const std::vector<aribtlv_asset_group_info>& asset_groups) noexcept {
+    const std::vector<aribtlv_asset_group_info>& asset_groups,
+    const aribtlv_subtitle_info* subtitle) noexcept {
     aribtlv_track_info result{};
     result.track_id = source.track_id;
     result.context_id = source.context_id;
@@ -133,6 +134,30 @@ aribtlv_track_info track_info(
     }
     result.asset_groups = asset_groups.empty() ? nullptr : asset_groups.data();
     result.asset_group_count = asset_groups.size();
+    result.subtitle = subtitle;
+    return result;
+}
+
+aribtlv_subtitle_info subtitle_info(const aribtlv::SubtitleInfo& source) noexcept {
+    aribtlv_subtitle_info result{};
+    result.tag = source.tag;
+    result.info_version = source.info_version;
+    result.type = source.type;
+    result.format = source.format;
+    result.operation_mode = source.operation_mode;
+    result.timing_mode = source.timing_mode;
+    result.display_mode = source.display_mode;
+    result.resolution = source.resolution;
+    result.compression_type = source.compression_type;
+    if (source.start_mpu_sequence_number) {
+        result.has_start_mpu_sequence_number = 1;
+        result.start_mpu_sequence_number = *source.start_mpu_sequence_number;
+    }
+    if (source.reference_start_ntp) {
+        result.has_reference_start_ntp = 1;
+        result.reference_start_ntp = *source.reference_start_ntp;
+    }
+    result.reference_start_time_leap_indicator = source.reference_start_time_leap_indicator;
     return result;
 }
 
@@ -190,32 +215,69 @@ public:
     void onTrack(const aribtlv::TrackInfo& source) override {
         if (!callbacks_.on_track) return;
         convertAssetGroups(source);
-        const auto event = track_info(source, asset_groups_);
+        convertSubtitleInfo(source);
+        const auto event = track_info(source, asset_groups_, subtitle_ ? &*subtitle_ : nullptr);
         callbacks_.on_track(opaque_, &event);
     }
 
     void onTrackRemoved(const aribtlv::TrackInfo& source) override {
         if (!callbacks_.on_track_removed) return;
         convertAssetGroups(source);
-        const auto event = track_info(source, asset_groups_);
+        convertSubtitleInfo(source);
+        const auto event = track_info(source, asset_groups_, subtitle_ ? &*subtitle_ : nullptr);
         callbacks_.on_track_removed(opaque_, &event);
     }
 
     void onAccessUnit(aribtlv::AccessUnit&& source) override {
         if (!callbacks_.on_access_unit) return;
-        const aribtlv_access_unit event{
-            source.track_id,
-            codec(source.codec),
-            source.component_tag,
-            source.data.empty() ? nullptr : source.data.data(),
-            source.data.size(),
-            timestamp(source.pts),
-            timestamp(source.dts),
-            source.restart_offset,
-            source.input_offset,
-            static_cast<std::uint8_t>(source.random_access ? 1 : 0),
-            static_cast<std::uint8_t>(source.discontinuity ? 1 : 0),
-        };
+        subtitle_resources_.clear();
+        subtitle_resources_.reserve(source.subtitle_resources.size());
+        for (const auto& resource : source.subtitle_resources) {
+            subtitle_resources_.push_back({
+                resource.subsample_number,
+                resource.data_type,
+                resource.data.empty() ? nullptr : resource.data.data(),
+                resource.data.size(),
+            });
+        }
+        aribtlv_access_unit event{};
+        event.track_id = source.track_id;
+        event.codec = codec(source.codec);
+        event.component_tag = source.component_tag;
+        event.data = source.data.empty() ? nullptr : source.data.data();
+        event.size = source.data.size();
+        event.pts = timestamp(source.pts);
+        event.dts = timestamp(source.dts);
+        event.restart_offset = source.restart_offset;
+        event.input_offset = source.input_offset;
+        event.random_access = static_cast<std::uint8_t>(source.random_access ? 1 : 0);
+        event.discontinuity = static_cast<std::uint8_t>(source.discontinuity ? 1 : 0);
+        if (source.subtitle_timing_mode) {
+            event.has_subtitle_timing_mode = 1;
+            event.subtitle_timing_mode = *source.subtitle_timing_mode;
+        }
+        if (source.subtitle_operation_mode) {
+            event.has_subtitle_operation_mode = 1;
+            event.subtitle_operation_mode = *source.subtitle_operation_mode;
+        }
+        if (source.subtitle_display_mode) {
+            event.has_subtitle_display_mode = 1;
+            event.subtitle_display_mode = *source.subtitle_display_mode;
+        }
+        if (source.subtitle_compression_type) {
+            event.has_subtitle_compression_type = 1;
+            event.subtitle_compression_type = *source.subtitle_compression_type;
+        }
+        if (source.mpu_sequence_number) {
+            event.has_mpu_sequence_number = 1;
+            event.mpu_sequence_number = *source.mpu_sequence_number;
+        }
+        if (source.subtitle_reference_start_pts) {
+            event.has_subtitle_reference_start_pts = 1;
+            event.subtitle_reference_start_pts = timestamp(*source.subtitle_reference_start_pts);
+        }
+        event.subtitle_resources = subtitle_resources_.empty() ? nullptr : subtitle_resources_.data();
+        event.subtitle_resource_count = subtitle_resources_.size();
         callbacks_.on_access_unit(opaque_, &event);
     }
 
@@ -243,11 +305,18 @@ private:
         }
     }
 
+    void convertSubtitleInfo(const aribtlv::TrackInfo& source) {
+        subtitle_.reset();
+        if (source.subtitle) subtitle_ = subtitle_info(*source.subtitle);
+    }
+
     aribtlv_callbacks callbacks_{};
     void* opaque_ = nullptr;
     bool fatal_error_ = false;
     std::string last_error_;
     std::vector<aribtlv_asset_group_info> asset_groups_;
+    std::optional<aribtlv_subtitle_info> subtitle_;
+    std::vector<aribtlv_subtitle_resource> subtitle_resources_;
 };
 
 } // namespace

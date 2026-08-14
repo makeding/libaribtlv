@@ -27,7 +27,7 @@ extern "C" {
 #define ARIBTLV_VERSION_PATCH 0
 #define ARIBTLV_VERSION_INT \
     ((ARIBTLV_VERSION_MAJOR << 16) | (ARIBTLV_VERSION_MINOR << 8) | ARIBTLV_VERSION_PATCH)
-#define ARIBTLV_C_API_VERSION 2
+#define ARIBTLV_C_API_VERSION 3
 
 typedef struct aribtlv_demuxer aribtlv_demuxer;
 typedef struct aribtlv_duration_probe aribtlv_duration_probe;
@@ -76,6 +76,30 @@ typedef struct aribtlv_asset_group_info {
     uint8_t selection_level;
 } aribtlv_asset_group_info;
 
+typedef struct aribtlv_subtitle_info {
+    uint8_t tag;
+    uint8_t info_version;
+    uint8_t type;
+    uint8_t format;
+    uint8_t operation_mode;
+    uint8_t timing_mode;
+    uint8_t display_mode;
+    uint8_t resolution;
+    uint8_t compression_type;
+    uint8_t has_start_mpu_sequence_number;
+    uint32_t start_mpu_sequence_number;
+    uint8_t has_reference_start_ntp;
+    uint64_t reference_start_ntp;
+    uint8_t reference_start_time_leap_indicator;
+} aribtlv_subtitle_info;
+
+typedef struct aribtlv_subtitle_resource {
+    uint8_t subsample_number;
+    uint8_t data_type;
+    const uint8_t *data;
+    size_t size;
+} aribtlv_subtitle_resource;
+
 typedef struct aribtlv_track_info {
     uint64_t track_id;
     uint32_t context_id;
@@ -96,6 +120,7 @@ typedef struct aribtlv_track_info {
     uint8_t video_transfer_characteristics;
     const aribtlv_asset_group_info *asset_groups;
     size_t asset_group_count;
+    const aribtlv_subtitle_info *subtitle;
 } aribtlv_track_info;
 
 typedef struct aribtlv_access_unit {
@@ -110,6 +135,20 @@ typedef struct aribtlv_access_unit {
     uint64_t input_offset;
     uint8_t random_access;
     uint8_t discontinuity;
+    uint8_t has_subtitle_timing_mode;
+    uint8_t subtitle_timing_mode;
+    uint8_t has_subtitle_operation_mode;
+    uint8_t subtitle_operation_mode;
+    uint8_t has_subtitle_display_mode;
+    uint8_t subtitle_display_mode;
+    uint8_t has_subtitle_compression_type;
+    uint8_t subtitle_compression_type;
+    uint8_t has_mpu_sequence_number;
+    uint32_t mpu_sequence_number;
+    uint8_t has_subtitle_reference_start_pts;
+    aribtlv_timestamp subtitle_reference_start_pts;
+    const aribtlv_subtitle_resource *subtitle_resources;
+    size_t subtitle_resource_count;
 } aribtlv_access_unit;
 
 typedef struct aribtlv_error {

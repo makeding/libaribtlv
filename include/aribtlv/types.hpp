@@ -528,6 +528,9 @@ struct AccessUnit {
     Codec codec = Codec::Hevc;
     std::uint16_t component_tag = 0;
     std::optional<std::uint8_t> subtitle_timing_mode;
+    std::optional<std::uint8_t> subtitle_operation_mode;
+    std::optional<std::uint8_t> subtitle_display_mode;
+    std::optional<std::uint8_t> subtitle_compression_type;
     std::vector<std::uint8_t> data;
     std::vector<SubtitleResource> subtitle_resources;
     Timestamp pts;

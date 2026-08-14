@@ -1660,8 +1660,11 @@ void test_codec_output_and_timeline() {
               subtitle->data == std::vector<std::uint8_t>({'a', 'b', 'c'}),
           "TTML document was not separated from its resource subsamples");
     check(subtitle != sink.access_units.end() && subtitle->component_tag == 0x1230 &&
-              subtitle->subtitle_timing_mode == std::optional<std::uint8_t>{2},
-          "TTML access unit omitted component and timing metadata");
+              subtitle->subtitle_timing_mode == std::optional<std::uint8_t>{2} &&
+              subtitle->subtitle_operation_mode == std::optional<std::uint8_t>{2} &&
+              subtitle->subtitle_display_mode == std::optional<std::uint8_t>{10} &&
+              subtitle->subtitle_compression_type == std::optional<std::uint8_t>{0},
+          "TTML access unit omitted component, timing, or B60 control metadata");
     check(subtitle != sink.access_units.end() && subtitle->subtitle_resources.size() == 1 &&
               subtitle->subtitle_resources[0].subsample_number == 1 &&
               subtitle->subtitle_resources[0].data_type == 1 &&

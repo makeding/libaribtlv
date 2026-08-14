@@ -26,7 +26,7 @@ int main(void)
 
     CHECK(aribtlv_version() == ARIBTLV_VERSION_INT);
     CHECK(strcmp(aribtlv_version_string(), "0.3.0") == 0);
-    CHECK(ARIBTLV_C_API_VERSION == 2);
+    CHECK(ARIBTLV_C_API_VERSION == 3);
 
     aribtlv_callbacks_init(&callbacks);
     callbacks.on_error = on_error;
