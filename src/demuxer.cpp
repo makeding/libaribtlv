@@ -94,6 +94,7 @@ public:
     void flush() {
         tlv_.flush();
         ip_.flush();
+        finish_damage_spans();
     }
 
     void reset() {
@@ -105,6 +106,7 @@ public:
         clear_service_state();
         error_counts_.clear();
         clear_timeline_state();
+        clear_damage_state();
         reposition_epoch_ = 0;
         emitted_reposition_epochs_.clear();
         input_end_offset_ = 0;
@@ -120,6 +122,7 @@ public:
         if (!options.preserve_timeline) origin_.reset();
         if (!options.preserve_timeline) broadcast_clock_.reset();
         last_clock_mpu_sequence_.reset();
+        clear_damage_state();
         input_end_offset_ = options.input_offset;
         arm_track_selections(options.input_offset);
         ++reposition_epoch_;
@@ -134,6 +137,7 @@ public:
         if (limits_.collect_application_resources) application_resources_.reset();
         clear_service_state();
         clear_timeline_state();
+        clear_damage_state();
     }
 
     void select_track(const TrackKind kind, std::optional<std::uint64_t> track_id) {
@@ -177,6 +181,11 @@ private:
         origin_.reset();
         broadcast_clock_.reset();
         last_clock_mpu_sequence_.reset();
+    }
+
+    void clear_damage_state() {
+        pending_damage_.clear();
+        last_access_units_.clear();
     }
 
     void arm_track_selections(const std::uint64_t boundary) {
@@ -797,6 +806,7 @@ private:
             if (unit.input_offset < selection_boundaries_[kind_index]) return;
             if (selection_wait_for_rap_[kind_index] && !unit.random_access) return;
             unit.discontinuity = true;
+            unit.discontinuity_reasons |= DiscontinuityReason::TrackSelection;
             selection_pending_[kind_index] = false;
             selection_wait_for_rap_[kind_index] = false;
         }
@@ -866,6 +876,8 @@ private:
                     Timestamp{reference_pts, unit.pts.timescale};
             } else {
                 unit.discontinuity = true;
+                unit.discontinuity_reasons |=
+                    DiscontinuityReason::TimelineNormalization;
                 error(ErrorCode::Discontinuity, unit.input_offset, true,
                       "subtitle reference timestamp normalization overflowed");
             }
@@ -873,9 +885,100 @@ private:
         if (reposition_epoch_ != 0 &&
             emitted_reposition_epochs_[unit.track_id] != reposition_epoch_) {
             unit.discontinuity = true;
+            unit.discontinuity_reasons |= DiscontinuityReason::Reposition;
             emitted_reposition_epochs_[unit.track_id] = reposition_epoch_;
         }
+        if (unit.discontinuity && unit.discontinuity_reasons == DiscontinuityReason::None) {
+            unit.discontinuity_reasons = DiscontinuityReason::SourceDamage;
+        }
+        observe_damage(unit, track_info->second);
         sink_.onAccessUnit(std::move(unit));
+    }
+
+    struct AccessUnitBoundary {
+        Timestamp time;
+        std::uint64_t input_offset = 0;
+    };
+
+    struct PendingDamage {
+        TrackKind kind = TrackKind::Video;
+        Codec codec = Codec::Hevc;
+        std::optional<Timestamp> start_time;
+        Timestamp end_time;
+        std::uint64_t start_input_offset = 0;
+        std::uint64_t end_input_offset = 0;
+        DiscontinuityReason reasons = DiscontinuityReason::None;
+    };
+
+    void observe_damage(const AccessUnit& unit, const TrackInfo& track) {
+        const bool source_damage = hasDiscontinuityReason(
+            unit.discontinuity_reasons, DiscontinuityReason::SourceDamage);
+        auto pending = pending_damage_.find(unit.track_id);
+        if (source_damage && pending == pending_damage_.end()) {
+            PendingDamage damage;
+            damage.kind = track.kind;
+            damage.codec = unit.codec;
+            const auto previous = last_access_units_.find(unit.track_id);
+            if (previous != last_access_units_.end()) {
+                damage.start_time = previous->second.time;
+                damage.start_input_offset = previous->second.input_offset;
+            } else {
+                damage.start_time = unit.pts;
+                damage.start_input_offset = unit.input_offset;
+            }
+            damage.end_time = unit.pts;
+            damage.end_input_offset = unit.input_offset;
+            damage.reasons = DiscontinuityReason::SourceDamage;
+            pending = pending_damage_.emplace(unit.track_id, std::move(damage)).first;
+        }
+
+        if (pending != pending_damage_.end()) {
+            pending->second.end_time = unit.pts;
+            pending->second.end_input_offset = unit.input_offset;
+            pending->second.reasons |= unit.discontinuity_reasons;
+            const bool recovery = track.kind != TrackKind::Video || unit.random_access;
+            if (recovery) {
+                sink_.onDamage(DamageSpan{
+                    unit.track_id,
+                    track.kind,
+                    unit.codec,
+                    pending->second.start_time,
+                    unit.pts,
+                    unit.pts,
+                    pending->second.start_input_offset,
+                    unit.input_offset,
+                    unit.input_offset,
+                    unit.restart_offset,
+                    pending->second.reasons,
+                    true,
+                    unit.random_access,
+                });
+                pending_damage_.erase(pending);
+            }
+        }
+
+        last_access_units_[unit.track_id] = AccessUnitBoundary{unit.pts, unit.input_offset};
+    }
+
+    void finish_damage_spans() {
+        for (const auto& [track_id, damage] : pending_damage_) {
+            sink_.onDamage(DamageSpan{
+                track_id,
+                damage.kind,
+                damage.codec,
+                damage.start_time,
+                damage.end_time,
+                std::nullopt,
+                damage.start_input_offset,
+                damage.end_input_offset,
+                0,
+                0,
+                damage.reasons,
+                false,
+                false,
+            });
+        }
+        pending_damage_.clear();
     }
 
     void error(const ErrorCode code, const std::uint64_t offset, const bool recoverable,
@@ -924,6 +1027,8 @@ private:
     std::unordered_map<std::string, std::uint64_t> error_counts_;
     std::uint64_t reposition_epoch_ = 0;
     std::unordered_map<std::uint64_t, std::uint64_t> emitted_reposition_epochs_;
+    std::unordered_map<std::uint64_t, AccessUnitBoundary> last_access_units_;
+    std::unordered_map<std::uint64_t, PendingDamage> pending_damage_;
     struct TimelineOrigin {
         std::uint64_t ntp = 0;
         std::int64_t pts_offset = 0;

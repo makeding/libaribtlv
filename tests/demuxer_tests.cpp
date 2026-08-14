@@ -35,6 +35,7 @@ struct TestSink final : aribtlv::Sink {
     std::vector<aribtlv::ServiceStateReset> service_resets;
     std::vector<aribtlv::DataTransmissionTable> data_transmission_tables;
     std::vector<aribtlv::Error> errors;
+    std::vector<aribtlv::DamageSpan> damage_spans;
     void onService(const aribtlv::ServiceInfo& value) override { services.push_back(value); }
     void onTrack(const aribtlv::TrackInfo& value) override { tracks.push_back(value); }
     void onTrackRemoved(const aribtlv::TrackInfo& value) override {
@@ -93,6 +94,9 @@ struct TestSink final : aribtlv::Sink {
         data_transmission_tables.push_back(std::move(value));
     }
     void onError(const aribtlv::Error& value) override { errors.push_back(value); }
+    void onDamage(const aribtlv::DamageSpan& value) override {
+        damage_spans.push_back(value);
+    }
 };
 
 [[noreturn]] void fail(const std::string& message) {
@@ -1880,6 +1884,10 @@ void test_reposition_preserves_timeline_and_absolute_offsets() {
           "reposition did not preserve absolute source offsets");
     check(second_video->discontinuity,
           "first access unit after reposition was not marked discontinuous");
+    check(second_video->discontinuity_reasons ==
+              aribtlv::DiscontinuityReason::Reposition &&
+              sink.damage_spans.empty(),
+          "reposition was incorrectly reported as damaged source media");
     check(sink.tracks.size() == original_track_callbacks,
           "reposition re-emitted unchanged track metadata");
 }
@@ -1934,6 +1942,10 @@ void test_track_selection_preserves_timeline_and_waits_for_rap() {
               selected_video->pts.value == 180000 &&
               selected_video->random_access && selected_video->discontinuity,
           "video track selection reset the timeline or did not resume at a discontinuous RAP");
+    check(aribtlv::hasDiscontinuityReason(
+              selected_video->discontinuity_reasons,
+              aribtlv::DiscontinuityReason::TrackSelection),
+          "track selection did not retain its controlled discontinuity reason");
 }
 
 void test_hevc_irap_detection_without_mmtp_rap() {
@@ -2157,7 +2169,7 @@ void test_mpu_au_count_mismatch_flags_discontinuity() {
     add_mfu(1, 1, true, {0, 0, 0, 2, 0x46, 0x01});
     add_mfu(1, 1, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
     stream.insert(stream.end(), next_mpu_signalling.begin(), next_mpu_signalling.end());
-    add_mfu(2, 1, false, {0, 0, 0, 2, 0x46, 0x01});
+    add_mfu(2, 1, true, {0, 0, 0, 2, 0x46, 0x01});
     add_mfu(2, 1, false, {0, 0, 0, 3, 0x02, 0x01, 0x80});
 
     TestSink sink;
@@ -2176,6 +2188,15 @@ void test_mpu_au_count_mismatch_flags_discontinuity() {
         });
     check(second_mpu_video != sink.access_units.end() && second_mpu_video->discontinuity,
           "MPU access-unit count mismatch did not mark the next access unit discontinuous");
+    check(second_mpu_video->discontinuity_reasons ==
+              aribtlv::DiscontinuityReason::SourceDamage,
+          "source damage was not distinguished from a controlled discontinuity");
+    check(sink.damage_spans.size() == 1 && sink.damage_spans[0].recovered &&
+              sink.damage_spans[0].recovery_random_access &&
+              sink.damage_spans[0].track_id == second_mpu_video->track_id &&
+              sink.damage_spans[0].recovery_time ==
+                  std::optional<aribtlv::Timestamp>{second_mpu_video->pts},
+          "source damage did not report the next random-access recovery point");
 }
 
 void test_non_timed_media_mfu_ignores_opaque_header_as_sample_number() {

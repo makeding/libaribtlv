@@ -550,6 +550,9 @@ void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_seq
     unit.input_offset = input_offset;
     unit.random_access = random_access;
     unit.discontinuity = track.discontinuity;
+    if (track.discontinuity) {
+        unit.discontinuity_reasons = DiscontinuityReason::SourceDamage;
+    }
     track.discontinuity = false;
     on_access_unit_(TimedAccessUnit{std::move(unit), ntp});
 }

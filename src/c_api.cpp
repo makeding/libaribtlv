@@ -52,6 +52,11 @@ aribtlv_error_code error_code(const aribtlv::ErrorCode value) noexcept {
     return ARIBTLV_ERROR_MALFORMED_INPUT;
 }
 
+std::uint32_t discontinuity_reasons(
+    const aribtlv::DiscontinuityReason value) noexcept {
+    return static_cast<std::uint32_t>(value);
+}
+
 aribtlv_timestamp timestamp(const aribtlv::Timestamp value) noexcept {
     return {value.value, value.timescale};
 }
@@ -278,7 +283,34 @@ public:
         }
         event.subtitle_resources = subtitle_resources_.empty() ? nullptr : subtitle_resources_.data();
         event.subtitle_resource_count = subtitle_resources_.size();
+        event.discontinuity_reasons = discontinuity_reasons(source.discontinuity_reasons);
         callbacks_.on_access_unit(opaque_, &event);
+    }
+
+    void onDamage(const aribtlv::DamageSpan& source) override {
+        if (!callbacks_.on_damage) return;
+        aribtlv_damage_span event{};
+        event.track_id = source.track_id;
+        event.kind = track_kind(source.kind);
+        event.codec = codec(source.codec);
+        if (source.start_time) {
+            event.has_start_time = 1;
+            event.start_time = timestamp(*source.start_time);
+        }
+        event.end_time = timestamp(source.end_time);
+        if (source.recovery_time) {
+            event.has_recovery_time = 1;
+            event.recovery_time = timestamp(*source.recovery_time);
+        }
+        event.start_input_offset = source.start_input_offset;
+        event.end_input_offset = source.end_input_offset;
+        event.recovery_input_offset = source.recovery_input_offset;
+        event.recovery_restart_offset = source.recovery_restart_offset;
+        event.reasons = discontinuity_reasons(source.reasons);
+        event.recovered = static_cast<std::uint8_t>(source.recovered ? 1 : 0);
+        event.recovery_random_access =
+            static_cast<std::uint8_t>(source.recovery_random_access ? 1 : 0);
+        callbacks_.on_damage(opaque_, &event);
     }
 
     void onError(const aribtlv::Error& source) override {

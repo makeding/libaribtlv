@@ -22,6 +22,7 @@ public:
     virtual void onTrack(const TrackInfo&) = 0;
     virtual void onAccessUnit(AccessUnit&&) = 0;
     virtual void onError(const Error&) = 0;
+    virtual void onDamage(const DamageSpan&) {}
     virtual void onBroadcastClock(const BroadcastClock&) {}
     virtual void onEventInfo(const EventInfo&) {}
     virtual void onMhSdtSnapshot(const MhSdtSnapshot&) {}

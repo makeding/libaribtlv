@@ -11,6 +11,31 @@ namespace aribtlv {
 enum class Codec { Hevc, AacLatm, Ttml };
 enum class TrackKind { Video, Audio, Subtitle };
 
+enum class DiscontinuityReason : std::uint32_t {
+    None = 0,
+    SourceDamage = 1U << 0U,
+    TrackSelection = 1U << 1U,
+    Reposition = 1U << 2U,
+    TimelineNormalization = 1U << 3U,
+};
+
+constexpr DiscontinuityReason operator|(const DiscontinuityReason left,
+                                        const DiscontinuityReason right) noexcept {
+    return static_cast<DiscontinuityReason>(
+        static_cast<std::uint32_t>(left) | static_cast<std::uint32_t>(right));
+}
+
+constexpr DiscontinuityReason& operator|=(DiscontinuityReason& left,
+                                          const DiscontinuityReason right) noexcept {
+    left = left | right;
+    return left;
+}
+
+constexpr bool hasDiscontinuityReason(const DiscontinuityReason value,
+                                      const DiscontinuityReason reason) noexcept {
+    return (static_cast<std::uint32_t>(value) & static_cast<std::uint32_t>(reason)) != 0;
+}
+
 enum class AudioChannelLayout {
     Unknown,
     Mono,
@@ -77,6 +102,7 @@ struct VideoInfo {
 struct Timestamp {
     std::int64_t value = 0;
     std::uint32_t timescale = 1;
+    bool operator==(const Timestamp&) const = default;
 };
 
 // A point which maps the normalized media timeline to the absolute broadcast
@@ -543,6 +569,28 @@ struct AccessUnit {
     std::uint64_t input_offset = 0;
     bool random_access = false;
     bool discontinuity = false;
+    // Distinguishes damaged source media from discontinuities intentionally
+    // introduced by track selection or input repositioning.
+    DiscontinuityReason discontinuity_reasons = DiscontinuityReason::None;
+};
+
+// A damaged media interval begins after the last emitted access unit and ends
+// at a decoder recovery point. Video recovery points are random-access units;
+// audio and subtitle recovery points are the first subsequent access unit.
+struct DamageSpan {
+    std::uint64_t track_id = 0;
+    TrackKind kind = TrackKind::Video;
+    Codec codec = Codec::Hevc;
+    std::optional<Timestamp> start_time;
+    Timestamp end_time;
+    std::optional<Timestamp> recovery_time;
+    std::uint64_t start_input_offset = 0;
+    std::uint64_t end_input_offset = 0;
+    std::uint64_t recovery_input_offset = 0;
+    std::uint64_t recovery_restart_offset = 0;
+    DiscontinuityReason reasons = DiscontinuityReason::SourceDamage;
+    bool recovered = false;
+    bool recovery_random_access = false;
 };
 
 enum class ErrorCode {

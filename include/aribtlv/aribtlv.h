@@ -27,7 +27,7 @@ extern "C" {
 #define ARIBTLV_VERSION_PATCH 0
 #define ARIBTLV_VERSION_INT \
     ((ARIBTLV_VERSION_MAJOR << 16) | (ARIBTLV_VERSION_MINOR << 8) | ARIBTLV_VERSION_PATCH)
-#define ARIBTLV_C_API_VERSION 3
+#define ARIBTLV_C_API_VERSION 4
 
 typedef struct aribtlv_demuxer aribtlv_demuxer;
 typedef struct aribtlv_duration_probe aribtlv_duration_probe;
@@ -59,6 +59,14 @@ typedef enum aribtlv_error_code {
     ARIBTLV_ERROR_DISCONTINUITY = 2,
     ARIBTLV_ERROR_RESOURCE_LIMIT = 3
 } aribtlv_error_code;
+
+typedef enum aribtlv_discontinuity_reason {
+    ARIBTLV_DISCONTINUITY_NONE = 0,
+    ARIBTLV_DISCONTINUITY_SOURCE_DAMAGE = 1U << 0U,
+    ARIBTLV_DISCONTINUITY_TRACK_SELECTION = 1U << 1U,
+    ARIBTLV_DISCONTINUITY_REPOSITION = 1U << 2U,
+    ARIBTLV_DISCONTINUITY_TIMELINE_NORMALIZATION = 1U << 3U
+} aribtlv_discontinuity_reason;
 
 typedef struct aribtlv_timestamp {
     int64_t value;
@@ -149,6 +157,7 @@ typedef struct aribtlv_access_unit {
     aribtlv_timestamp subtitle_reference_start_pts;
     const aribtlv_subtitle_resource *subtitle_resources;
     size_t subtitle_resource_count;
+    uint32_t discontinuity_reasons;
 } aribtlv_access_unit;
 
 typedef struct aribtlv_error {
@@ -158,6 +167,24 @@ typedef struct aribtlv_error {
     const char *message;
 } aribtlv_error;
 
+typedef struct aribtlv_damage_span {
+    uint64_t track_id;
+    aribtlv_track_kind kind;
+    aribtlv_codec codec;
+    uint8_t has_start_time;
+    aribtlv_timestamp start_time;
+    aribtlv_timestamp end_time;
+    uint8_t has_recovery_time;
+    aribtlv_timestamp recovery_time;
+    uint64_t start_input_offset;
+    uint64_t end_input_offset;
+    uint64_t recovery_input_offset;
+    uint64_t recovery_restart_offset;
+    uint32_t reasons;
+    uint8_t recovered;
+    uint8_t recovery_random_access;
+} aribtlv_damage_span;
+
 /* Views passed to callbacks remain valid only until that callback returns. */
 typedef struct aribtlv_callbacks {
     size_t struct_size;
@@ -166,6 +193,7 @@ typedef struct aribtlv_callbacks {
     void (*on_track_removed)(void *opaque, const aribtlv_track_info *track);
     void (*on_access_unit)(void *opaque, const aribtlv_access_unit *unit);
     void (*on_error)(void *opaque, const aribtlv_error *error);
+    void (*on_damage)(void *opaque, const aribtlv_damage_span *damage);
 } aribtlv_callbacks;
 
 typedef struct aribtlv_config {
