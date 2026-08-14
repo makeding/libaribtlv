@@ -412,7 +412,7 @@ public:
         std::int64_t offset_us = 0;
         if (!timestamp_microseconds(offset, offset_us) || offset_us < 0) return std::nullopt;
         const auto first = result_.first_presentation_time->value;
-        if (offset_us > std::numeric_limits<std::int64_t>::max() - first) {
+        if (first > std::numeric_limits<std::int64_t>::max() - offset_us) {
             return std::nullopt;
         }
         const auto target = first + offset_us;
