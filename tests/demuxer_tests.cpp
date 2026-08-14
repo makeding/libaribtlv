@@ -1,4 +1,5 @@
 #include <aribtlv/demuxer.hpp>
+#include <aribtlv/recording.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -1582,6 +1583,32 @@ void append_video_access_unit(std::vector<std::uint8_t>& stream,
     add_video(first_packet_sequence + 2, false, {0, 0, 0, 2, 0x46, 0x01});
 }
 
+void test_recording_scanner_uses_demux_metadata_and_bounds_time() {
+    auto stream = discovery_stream();
+    append_video_access_unit(stream, 1);
+
+    aribtlv::RecordingScanner scanner;
+    check(scanner.push(stream.data(), stream.size()),
+          "recording scanner rejected a valid recording");
+    const auto& result = scanner.finish();
+    check(result.complete() && result.video_packet_id == 0xf300 &&
+              result.first_presentation_time.has_value() &&
+              result.last_presentation_time.has_value() &&
+              result.seek_points.size() == 1,
+          "recording scanner did not expose the selected video timeline and RAP");
+    check(scanner.seekFromStart({0, 1000000}).has_value(),
+          "recording scanner could not locate the recording start RAP");
+    check(!scanner.seekFromStart({1, 1000000}).has_value(),
+          "recording scanner returned the final RAP for a target beyond the recording end");
+
+    aribtlv::RecordingScanOptions options;
+    options.video_packet_id = 0xf301;
+    aribtlv::RecordingScanner wrong_video(options);
+    check(wrong_video.push(stream.data(), stream.size()) &&
+              wrong_video.finish().failure == aribtlv::RecordingScanFailure::NoVideo,
+          "recording scanner ignored the requested video packet id");
+}
+
 void test_codec_output_and_timeline() {
     auto stream = discovery_stream();
     auto add_media = [&](const std::uint16_t packet_id, const std::uint32_t packet_sequence,
@@ -2625,6 +2652,7 @@ int main() {
     test_dynamic_audio_layout_metadata();
     test_authenticated_mmtp_payload_bounds();
     test_codec_output_and_timeline();
+    test_recording_scanner_uses_demux_metadata_and_bounds_time();
     test_timestamp_overflow_rejection();
     test_track_selection_clears_incomplete_media();
     test_fragmented_signalling_restart_offset();

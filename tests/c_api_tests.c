@@ -25,7 +25,8 @@ int main(void)
     const uint8_t incomplete_tlv[] = {0x7f, 0x03, 0x00, 0x08, 0x00};
 
     CHECK(aribtlv_version() == ARIBTLV_VERSION_INT);
-    CHECK(strcmp(aribtlv_version_string(), "0.2.0") == 0);
+    CHECK(strcmp(aribtlv_version_string(), "0.3.0") == 0);
+    CHECK(ARIBTLV_C_API_VERSION == 2);
 
     aribtlv_callbacks_init(&callbacks);
     callbacks.on_error = on_error;
@@ -60,6 +61,20 @@ int main(void)
     CHECK(aribtlv_duration_probe_get_failure(probe) ==
           ARIBTLV_DURATION_PROBE_FAILURE_SOURCE_ERROR);
     aribtlv_duration_probe_destroy(probe);
+
+    aribtlv_recording_scan_options scan_options;
+    aribtlv_recording_scan_options_init(&scan_options);
+    aribtlv_recording_scanner *scanner =
+        aribtlv_recording_scanner_create(&scan_options);
+    CHECK(scanner != NULL);
+    aribtlv_recording_scanner_fail_source(scanner);
+    aribtlv_recording_scan_result scan_result;
+    CHECK(aribtlv_recording_scanner_finish(scanner, &scan_result) == ARIBTLV_OK);
+    CHECK(scan_result.failure == ARIBTLV_RECORDING_SCAN_FAILURE_SOURCE_ERROR);
+    aribtlv_recording_seek_result seek_result;
+    CHECK(aribtlv_recording_scanner_seek_from_start(
+              scanner, (aribtlv_timestamp){0, 1000000}, &seek_result) == 0);
+    aribtlv_recording_scanner_destroy(scanner);
 
     CHECK(aribtlv_demuxer_push(NULL, NULL, 0) == ARIBTLV_ERROR_INVALID_ARGUMENT);
     return 0;

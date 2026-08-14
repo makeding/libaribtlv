@@ -1,4 +1,5 @@
 #include <aribtlv/recording.hpp>
+#include <aribtlv/demuxer.hpp>
 
 #include <algorithm>
 #include <iterator>
@@ -313,6 +314,16 @@ DurationInfo RecordingIndex::duration() const noexcept {
     };
 }
 
+std::optional<Timestamp> RecordingIndex::presentationStart() const noexcept {
+    if (!minimum_pts_us_) return std::nullopt;
+    return Timestamp{*minimum_pts_us_, microsecond_timescale};
+}
+
+std::optional<Timestamp> RecordingIndex::presentationEnd() const noexcept {
+    if (!maximum_pts_us_) return std::nullopt;
+    return Timestamp{*maximum_pts_us_, microsecond_timescale};
+}
+
 void RecordingIndex::update_duration_status() {
     if (state_ == IndexState::Complete && maximum_pts_us_.has_value()) {
         auto final_candidate = std::max<std::int64_t>(0, *maximum_pts_us_);
@@ -333,6 +344,141 @@ void RecordingIndex::update_duration_status() {
     } else {
         duration_status_ = DurationStatus::Provisional;
     }
+}
+
+class RecordingScanner::Impl final : public Sink {
+public:
+    explicit Impl(RecordingScanOptions options)
+        : options_(std::move(options)), demuxer_(*this, scanner_limits()) {
+        index_.begin(false);
+        demuxer_.selectService(options_.service_context_id);
+    }
+
+    bool push(const std::uint8_t* data, const std::size_t size) {
+        if (finished_ || source_failed_ || (!data && size != 0)) return false;
+        demuxer_.push(data, size);
+        return !fatal_error_.has_value();
+    }
+
+    void failSource() {
+        if (!finished_) source_failed_ = true;
+    }
+
+    const RecordingScanResult& finish() {
+        if (finished_) return result_;
+        finished_ = true;
+        if (source_failed_) {
+            index_.fail();
+            result_.failure = RecordingScanFailure::SourceError;
+            return result_;
+        }
+
+        demuxer_.flush();
+        result_.error = fatal_error_;
+        result_.video_track_id = video_track_id_;
+        result_.video_packet_id = video_packet_id_;
+        if (fatal_error_) {
+            index_.fail();
+            result_.failure = RecordingScanFailure::ParseError;
+            return result_;
+        }
+        if (!video_track_id_) {
+            index_.fail();
+            result_.failure = RecordingScanFailure::NoVideo;
+            return result_;
+        }
+        if (!index_.finalize()) {
+            result_.failure = RecordingScanFailure::ParseError;
+            return result_;
+        }
+
+        result_.first_presentation_time = index_.presentationStart();
+        result_.last_presentation_time = index_.presentationEnd();
+        result_.duration = index_.duration();
+        result_.seek_points = index_.seekPoints();
+        if (!result_.first_presentation_time || !result_.last_presentation_time) {
+            result_.failure = RecordingScanFailure::NoVideo;
+        } else if (result_.seek_points.empty()) {
+            result_.failure = RecordingScanFailure::NoRandomAccessPoint;
+        }
+        return result_;
+    }
+
+    std::optional<RecordingSeekResult> seekFromStart(const Timestamp offset) const {
+        if (!finished_ || !result_.complete() || !result_.first_presentation_time ||
+            !result_.last_presentation_time) {
+            return std::nullopt;
+        }
+        std::int64_t offset_us = 0;
+        if (!timestamp_microseconds(offset, offset_us) || offset_us < 0) return std::nullopt;
+        const auto first = result_.first_presentation_time->value;
+        if (offset_us > std::numeric_limits<std::int64_t>::max() - first) {
+            return std::nullopt;
+        }
+        const auto target = first + offset_us;
+        if (target > result_.last_presentation_time->value) return std::nullopt;
+        const Timestamp target_timestamp{target, microsecond_timescale};
+        const auto point = index_.previousSync(target_timestamp);
+        if (!point) return std::nullopt;
+        return RecordingSeekResult{target_timestamp, *point};
+    }
+
+    void onService(const ServiceInfo&) override {}
+
+    void onTrack(const TrackInfo& track) override {
+        if (video_track_id_ || track.kind != TrackKind::Video || track.codec != Codec::Hevc ||
+            (options_.video_packet_id && track.packet_id != *options_.video_packet_id)) {
+            return;
+        }
+        video_track_id_ = track.track_id;
+        video_packet_id_ = track.packet_id;
+        index_.selectVideoTrack(video_track_id_);
+    }
+
+    void onAccessUnit(AccessUnit&& unit) override {
+        if (video_track_id_ == unit.track_id) index_.observe(unit);
+    }
+
+    void onError(const Error& error) override {
+        if (!error.recoverable && !fatal_error_) fatal_error_ = error;
+    }
+
+private:
+    static Limits scanner_limits() {
+        Limits limits;
+        limits.collect_application_resources = false;
+        return limits;
+    }
+
+    RecordingScanOptions options_;
+    RecordingIndex index_;
+    Demuxer demuxer_;
+    RecordingScanResult result_;
+    std::optional<std::uint64_t> video_track_id_;
+    std::optional<std::uint16_t> video_packet_id_;
+    std::optional<Error> fatal_error_;
+    bool source_failed_ = false;
+    bool finished_ = false;
+};
+
+RecordingScanner::RecordingScanner(RecordingScanOptions options)
+    : impl_(std::make_unique<Impl>(std::move(options))) {}
+
+RecordingScanner::~RecordingScanner() = default;
+RecordingScanner::RecordingScanner(RecordingScanner&&) noexcept = default;
+RecordingScanner& RecordingScanner::operator=(RecordingScanner&&) noexcept = default;
+
+bool RecordingScanner::push(const std::uint8_t* data, const std::size_t size) {
+    return impl_->push(data, size);
+}
+
+void RecordingScanner::failSource() { impl_->failSource(); }
+
+const RecordingScanResult& RecordingScanner::finish() { return impl_->finish(); }
+
+std::optional<RecordingSeekResult> RecordingScanner::seekFromStart(
+    const Timestamp offset) const {
+    return impl_->seekFromStart(offset);
 }
 
 } // namespace aribtlv

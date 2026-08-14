@@ -2,6 +2,7 @@
 
 #include <aribtlv/demuxer.hpp>
 #include <aribtlv/duration_probe.hpp>
+#include <aribtlv/recording.hpp>
 
 #include <algorithm>
 #include <cstring>
@@ -10,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -99,7 +101,9 @@ aribtlv_duration_status duration_status(const aribtlv::DurationStatus value) noe
     return ARIBTLV_DURATION_UNKNOWN;
 }
 
-aribtlv_track_info track_info(const aribtlv::TrackInfo& source) noexcept {
+aribtlv_track_info track_info(
+    const aribtlv::TrackInfo& source,
+    const std::vector<aribtlv_asset_group_info>& asset_groups) noexcept {
     aribtlv_track_info result{};
     result.track_id = source.track_id;
     result.context_id = source.context_id;
@@ -115,7 +119,48 @@ aribtlv_track_info track_info(const aribtlv::TrackInfo& source) noexcept {
         result.audio_sample_rate = source.audio->sample_rate;
         result.audio_channels = aribtlv::audio_channel_count(source.audio->channel_layout);
     }
+    if (source.video) {
+        result.has_video = 1;
+        if (source.video->hdr_wcg_idc) {
+            result.video_has_hdr_wcg_idc = 1;
+            result.video_hdr_wcg_idc = *source.video->hdr_wcg_idc;
+        }
+        if (source.video->video_transfer_characteristics) {
+            result.video_has_transfer_characteristics = 1;
+            result.video_transfer_characteristics =
+                *source.video->video_transfer_characteristics;
+        }
+    }
+    result.asset_groups = asset_groups.empty() ? nullptr : asset_groups.data();
+    result.asset_group_count = asset_groups.size();
     return result;
+}
+
+aribtlv_recording_scan_failure recording_scan_failure(
+    const aribtlv::RecordingScanFailure value) noexcept {
+    switch (value) {
+    case aribtlv::RecordingScanFailure::None:
+        return ARIBTLV_RECORDING_SCAN_FAILURE_NONE;
+    case aribtlv::RecordingScanFailure::SourceError:
+        return ARIBTLV_RECORDING_SCAN_FAILURE_SOURCE_ERROR;
+    case aribtlv::RecordingScanFailure::NoVideo:
+        return ARIBTLV_RECORDING_SCAN_FAILURE_NO_VIDEO;
+    case aribtlv::RecordingScanFailure::NoRandomAccessPoint:
+        return ARIBTLV_RECORDING_SCAN_FAILURE_NO_RANDOM_ACCESS_POINT;
+    case aribtlv::RecordingScanFailure::ParseError:
+        return ARIBTLV_RECORDING_SCAN_FAILURE_PARSE_ERROR;
+    }
+    return ARIBTLV_RECORDING_SCAN_FAILURE_PARSE_ERROR;
+}
+
+aribtlv_seek_point seek_point(const aribtlv::SeekPoint& source) noexcept {
+    return {
+        timestamp(source.presentation_time),
+        source.signalling_offset,
+        source.random_access_offset,
+        source.video_track_id,
+        source.bootstrap_id,
+    };
 }
 
 class CallbackSink final : public aribtlv::Sink {
@@ -144,13 +189,15 @@ public:
 
     void onTrack(const aribtlv::TrackInfo& source) override {
         if (!callbacks_.on_track) return;
-        const auto event = track_info(source);
+        convertAssetGroups(source);
+        const auto event = track_info(source, asset_groups_);
         callbacks_.on_track(opaque_, &event);
     }
 
     void onTrackRemoved(const aribtlv::TrackInfo& source) override {
         if (!callbacks_.on_track_removed) return;
-        const auto event = track_info(source);
+        convertAssetGroups(source);
+        const auto event = track_info(source, asset_groups_);
         callbacks_.on_track_removed(opaque_, &event);
     }
 
@@ -188,10 +235,19 @@ public:
     }
 
 private:
+    void convertAssetGroups(const aribtlv::TrackInfo& source) {
+        asset_groups_.clear();
+        asset_groups_.reserve(source.asset_groups.size());
+        for (const auto& group : source.asset_groups) {
+            asset_groups_.push_back({group.group_identification, group.selection_level});
+        }
+    }
+
     aribtlv_callbacks callbacks_{};
     void* opaque_ = nullptr;
     bool fatal_error_ = false;
     std::string last_error_;
+    std::vector<aribtlv_asset_group_info> asset_groups_;
 };
 
 } // namespace
@@ -206,6 +262,55 @@ struct aribtlv_demuxer {
 
 struct aribtlv_duration_probe {
     aribtlv::DurationProbe implementation;
+};
+
+struct aribtlv_recording_scanner {
+    explicit aribtlv_recording_scanner(aribtlv::RecordingScanOptions options)
+        : implementation(std::move(options)) {}
+
+    void cacheResult(const aribtlv::RecordingScanResult& source) {
+        if (cached) return;
+        seek_points.reserve(source.seek_points.size());
+        for (const auto& point : source.seek_points) seek_points.push_back(seek_point(point));
+        if (source.error) error_message = source.error->message;
+
+        result.failure = recording_scan_failure(source.failure);
+        if (source.error) {
+            result.has_error = 1;
+            result.error = {
+                error_code(source.error->code),
+                source.error->input_offset,
+                static_cast<std::uint8_t>(source.error->recoverable ? 1 : 0),
+                error_message.c_str(),
+            };
+        }
+        if (source.video_track_id) {
+            result.has_video_track = 1;
+            result.video_track_id = *source.video_track_id;
+        }
+        if (source.video_packet_id) {
+            result.has_video_packet_id = 1;
+            result.video_packet_id = *source.video_packet_id;
+        }
+        if (source.first_presentation_time) {
+            result.has_first_presentation_time = 1;
+            result.first_presentation_time = timestamp(*source.first_presentation_time);
+        }
+        if (source.last_presentation_time) {
+            result.has_last_presentation_time = 1;
+            result.last_presentation_time = timestamp(*source.last_presentation_time);
+        }
+        result.duration = {timestamp(source.duration.value), duration_status(source.duration.status)};
+        result.seek_points = seek_points.empty() ? nullptr : seek_points.data();
+        result.seek_point_count = seek_points.size();
+        cached = true;
+    }
+
+    aribtlv::RecordingScanner implementation;
+    aribtlv_recording_scan_result result{};
+    std::vector<aribtlv_seek_point> seek_points;
+    std::string error_message;
+    bool cached = false;
 };
 
 namespace {
@@ -256,6 +361,12 @@ void aribtlv_duration_probe_options_init(aribtlv_duration_probe_options* options
     options->struct_size = sizeof(*options);
     options->initial_range_size = 4ULL * 1024ULL * 1024ULL;
     options->max_range_size = 64ULL * 1024ULL * 1024ULL;
+}
+
+void aribtlv_recording_scan_options_init(aribtlv_recording_scan_options* options) {
+    if (!options) return;
+    std::memset(options, 0, sizeof(*options));
+    options->struct_size = sizeof(*options);
 }
 
 aribtlv_demuxer* aribtlv_demuxer_create(
@@ -439,6 +550,77 @@ int aribtlv_duration_probe_get_duration(const aribtlv_duration_probe* probe,
 
 uint64_t aribtlv_duration_probe_transferred_bytes(const aribtlv_duration_probe* probe) {
     return probe ? probe->implementation.transferredBytes() : 0;
+}
+
+aribtlv_recording_scanner* aribtlv_recording_scanner_create(
+    const aribtlv_recording_scan_options* options) {
+    try {
+        aribtlv::RecordingScanOptions converted;
+        if (options) {
+            if (options->struct_size < sizeof(options->struct_size)) return nullptr;
+            const auto service_end = offsetof(aribtlv_recording_scan_options,
+                                              service_context_id) +
+                sizeof(options->service_context_id);
+            if (options->struct_size >= service_end && options->has_service_context_id) {
+                converted.service_context_id = options->service_context_id;
+            }
+            const auto packet_end = offsetof(aribtlv_recording_scan_options,
+                                             video_packet_id) +
+                sizeof(options->video_packet_id);
+            if (options->struct_size >= packet_end && options->has_video_packet_id) {
+                converted.video_packet_id = options->video_packet_id;
+            }
+        }
+        return new aribtlv_recording_scanner(std::move(converted));
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+void aribtlv_recording_scanner_destroy(aribtlv_recording_scanner* scanner) {
+    delete scanner;
+}
+
+int aribtlv_recording_scanner_push(aribtlv_recording_scanner* scanner,
+                                   const uint8_t* data, const size_t size) {
+    if (!scanner || (!data && size != 0)) return ARIBTLV_ERROR_INVALID_ARGUMENT;
+    try {
+        return scanner->implementation.push(data, size) ? ARIBTLV_OK : ARIBTLV_ERROR_DEMUX;
+    } catch (const std::bad_alloc&) {
+        return ARIBTLV_ERROR_OUT_OF_MEMORY;
+    } catch (...) {
+        return ARIBTLV_ERROR_INTERNAL;
+    }
+}
+
+void aribtlv_recording_scanner_fail_source(aribtlv_recording_scanner* scanner) {
+    if (scanner) scanner->implementation.failSource();
+}
+
+int aribtlv_recording_scanner_finish(aribtlv_recording_scanner* scanner,
+                                     aribtlv_recording_scan_result* result) {
+    if (!scanner || !result) return ARIBTLV_ERROR_INVALID_ARGUMENT;
+    try {
+        scanner->cacheResult(scanner->implementation.finish());
+        *result = scanner->result;
+        return ARIBTLV_OK;
+    } catch (const std::bad_alloc&) {
+        return ARIBTLV_ERROR_OUT_OF_MEMORY;
+    } catch (...) {
+        return ARIBTLV_ERROR_INTERNAL;
+    }
+}
+
+int aribtlv_recording_scanner_seek_from_start(
+    const aribtlv_recording_scanner* scanner, const aribtlv_timestamp offset,
+    aribtlv_recording_seek_result* result) {
+    if (!scanner || !result) return ARIBTLV_ERROR_INVALID_ARGUMENT;
+    const auto found = scanner->implementation.seekFromStart(
+        aribtlv::Timestamp{offset.value, offset.timescale});
+    if (!found) return 0;
+    result->target_presentation_time = timestamp(found->target_presentation_time);
+    result->point = seek_point(found->point);
+    return 1;
 }
 
 } // extern "C"

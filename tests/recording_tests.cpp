@@ -160,12 +160,26 @@ void test_duration_probe_range_protocol() {
           "duration probe accepted a zero-sized source");
 }
 
+void test_recording_scanner_failure_contract() {
+    aribtlv::RecordingScanner empty;
+    check(empty.finish().failure == aribtlv::RecordingScanFailure::NoVideo,
+          "empty recording scan did not report NoVideo");
+
+    aribtlv::RecordingScanner source_failure;
+    source_failure.failSource();
+    check(source_failure.finish().failure == aribtlv::RecordingScanFailure::SourceError,
+          "recording scan did not preserve its source failure");
+    check(!source_failure.push(nullptr, 0),
+          "finished recording scan accepted more input");
+}
+
 } // namespace
 
 int main() {
     test_recording_index();
     test_duration_uses_recording_timeline_endpoint();
     test_duration_probe_range_protocol();
+    test_recording_scanner_failure_contract();
     std::cout << "all recording tests passed\n";
     return 0;
 }
