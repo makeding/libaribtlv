@@ -390,6 +390,7 @@ std::vector<std::uint8_t> discovery_message() {
 
     std::vector<std::uint8_t> video_descriptors;
     descriptor(video_descriptors, 0x8011, {0x00, 0x00});
+    descriptor(video_descriptors, 0x8000, {0x00, 0x01});
     descriptor(video_descriptors, 0x8abc, {0xde, 0xad, 0xbe});
     descriptor(video_descriptors, 0x800a,
                {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02});
@@ -401,6 +402,8 @@ std::vector<std::uint8_t> discovery_message() {
 
     std::vector<std::uint8_t> audio_descriptors;
     descriptor(audio_descriptors, 0x8011, {0x01, 0x10});
+    descriptor(audio_descriptors, 0x8000, {0x10, 0x00});
+    descriptor(audio_descriptors, 0x8000, {0x11, 0x01});
     descriptor(audio_descriptors, 0x8014,
                {0xf3, 0x03, 0x01, 0x10, 0x11, 0xff, 0x5f, 'j', 'p', 'n'});
     timing_descriptors(audio_descriptors, 1, 180000, 2);
@@ -1158,6 +1161,9 @@ void test_track_discovery_and_deduplication() {
     check(sink.tracks[0].presentation_regions ==
               std::vector<aribtlv::MpuPresentationRegion>{{1, 2, 1}, {2, 3, 4}},
           "MPU presentation-region descriptor was not exposed on the track");
+    check(sink.tracks[0].asset_groups ==
+              std::vector<aribtlv::AssetGroupInfo>{{0x00, 0x01}},
+          "asset group metadata was not exposed on the video track");
     check(sink.tracks[1].codec == aribtlv::Codec::AacLatm && sink.tracks[1].language == "jpn",
           "AAC-LATM metadata was not parsed from MPT descriptors");
     check(sink.tracks[1].audio.has_value() &&
@@ -1167,6 +1173,9 @@ void test_track_discovery_and_deduplication() {
               sink.tracks[1].audio->main_component &&
               sink.tracks[1].audio->sample_rate == 48000,
           "MH audio component metadata was not exposed on the audio track");
+    check(sink.tracks[1].asset_groups ==
+              std::vector<aribtlv::AssetGroupInfo>{{0x10, 0x00}, {0x11, 0x01}},
+          "multiple asset group descriptors were not preserved on the audio track");
     check(sink.tracks[2].codec == aribtlv::Codec::Ttml &&
               sink.tracks[2].component_tag == 0x1230,
           "TTML metadata was not parsed from MPT descriptors");

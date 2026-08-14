@@ -170,6 +170,14 @@ struct DataAssetInfo {
     std::vector<MpuPresentationRegion> presentation_regions;
 };
 
+// ARIB STD-B60 Asset Group Descriptor. An asset may belong to more than one
+// group, notably when low-layer audio is shared by multiple high-layer assets.
+struct AssetGroupInfo {
+    std::uint8_t group_identification = 0;
+    std::uint8_t selection_level = 0;
+    bool operator==(const AssetGroupInfo&) const = default;
+};
+
 struct DataUnit {
     std::uint32_t context_id = 0;
     std::uint16_t packet_id = 0;
@@ -471,6 +479,7 @@ struct TrackInfo {
     std::optional<VideoInfo> video;
     std::optional<AudioInfo> audio;
     std::optional<SubtitleInfo> subtitle;
+    std::vector<AssetGroupInfo> asset_groups;
     std::vector<MpuPresentationRegion> presentation_regions;
 };
 

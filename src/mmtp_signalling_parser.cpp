@@ -152,6 +152,9 @@ bool parse_descriptors(ByteReader& reader, AssetMetadata& metadata,
                 if (!values.read_u32(sequence) || !values.read_view(8, ntp)) return false;
                 metadata.timestamps[sequence] = TimestampMapping{read_be64(ntp)};
             }
+        } else if (tag == 0x8000) {
+            if (length != 2) return false;
+            metadata.asset_groups.push_back(AssetGroupInfo{payload[0], payload[1]});
         } else if (tag == 0x8003) {
             ByteReader values(payload, length);
             while (values.remaining() != 0) {
@@ -1240,6 +1243,7 @@ bool MmtpParser::parse_mpt(const std::uint8_t* data, const std::size_t size,
         track.timescale = metadata.timescale;
         track.audio = metadata.audio;
         track.subtitle = metadata.subtitle;
+        track.asset_groups = metadata.asset_groups;
         track.presentation_regions = metadata.presentation_regions;
 
         bool supported = true;

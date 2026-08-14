@@ -37,6 +37,7 @@ struct AssetMetadata {
     std::optional<VideoInfo> video;
     std::optional<AudioInfo> audio;
     std::optional<SubtitleInfo> subtitle;
+    std::vector<AssetGroupInfo> asset_groups;
     std::vector<MpuPresentationRegion> presentation_regions;
     bool aac_latm = false;
     bool ttml = false;

@@ -231,6 +231,7 @@ private:
                left.timescale == right.timescale && left.video == right.video &&
                same_audio(left.audio, right.audio) &&
                same_subtitle(left.subtitle, right.subtitle) &&
+               left.asset_groups == right.asset_groups &&
                left.presentation_regions == right.presentation_regions;
     }
 
