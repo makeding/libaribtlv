@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "byte_reader.hpp"
@@ -56,6 +57,12 @@ void MmtpParser::accept_signalling_unit(const std::uint16_t packet_id,
 }
 
 namespace {
+
+constexpr std::string_view kHdrProgrammeIcon = "\xF0\x9F\x86\xA7";
+
+bool has_hdr_programme_icon(const std::string_view value) noexcept {
+    return value.find(kHdrProgrammeIcon) != std::string_view::npos;
+}
 
 bool skip_general_location(ByteReader& reader, std::optional<std::uint16_t>& packet_id) {
     std::uint8_t type = 0;
@@ -503,6 +510,7 @@ bool parse_short_event_descriptor(const std::uint8_t* payload, const std::size_t
     const auto title_length = static_cast<std::size_t>(payload[offset++]);
     if (title_length > length - offset) return false;
     event.title.assign(reinterpret_cast<const char*>(payload + offset), title_length);
+    event.hdr_programme_icon = has_hdr_programme_icon(event.title);
     offset += title_length;
     if (length - offset < 2) return false;
     const auto text_length = static_cast<std::size_t>(read_be16(payload + offset));

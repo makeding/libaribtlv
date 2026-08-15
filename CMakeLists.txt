@@ -25,6 +25,7 @@ add_library(aribtlv
     src/mmtp_signalling_tables.cpp
     src/recording.cpp
     src/tlv_parser.cpp
+    src/video_presentation.cpp
 )
 add_library(aribtlv::aribtlv ALIAS aribtlv)
 

@@ -1,5 +1,6 @@
 #include <aribtlv/demuxer.hpp>
 #include <aribtlv/recording.hpp>
+#include <aribtlv/video_presentation.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -721,8 +722,8 @@ std::vector<std::uint8_t> signalling_tlv(const std::uint32_t sequence,
     return tlv(0x03, compressed_payload);
 }
 
-std::vector<std::uint8_t> mh_eit_message() {
-    const std::string title = "録画された番組";
+std::vector<std::uint8_t> mh_eit_message(const bool hdr = false) {
+    const std::string title = hdr ? "録画された番組\xF0\x9F\x86\xA7" : "録画された番組";
     const std::string description = "番組概要";
     std::vector<std::uint8_t> short_event{'j', 'p', 'n',
         static_cast<std::uint8_t>(title.size())};
@@ -878,7 +879,8 @@ void test_mh_eit_program_events() {
               event.duration_seconds == std::optional<std::uint32_t>{6330},
           "MH-EIT MJD/BCD time was not converted from JST");
     check(event.running_status == 4 && !event.free_ca_mode && event.language == "jpn" &&
-              event.title == "録画された番組" && event.description == "番組概要",
+              event.title == "録画された番組" && !event.hdr_programme_icon &&
+              event.description == "番組概要",
           "MH short-event descriptor was not parsed");
     check(event.extended_description == "More" && event.extended_items.size() == 1 &&
               event.extended_items[0].description == "Cast" &&
@@ -894,6 +896,19 @@ void test_mh_eit_program_events() {
               event.series->series_id == 0x1234 && event.series->episode_number == 1 &&
               event.series->last_episode_number == 12 && event.series->name == "Series",
           "MH audio-component/series event descriptors were not parsed");
+}
+
+void test_mh_eit_hdr_programme_icon() {
+    const auto message = mh_eit_message(true);
+    const auto stream = signalling_tlv(1, 0, message);
+    TestSink sink;
+    aribtlv::Demuxer demuxer(sink);
+    demuxer.push(stream.data(), stream.size());
+    demuxer.flush();
+    check(sink.events.size() == 1 && sink.events.front().hdr_programme_icon &&
+              aribtlv::video_presentation_hint(sink.events.front()) ==
+                  aribtlv::VideoPresentationHint::Hdr,
+          "MH-EIT structured HDR programme icon was not preserved");
 }
 
 std::vector<std::uint8_t> emt_message(const std::uint8_t version,
@@ -2651,6 +2666,24 @@ void test_leap_indicator_zero_is_inert() {
           "leap indicator 0 changed the third access unit's timing");
 }
 
+void test_video_presentation_hint() {
+    aribtlv::EventInfo event;
+    event.title = "普通の番組";
+    check(aribtlv::video_presentation_hint(event) ==
+              aribtlv::VideoPresentationHint::Unknown,
+          "an unmarked programme was incorrectly classified as HDR");
+
+    event.title = "番組\xF0\x9F\x86\xA7";
+    check(aribtlv::video_presentation_hint(event) ==
+              aribtlv::VideoPresentationHint::Unknown,
+          "free-form title text was treated as a structured HDR icon");
+
+    event.hdr_programme_icon = true;
+    check(aribtlv::video_presentation_hint(event) ==
+              aribtlv::VideoPresentationHint::Hdr,
+          "the structured HDR programme icon was not recognized");
+}
+
 } // namespace
 
 int main() {
@@ -2671,6 +2704,7 @@ int main() {
     test_service_state_reset_notifications();
     test_independent_m2_sdt_and_tot();
     test_mh_eit_program_events();
+    test_mh_eit_hdr_programme_icon();
     test_emt_stream_events();
     test_viewer_participation_notifications();
     test_dynamic_audio_layout_metadata();
@@ -2698,6 +2732,7 @@ int main() {
     test_leap_second_insertion_corrects_presentation_timeline();
     test_leap_second_deletion_corrects_presentation_timeline();
     test_leap_indicator_zero_is_inert();
+    test_video_presentation_hint();
     std::cout << "all tests passed\n";
     return 0;
 }

@@ -284,6 +284,9 @@ struct EventInfo {
     bool free_ca_mode = false;
     std::string language;
     std::string title;
+    // The ARIB HDR programme icon was present in the structured short-event
+    // title field. This is programme metadata, not a claim about HEVC pixels.
+    bool hdr_programme_icon = false;
     std::string description;
     std::string extended_description;
     std::vector<ExtendedEventItem> extended_items;

@@ -603,7 +603,8 @@ private:
             found->second.genres == info.genres &&
             found->second.parental_ratings == info.parental_ratings &&
             found->second.audio_components == info.audio_components &&
-            found->second.series == info.series) {
+            found->second.series == info.series &&
+            found->second.hdr_programme_icon == info.hdr_programme_icon) {
             return;
         }
         events_[key] = info;
