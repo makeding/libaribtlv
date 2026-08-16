@@ -23,11 +23,11 @@ extern "C" {
 #endif
 
 #define ARIBTLV_VERSION_MAJOR 0
-#define ARIBTLV_VERSION_MINOR 4
+#define ARIBTLV_VERSION_MINOR 5
 #define ARIBTLV_VERSION_PATCH 0
 #define ARIBTLV_VERSION_INT \
     ((ARIBTLV_VERSION_MAJOR << 16) | (ARIBTLV_VERSION_MINOR << 8) | ARIBTLV_VERSION_PATCH)
-#define ARIBTLV_C_API_VERSION 4
+#define ARIBTLV_C_API_VERSION 5
 
 typedef struct aribtlv_demuxer aribtlv_demuxer;
 typedef struct aribtlv_duration_probe aribtlv_duration_probe;
@@ -38,8 +38,19 @@ typedef enum aribtlv_result {
     ARIBTLV_ERROR_INVALID_ARGUMENT = -1,
     ARIBTLV_ERROR_OUT_OF_MEMORY = -2,
     ARIBTLV_ERROR_DEMUX = -3,
-    ARIBTLV_ERROR_INTERNAL = -4
+    ARIBTLV_ERROR_INTERNAL = -4,
+    ARIBTLV_ERROR_BUFFER_TOO_SMALL = -5
 } aribtlv_result;
+
+typedef enum aribtlv_hlg_sdr_lut_profile {
+    ARIBTLV_HLG_SDR_LUT_DISPLAY = 0,
+    ARIBTLV_HLG_SDR_LUT_BT2446_PROTOTYPE = 1
+} aribtlv_hlg_sdr_lut_profile;
+
+typedef struct aribtlv_hlg_sdr_lut_info {
+    uint32_t dimension;
+    size_t rgb_float_count;
+} aribtlv_hlg_sdr_lut_info;
 
 typedef enum aribtlv_codec {
     ARIBTLV_CODEC_HEVC = 0,
@@ -298,6 +309,16 @@ typedef struct aribtlv_recording_seek_result {
 
 ARIBTLV_API uint32_t aribtlv_version(void);
 ARIBTLV_API const char *aribtlv_version_string(void);
+/*
+ * LUT data contains interleaved RGB float triplets. Red changes fastest,
+ * followed by green and blue, matching the Iridas .cube ordering used by
+ * FFmpeg's lut3d filter. Values are the exact 8-bit LUT entries normalized
+ * to 0..1. The caller owns the output buffer.
+ */
+ARIBTLV_API int aribtlv_hlg_sdr_lut_describe(
+    aribtlv_hlg_sdr_lut_profile profile, aribtlv_hlg_sdr_lut_info *info);
+ARIBTLV_API int aribtlv_hlg_sdr_lut_generate(
+    aribtlv_hlg_sdr_lut_profile profile, float *rgb, size_t rgb_float_count);
 ARIBTLV_API void aribtlv_callbacks_init(aribtlv_callbacks *callbacks);
 ARIBTLV_API void aribtlv_config_init(aribtlv_config *config);
 ARIBTLV_API void aribtlv_duration_probe_options_init(

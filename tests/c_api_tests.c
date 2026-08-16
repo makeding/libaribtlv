@@ -1,6 +1,7 @@
 #include <aribtlv/aribtlv.h>
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 struct state {
@@ -26,7 +27,46 @@ int main(void)
 
     CHECK(aribtlv_version() == ARIBTLV_VERSION_INT);
     CHECK(strcmp(aribtlv_version_string(), "0.4.0") == 0);
-    CHECK(ARIBTLV_C_API_VERSION == 4);
+    CHECK(ARIBTLV_C_API_VERSION == 5);
+
+    aribtlv_hlg_sdr_lut_info lut_info;
+    CHECK(aribtlv_hlg_sdr_lut_describe(
+              ARIBTLV_HLG_SDR_LUT_DISPLAY, &lut_info) == ARIBTLV_OK);
+    CHECK(lut_info.dimension == 33U &&
+          lut_info.rgb_float_count == 33U * 33U * 33U * 3U);
+    aribtlv_hlg_sdr_lut_info prototype_info;
+    CHECK(aribtlv_hlg_sdr_lut_describe(
+              ARIBTLV_HLG_SDR_LUT_BT2446_PROTOTYPE, &prototype_info) == ARIBTLV_OK);
+    CHECK(prototype_info.dimension == 128U &&
+          prototype_info.rgb_float_count == 128U * 128U * 128U * 3U);
+    const size_t lut_value_count = lut_info.rgb_float_count;
+    float *lut = malloc(lut_value_count * sizeof(*lut));
+    CHECK(lut != NULL);
+    CHECK(aribtlv_hlg_sdr_lut_generate(
+              ARIBTLV_HLG_SDR_LUT_DISPLAY, lut, lut_value_count) == ARIBTLV_OK);
+    CHECK(lut[0] == 0.0F && lut[1] == 0.0F && lut[2] == 0.0F);
+    const float one_step = 8.0F / 255.0F;
+    CHECK(lut[3] == one_step &&
+          lut[33U * 3U + 1U] == one_step &&
+          lut[33U * 33U * 3U + 2U] == one_step);
+    CHECK(lut[lut_value_count - 3] == 1.0F &&
+          lut[lut_value_count - 2] == 1.0F &&
+          lut[lut_value_count - 1] == 1.0F);
+    lut[0] = 0.25F;
+    CHECK(aribtlv_hlg_sdr_lut_generate(
+              ARIBTLV_HLG_SDR_LUT_DISPLAY, lut, lut_value_count - 1) ==
+          ARIBTLV_ERROR_BUFFER_TOO_SMALL);
+    CHECK(lut[0] == 0.25F);
+    free(lut);
+    CHECK(aribtlv_hlg_sdr_lut_describe(
+              (aribtlv_hlg_sdr_lut_profile)99, &lut_info) ==
+          ARIBTLV_ERROR_INVALID_ARGUMENT);
+    CHECK(aribtlv_hlg_sdr_lut_describe(
+              ARIBTLV_HLG_SDR_LUT_DISPLAY, NULL) ==
+          ARIBTLV_ERROR_INVALID_ARGUMENT);
+    CHECK(aribtlv_hlg_sdr_lut_generate(
+              ARIBTLV_HLG_SDR_LUT_DISPLAY, NULL, lut_value_count) ==
+          ARIBTLV_ERROR_INVALID_ARGUMENT);
 
     aribtlv_callbacks_init(&callbacks);
     callbacks.on_error = on_error;

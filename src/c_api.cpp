@@ -2,6 +2,7 @@
 
 #include <aribtlv/demuxer.hpp>
 #include <aribtlv/duration_probe.hpp>
+#include <aribtlv/hlg_sdr_tone_mapping.hpp>
 #include <aribtlv/recording.hpp>
 
 #include <algorithm>
@@ -442,6 +443,57 @@ extern "C" {
 uint32_t aribtlv_version(void) { return ARIBTLV_VERSION_INT; }
 
 const char* aribtlv_version_string(void) { return ARIBTLV_VERSION_STRING; }
+
+int aribtlv_hlg_sdr_lut_describe(const aribtlv_hlg_sdr_lut_profile profile,
+                                 aribtlv_hlg_sdr_lut_info* info) {
+    if (!info) return ARIBTLV_ERROR_INVALID_ARGUMENT;
+    size_t dimension = 0;
+    switch (profile) {
+    case ARIBTLV_HLG_SDR_LUT_DISPLAY:
+        dimension = aribtlv::kHlgSdrColorLutSize;
+        break;
+    case ARIBTLV_HLG_SDR_LUT_BT2446_PROTOTYPE:
+        dimension = aribtlv::kHlgSdrPrototypeColorLutSize;
+        break;
+    default:
+        return ARIBTLV_ERROR_INVALID_ARGUMENT;
+    }
+    info->dimension = static_cast<uint32_t>(dimension);
+    info->rgb_float_count = dimension * dimension * dimension * 3U;
+    return ARIBTLV_OK;
+}
+
+int aribtlv_hlg_sdr_lut_generate(const aribtlv_hlg_sdr_lut_profile profile,
+                                 float* rgb, const size_t rgb_float_count) {
+    aribtlv_hlg_sdr_lut_info info{};
+    const auto described = aribtlv_hlg_sdr_lut_describe(profile, &info);
+    if (described != ARIBTLV_OK || !rgb) return ARIBTLV_ERROR_INVALID_ARGUMENT;
+    if (rgb_float_count < info.rgb_float_count) return ARIBTLV_ERROR_BUFFER_TOO_SMALL;
+    try {
+        const auto lut = profile == ARIBTLV_HLG_SDR_LUT_BT2446_PROTOTYPE
+            ? aribtlv::hlg_sdr_prototype_color_lut()
+            : aribtlv::hlg_sdr_color_lut();
+        const auto columns = lut.width / lut.size;
+        size_t output = 0;
+        for (size_t blue = 0; blue < lut.size; ++blue) {
+            for (size_t green = 0; green < lut.size; ++green) {
+                for (size_t red = 0; red < lut.size; ++red) {
+                    const auto x = (blue % columns) * lut.size + red;
+                    const auto y = (blue / columns) * lut.size + green;
+                    const auto offset = (y * lut.width + x) * 4U;
+                    rgb[output++] = static_cast<float>(lut.rgba[offset]) / 255.0F;
+                    rgb[output++] = static_cast<float>(lut.rgba[offset + 1U]) / 255.0F;
+                    rgb[output++] = static_cast<float>(lut.rgba[offset + 2U]) / 255.0F;
+                }
+            }
+        }
+        return ARIBTLV_OK;
+    } catch (const std::bad_alloc&) {
+        return ARIBTLV_ERROR_OUT_OF_MEMORY;
+    } catch (...) {
+        return ARIBTLV_ERROR_INTERNAL;
+    }
+}
 
 void aribtlv_callbacks_init(aribtlv_callbacks* callbacks) {
     if (!callbacks) return;
