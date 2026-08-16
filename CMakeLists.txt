@@ -119,6 +119,10 @@ if(BUILD_TESTING)
     add_executable(aribtlv-recording-tests tests/recording_tests.cpp)
     target_link_libraries(aribtlv-recording-tests PRIVATE aribtlv::aribtlv)
 
+    add_executable(aribtlv-hlg-sdr-tone-mapping-tests
+        tests/hlg_sdr_tone_mapping_tests.cpp)
+    target_link_libraries(aribtlv-hlg-sdr-tone-mapping-tests PRIVATE aribtlv::aribtlv)
+
     add_executable(aribtlv-package-api-tests tests/package/main.cpp)
     target_link_libraries(aribtlv-package-api-tests PRIVATE aribtlv::aribtlv)
 
@@ -130,6 +134,7 @@ if(BUILD_TESTING)
             aribtlv-application-resources-tests
             aribtlv-demuxer-tests
             aribtlv-recording-tests
+            aribtlv-hlg-sdr-tone-mapping-tests
             aribtlv-package-api-tests
             aribtlv-c-api-tests)
         if(MSVC)
@@ -144,6 +149,8 @@ if(BUILD_TESTING)
              COMMAND aribtlv-application-resources-tests)
     add_test(NAME aribtlv-demuxer-tests COMMAND aribtlv-demuxer-tests)
     add_test(NAME aribtlv-recording-tests COMMAND aribtlv-recording-tests)
+    add_test(NAME aribtlv-hlg-sdr-tone-mapping-tests
+             COMMAND aribtlv-hlg-sdr-tone-mapping-tests)
     add_test(NAME aribtlv-package-api-tests COMMAND aribtlv-package-api-tests)
     add_test(NAME aribtlv-c-api-tests COMMAND aribtlv-c-api-tests)
 endif()
