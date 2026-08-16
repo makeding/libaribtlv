@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.0] - 2026-08-16
+
+Commit range: `d72b3d4..4b3853a`
+
+- Expose the structured MH-EIT HDR programme icon and a positive-only video
+  presentation hint without treating a missing icon as SDR.
+- Add header-only HLG-to-SDR colour conversion and packed 3D LUT generation,
+  including the calibrated BT.2446 prototype and numerical regression tests.
+- Expose the LUT through the stable C API for direct FFmpeg integration.
+
 ## [0.4.0] - 2026-08-15
 
 Commit range: `b807bd0..d72b3d4`

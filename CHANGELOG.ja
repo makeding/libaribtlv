@@ -1,5 +1,15 @@
 # 変更履歴
 
+## [0.5.0] - 2026-08-16
+
+Commit range: `d72b3d4..4b3853a`
+
+- MH-EIT の構造化 HDR 番組アイコンと positive-only の映像 presentation hint を
+  公開し、アイコンがない場合を SDR として扱わないようにしました。
+- header-only の HLG-to-SDR 色変換と packed 3D LUT 生成を追加し、調整済みの
+  BT.2446 prototype と数値回帰テストを含めました。
+- FFmpeg から直接連携できるよう、安定 C API から LUT を公開しました。
+
 ## [0.4.0] - 2026-08-15
 
 Commit range: `b807bd0..d72b3d4`

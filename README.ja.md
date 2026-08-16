@@ -12,8 +12,8 @@ WebAssembly アダプターで共有する次のコア機能を提供します�
 - ARIB-HTML5 アプリケーションリソースの組み立てとメモリ内ストア
 - 録画インデックス、シークポイント、長さ計測、Range ベースの probe
 
-プレイヤーのセッション制御、MSE/fMP4 remux、JavaScript binding、CLI、
-ブラウザ demo は sibling の `tlvdemux` プロジェクトに置きます。
+プレイヤーのセッション制御、MSE/fMP4 remux、JavaScript binding、一般的な再生
+command、ブラウザ demo は sibling の `tlvdemux` プロジェクトに置きます。
 
 ## ビルドとテスト
 
@@ -70,6 +70,24 @@ display / compression mode、MPU sequence、reference-start の media timestamp�
 同一 MPU の resource view も含まれます。これらは callback 中だけ有効な view で、
 C++ ABI に依存しない FFmpeg などの adapter から利用できます。
 
+同じ安定 C API から、C++ ABI を使わずに HLG-to-SDR LUT を取得できます。
+
+```c
+aribtlv_hlg_sdr_lut_info info;
+aribtlv_hlg_sdr_lut_describe(
+    ARIBTLV_HLG_SDR_LUT_BT2446_PROTOTYPE, &info);
+float *rgb = malloc(info.rgb_float_count * sizeof(*rgb));
+aribtlv_hlg_sdr_lut_generate(
+    ARIBTLV_HLG_SDR_LUT_BT2446_PROTOTYPE,
+    rgb,
+    info.rgb_float_count);
+```
+
+buffer の所有権は caller にあります。内容は 0..1 の RGB float triplet で、red、
+green、blue の順に座標が変化します。Iridas `.cube` と FFmpeg `lut3d` が読む順序と
+同じです。buffer が不足する場合は部分出力せず
+`ARIBTLV_ERROR_BUFFER_TOO_SMALL` を返します。
+
 ## C++ API
 
 ```cpp
@@ -104,6 +122,10 @@ C API に委譲します。`libaribtlv` は独立した MIT ライセンスで�
 の FFmpeg build からリンクされても本 repository のライセンスは変わりません。
 FFmpeg のコードをこのライブラリへコピーすると元のライセンスが残るため、
 core 実装には取り込みません。
+
+FFmpeg filter は C API の float buffer を直接利用できます。LUT が想定する HLG
+RGB code value を渡す色変換と、出力を SDR として mark する処理は FFmpeg filter
+graph 側の責任です。demuxer は復号後 pixel を処理しません。
 
 ## ライセンス
 

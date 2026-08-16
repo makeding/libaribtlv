@@ -12,8 +12,8 @@ native receivers, command-line tools, and WebAssembly adapters:
 - ARIB-HTML5 application-resource assembly and an in-memory resource store;
 - recording indexes, seek points, duration tracking, and range-based probing.
 
-Player session policy, MSE/fMP4 remuxing, JavaScript bindings, command-line
-programs, and browser demos live in the sibling `tlvdemux` project.
+Player session policy, MSE/fMP4 remuxing, JavaScript bindings, general playback
+commands, and browser demos live in the sibling `tlvdemux` project.
 
 ## Build and test
 
@@ -74,6 +74,24 @@ sequence, the reference-start media timestamp, and same-MPU resource views.
 These fields are callback-lifetime views and are intended for adapters such as
 FFmpeg without requiring C++ ABI access.
 
+The same stable C API exposes the HLG-to-SDR LUTs without requiring a C++ ABI:
+
+```c
+aribtlv_hlg_sdr_lut_info info;
+aribtlv_hlg_sdr_lut_describe(
+    ARIBTLV_HLG_SDR_LUT_BT2446_PROTOTYPE, &info);
+float *rgb = malloc(info.rgb_float_count * sizeof(*rgb));
+aribtlv_hlg_sdr_lut_generate(
+    ARIBTLV_HLG_SDR_LUT_BT2446_PROTOTYPE,
+    rgb,
+    info.rgb_float_count);
+```
+
+The caller owns the buffer. It contains normalized RGB float triplets with red
+changing fastest, then green, then blue. This is the ordering consumed by
+Iridas `.cube` files and FFmpeg's `lut3d` filter. An undersized buffer is
+rejected with `ARIBTLV_ERROR_BUFFER_TOO_SMALL` without partial output.
+
 ## C++ API
 
 ```cpp
@@ -113,6 +131,11 @@ tree and use the installed C API for parsing. `libaribtlv` is independently MIT
 licensed; linking it from an LGPL/GPL FFmpeg build does not change the license
 of this repository. Code copied from FFmpeg into this library would retain its
 original license and therefore must not be used for the core implementation.
+
+An FFmpeg filter can consume the C API's float buffer directly. The filter graph
+remains responsible for presenting the LUT with the expected HLG RGB code
+values and for marking the result as SDR; the demuxer does not process decoded
+pixels.
 
 ## License
 

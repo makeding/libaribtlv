@@ -1,5 +1,15 @@
 # 更新日志
 
+## [0.5.0] - 2026-08-16
+
+Commit range: `d72b3d4..4b3853a`
+
+- 暴露结构化 MH-EIT HDR 节目标记和仅作肯定判断的视频呈现提示，不将缺少标记解释为
+  SDR。
+- 增加 header-only HLG-to-SDR 色彩转换和 packed 3D LUT 生成，包括完成标定的
+  BT.2446 原型及数值回归测试。
+- 通过稳定 C API 暴露 LUT，供 FFmpeg 直接接入。
+
 ## [0.4.0] - 2026-08-15
 
 Commit range: `b807bd0..d72b3d4`
