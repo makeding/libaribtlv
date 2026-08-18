@@ -109,6 +109,10 @@ if(BUILD_TESTING)
     add_executable(aribtlv-asset-layers-tests tests/asset_layers_tests.cpp)
     target_link_libraries(aribtlv-asset-layers-tests PRIVATE aribtlv::aribtlv)
 
+    add_executable(aribtlv-video-color-tests tests/video_color_tests.cpp)
+    target_link_libraries(aribtlv-video-color-tests PRIVATE aribtlv::aribtlv)
+    add_test(NAME aribtlv-video-color-tests COMMAND aribtlv-video-color-tests)
+
     add_executable(aribtlv-application-resources-tests
         tests/application_resources_tests.cpp)
     target_link_libraries(aribtlv-application-resources-tests PRIVATE aribtlv::aribtlv)
