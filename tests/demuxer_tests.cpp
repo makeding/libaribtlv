@@ -388,7 +388,9 @@ std::vector<std::uint8_t> layout_configuration_table() {
     return table;
 }
 
-std::vector<std::uint8_t> discovery_message() {
+std::vector<std::uint8_t> discovery_message(
+    const std::uint8_t b60_transfer_characteristics = 5,
+    const std::uint8_t hdr_wcg_idc = 2) {
     std::vector<std::uint8_t> program_descriptors;
     descriptor(program_descriptors, 0x8034,
                {0x1f, 0x1f, 0xf1, 0x00, 0xff, 0x02, 0x00, 0xff, 0x03,
@@ -399,8 +401,11 @@ std::vector<std::uint8_t> discovery_message() {
     descriptor(video_descriptors, 0x8000, {0x00, 0x01});
     descriptor(video_descriptors, 0x8abc, {0xde, 0xad, 0xbe});
     descriptor(video_descriptors, 0x800a,
-               {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02});
-    descriptor(video_descriptors, 0x8010, {0, 0, 0, 0, 0x50, 'j', 'p', 'n'});
+               {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, hdr_wcg_idc});
+    descriptor(video_descriptors, 0x8010,
+               {0, 0, 0, 0,
+                static_cast<std::uint8_t>(b60_transfer_characteristics << 4U),
+                'j', 'p', 'n'});
     descriptor(video_descriptors, 0x8003,
                {0, 0, 0, 1, 2, 1, 0,
                 0, 0, 0, 2, 3, 4, 2, 0xaa, 0xbb});
@@ -701,8 +706,10 @@ std::vector<std::uint8_t> signalling_mmtp(const std::uint32_t sequence,
     return mmtp;
 }
 
-std::vector<std::uint8_t> discovery_stream() {
-    const auto pa = discovery_message();
+std::vector<std::uint8_t> discovery_stream(
+    const std::uint8_t b60_transfer_characteristics = 5,
+    const std::uint8_t hdr_wcg_idc = 2) {
+    const auto pa = discovery_message(b60_transfer_characteristics, hdr_wcg_idc);
     const auto mmtp = signalling_mmtp(1, 0, pa);
     std::vector<std::uint8_t> compressed_payload{0x00, 0x10, 0x61};
     compressed_payload.insert(compressed_payload.end(), mmtp.begin(), mmtp.end());
@@ -1219,6 +1226,18 @@ void test_track_discovery_and_deduplication() {
     check(sink.tracks.size() == 6 && sink.tracks[3].track_id == stable_id &&
               sink.layouts.size() == 2,
           "reset changed a track's Demuxer-lifetime stable identity");
+}
+
+void test_track_discovery_pq_signal() {
+    const auto data = discovery_stream(4, 2);
+    TestSink sink;
+    aribtlv::Demuxer demuxer(sink);
+    demuxer.push(data.data(), data.size());
+    demuxer.flush();
+    check(sink.tracks.size() == 3 && sink.tracks[0].video.has_value() &&
+              sink.tracks[0].video->hdr_wcg_idc == 2 &&
+              sink.tracks[0].video->video_transfer_characteristics == 4,
+          "B60 PQ video descriptor packet was not propagated to TrackInfo");
 }
 
 // ARIB STD-B60 Table 9-3's TMD == 0010 branch of Additional_Arib_Subtitle_Info()
@@ -2696,6 +2715,7 @@ int main() {
     test_signalling_fragmentation_aggregation_and_m2();
     test_global_packet_state_budget();
     test_track_discovery_and_deduplication();
+    test_track_discovery_pq_signal();
     test_truncated_subtitle_reference_start_time_is_rejected();
     test_service_selection_clears_layout_state();
     test_application_and_data_transmission_signalling();

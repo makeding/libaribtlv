@@ -25,4 +25,8 @@ int main() {
     check(aribtlv::is_hlg_transfer(VideoTransferCharacteristics::AribHlg));
     check(aribtlv::is_hdr_transfer(VideoTransferCharacteristics::Smpte2084));
     check(!aribtlv::is_hdr_transfer(VideoTransferCharacteristics::Bt709));
+    check(aribtlv::is_bt2020_hlg(9, 18, 9, false));
+    check(!aribtlv::is_bt2020_hlg(9, 18, 9, true));
+    check(aribtlv::is_bt2020_pq(9, 16, 9, false));
+    check(!aribtlv::is_bt2020_pq(9, 18, 9, false));
 }
