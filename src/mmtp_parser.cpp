@@ -119,6 +119,7 @@ void MmtpParser::reset() {
     mh_sdt_staging_.clear();
     committed_mh_ait_raw_.clear();
     latest_full_ntp_.reset();
+    has_mpt_full_ntp_ = false;
 }
 
 void MmtpParser::flush() {

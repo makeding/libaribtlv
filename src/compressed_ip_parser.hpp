@@ -9,6 +9,7 @@
 
 #include "mmtp_parser.hpp"
 #include "tlv_parser.hpp"
+#include "tlv_transport_parser.hpp"
 
 namespace aribtlv::detail {
 
@@ -34,6 +35,12 @@ public:
     using DataTransmissionCallback = std::function<void(DataTransmissionTable)>;
     using DataDirectoryCallback = std::function<void(DataDirectoryTable)>;
     using DataAssetManagementCallback = std::function<void(DataAssetManagementTable)>;
+    using FlowCallback = std::function<void(IpDataFlow)>;
+    using NtpCallback = std::function<void(TransportNtpClock)>;
+    using NitCallback = std::function<void(TlvNetworkInformation)>;
+    using AddressMapCallback = std::function<void(AddressMap)>;
+    using RawTableCallback = std::function<void(RawSignallingTable)>;
+    using UnknownDescriptorCallback = std::function<void(UnknownDescriptor)>;
 
     CompressedIpParser(const Limits&, ServiceCallback, TrackCallback,
                        AccessUnitCallback, ApplicationServiceCallback,
@@ -42,7 +49,9 @@ public:
                        StreamEventCallback, ViewerParticipationCallback,
                        ApplicationCallback, MptSnapshotCallback, MhAitSnapshotCallback,
                        DataTransmissionCallback, DataDirectoryCallback,
-                       DataAssetManagementCallback, ErrorCallback);
+                       DataAssetManagementCallback, FlowCallback, NtpCallback,
+                       NitCallback, AddressMapCallback, RawTableCallback,
+                       UnknownDescriptorCallback, ErrorCallback);
 
     void consume(const TlvPacketView&);
     void flush();
@@ -51,7 +60,6 @@ public:
 
 private:
     MmtpParser* context(std::uint32_t context_id, std::uint64_t input_offset);
-    void parse_ipv6(const TlvPacketView&);
     void parse_compressed(const TlvPacketView&);
 
     Limits limits_;
@@ -75,6 +83,7 @@ private:
     DataDirectoryCallback on_data_directory_;
     DataAssetManagementCallback on_data_asset_management_;
     ErrorCallback on_error_;
+    TlvTransportParser transport_;
     std::optional<std::uint32_t> selected_service_;
     std::size_t active_packet_states_ = 0;
     std::unordered_map<std::uint32_t, std::unique_ptr<MmtpParser>> contexts_;

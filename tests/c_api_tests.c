@@ -6,6 +6,7 @@
 
 struct state {
     unsigned errors;
+    unsigned ntp_clocks;
     int callback_valid;
 };
 
@@ -16,18 +17,38 @@ static void on_error(void *opaque, const aribtlv_error *error)
     ++state->errors;
 }
 
+static void on_transport_ntp_clock(
+    void *opaque, const aribtlv_transport_ntp_clock *clock)
+{
+    struct state *state = opaque;
+    state->callback_valid = clock != NULL && clock->version == 4 &&
+        clock->mode == 5 && clock->destination_port == 123 &&
+        clock->transmit_timestamp == UINT64_C(0xa562250080000000);
+    ++state->ntp_clocks;
+}
+
+struct aribtlv_callbacks_v5_layout {
+    size_t struct_size;
+    void (*on_service)(void *, const aribtlv_service_info *);
+    void (*on_track)(void *, const aribtlv_track_info *);
+    void (*on_track_removed)(void *, const aribtlv_track_info *);
+    void (*on_access_unit)(void *, const aribtlv_access_unit *);
+    void (*on_error)(void *, const aribtlv_error *);
+    void (*on_damage)(void *, const aribtlv_damage_span *);
+};
+
 #define CHECK(condition) do { if (!(condition)) return __LINE__; } while (0)
 
 int main(void)
 {
     aribtlv_callbacks callbacks;
     aribtlv_config config;
-    struct state state = {0, 1};
+    struct state state = {0, 0, 1};
     const uint8_t incomplete_tlv[] = {0x7f, 0x03, 0x00, 0x08, 0x00};
 
     CHECK(aribtlv_version() == ARIBTLV_VERSION_INT);
     CHECK(strcmp(aribtlv_version_string(), "0.5.0") == 0);
-    CHECK(ARIBTLV_C_API_VERSION == 5);
+    CHECK(ARIBTLV_C_API_VERSION == 6);
 
     aribtlv_hlg_sdr_lut_info lut_info;
     CHECK(aribtlv_hlg_sdr_lut_describe(
@@ -70,6 +91,7 @@ int main(void)
 
     aribtlv_callbacks_init(&callbacks);
     callbacks.on_error = on_error;
+    callbacks.on_transport_ntp_clock = on_transport_ntp_clock;
     aribtlv_config_init(&config);
     config.collect_application_resources = 0;
 
@@ -79,10 +101,59 @@ int main(void)
           ARIBTLV_OK);
     CHECK(aribtlv_demuxer_flush(demuxer) == ARIBTLV_OK);
     CHECK(state.errors > 0 && state.callback_valid);
+
+    uint8_t ntp_tlv[100] = {0};
+    ntp_tlv[0] = 0x7f;
+    ntp_tlv[1] = 0x02;
+    ntp_tlv[3] = 96;
+    uint8_t *ipv6 = ntp_tlv + 4;
+    ipv6[0] = 0x60;
+    ipv6[5] = 56;
+    ipv6[6] = 17;
+    ipv6[7] = 32;
+    ipv6[23] = 2;
+    ipv6[38] = 1;
+    ipv6[39] = 1;
+    ipv6[40] = 0x01;
+    ipv6[41] = 0xc8;
+    ipv6[43] = 123;
+    ipv6[45] = 56;
+    uint8_t *ntp = ipv6 + 48;
+    ntp[0] = 0x25;
+    ntp[1] = 2;
+    ntp[2] = 6;
+    ntp[3] = 0xfa;
+    ntp[44] = 0xa5;
+    ntp[45] = 0x62;
+    ntp[46] = 0x25;
+    ntp[48 - 1] = 0;
+    ntp[40] = 0xa5;
+    ntp[41] = 0x62;
+    ntp[42] = 0x25;
+    ntp[43] = 0x00;
+    ntp[44] = 0x80;
+    ntp[45] = 0x00;
+    ntp[46] = 0x00;
+    ntp[47] = 0x00;
+    CHECK(aribtlv_demuxer_push(demuxer, ntp_tlv, sizeof(ntp_tlv)) == ARIBTLV_OK);
+    CHECK(aribtlv_demuxer_flush(demuxer) == ARIBTLV_OK);
+    CHECK(state.ntp_clocks == 1 && state.callback_valid);
     CHECK(aribtlv_demuxer_select_track(demuxer, (aribtlv_track_kind)99, 1) ==
           ARIBTLV_ERROR_INVALID_ARGUMENT);
     CHECK(aribtlv_demuxer_reset(demuxer) == ARIBTLV_OK);
     CHECK(aribtlv_demuxer_last_error(demuxer)[0] == '\0');
+    aribtlv_demuxer_destroy(demuxer);
+
+    struct aribtlv_callbacks_v5_layout callbacks_v5;
+    memset(&callbacks_v5, 0, sizeof(callbacks_v5));
+    callbacks_v5.struct_size = sizeof(callbacks_v5);
+    callbacks_v5.on_error = on_error;
+    demuxer = aribtlv_demuxer_create(
+        &config, (const aribtlv_callbacks *)&callbacks_v5, &state);
+    CHECK(demuxer != NULL);
+    CHECK(aribtlv_demuxer_push(demuxer, incomplete_tlv, sizeof(incomplete_tlv)) ==
+          ARIBTLV_OK);
+    CHECK(aribtlv_demuxer_flush(demuxer) == ARIBTLV_OK);
     aribtlv_demuxer_destroy(demuxer);
 
     aribtlv_duration_probe_options probe_options;

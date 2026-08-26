@@ -24,6 +24,12 @@ public:
     virtual void onError(const Error&) = 0;
     virtual void onDamage(const DamageSpan&) {}
     virtual void onBroadcastClock(const BroadcastClock&) {}
+    virtual void onIpDataFlow(const IpDataFlow&) {}
+    virtual void onTransportNtpClock(const TransportNtpClock&) {}
+    virtual void onTlvNetworkInformation(const TlvNetworkInformation&) {}
+    virtual void onAddressMap(const AddressMap&) {}
+    virtual void onRawSignallingTable(RawSignallingTable&&) {}
+    virtual void onUnknownDescriptor(UnknownDescriptor&&) {}
     virtual void onEventInfo(const EventInfo&) {}
     virtual void onMhSdtSnapshot(const MhSdtSnapshot&) {}
     virtual void onMhTot(const MhTotInfo&) {}

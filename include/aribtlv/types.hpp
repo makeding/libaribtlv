@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -113,6 +114,117 @@ struct BroadcastClock {
     Timestamp broadcast_time;
     std::uint64_t input_offset = 0;
     bool discontinuity = false;
+};
+
+struct IpDataFlow {
+    std::uint32_t context_id = 0;
+    std::uint8_t sequence_number = 0;
+    std::uint8_t ip_version = 6;
+    std::array<std::uint8_t, 16> source_address{};
+    std::array<std::uint8_t, 16> destination_address{};
+    std::uint8_t next_header = 0;
+    std::uint16_t source_port = 0;
+    std::uint16_t destination_port = 0;
+    std::uint64_t input_offset = 0;
+    bool operator==(const IpDataFlow&) const = default;
+};
+
+struct TransportNtpClock {
+    std::uint8_t ip_version = 6;
+    std::array<std::uint8_t, 16> source_address{};
+    std::array<std::uint8_t, 16> destination_address{};
+    std::uint16_t source_port = 0;
+    std::uint16_t destination_port = 0;
+    std::uint8_t leap_indicator = 0;
+    std::uint8_t version = 0;
+    std::uint8_t mode = 0;
+    std::uint8_t stratum = 0;
+    std::int8_t poll = 0;
+    std::int8_t precision = 0;
+    std::uint32_t root_delay = 0;
+    std::uint32_t root_dispersion = 0;
+    std::uint32_t reference_identification = 0;
+    std::uint64_t reference_timestamp = 0;
+    std::uint64_t origin_timestamp = 0;
+    std::uint64_t receive_timestamp = 0;
+    std::uint64_t transmit_timestamp = 0;
+    // Expanded NTP-era time in microseconds from the NTP epoch.
+    Timestamp transmit_time;
+    std::uint64_t input_offset = 0;
+    bool operator==(const TransportNtpClock&) const = default;
+};
+
+struct TlvDescriptor {
+    std::uint8_t tag = 0;
+    std::vector<std::uint8_t> payload;
+    std::uint16_t section_offset = 0;
+    bool operator==(const TlvDescriptor&) const = default;
+};
+
+struct TlvNetworkStream {
+    std::uint16_t tlv_stream_id = 0;
+    std::uint16_t original_network_id = 0;
+    std::vector<TlvDescriptor> descriptors;
+    bool operator==(const TlvNetworkStream&) const = default;
+};
+
+struct TlvNetworkInformation {
+    std::uint8_t table_id = 0;
+    std::uint16_t network_id = 0;
+    std::uint8_t version = 0;
+    bool current_next = false;
+    std::uint8_t last_section_number = 0;
+    std::vector<TlvDescriptor> network_descriptors;
+    std::vector<TlvNetworkStream> streams;
+    std::uint64_t input_offset = 0;
+    bool operator==(const TlvNetworkInformation&) const = default;
+};
+
+struct AddressMapService {
+    std::uint16_t service_id = 0;
+    std::uint8_t ip_version = 0;
+    std::array<std::uint8_t, 16> source_address{};
+    std::uint8_t source_prefix_length = 0;
+    std::array<std::uint8_t, 16> destination_address{};
+    std::uint8_t destination_prefix_length = 0;
+    std::vector<std::uint8_t> private_data;
+    bool operator==(const AddressMapService&) const = default;
+};
+
+struct AddressMap {
+    std::uint8_t table_id = 0xfe;
+    std::uint16_t table_id_extension = 0;
+    std::uint8_t version = 0;
+    bool current_next = false;
+    std::uint8_t last_section_number = 0;
+    std::vector<AddressMapService> services;
+    std::uint64_t input_offset = 0;
+    bool operator==(const AddressMap&) const = default;
+};
+
+struct RawSignallingTable {
+    std::uint8_t tlv_packet_type = 0xfe;
+    std::uint8_t table_id = 0;
+    std::uint16_t table_id_extension = 0;
+    std::uint8_t version = 0;
+    bool current_next = false;
+    std::uint8_t section_number = 0;
+    std::uint8_t last_section_number = 0;
+    std::vector<std::uint8_t> data;
+    std::uint64_t input_offset = 0;
+};
+
+enum class DescriptorScope : std::uint8_t { Network, TlvStream };
+
+struct UnknownDescriptor {
+    std::uint8_t table_id = 0;
+    std::uint8_t tag = 0;
+    DescriptorScope scope = DescriptorScope::Network;
+    std::optional<std::uint16_t> tlv_stream_id;
+    std::optional<std::uint16_t> original_network_id;
+    std::uint16_t section_offset = 0;
+    std::vector<std::uint8_t> payload;
+    std::uint64_t input_offset = 0;
 };
 
 struct SubtitleInfo {

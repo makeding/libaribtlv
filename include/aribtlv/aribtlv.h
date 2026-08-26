@@ -27,7 +27,7 @@ extern "C" {
 #define ARIBTLV_VERSION_PATCH 0
 #define ARIBTLV_VERSION_INT \
     ((ARIBTLV_VERSION_MAJOR << 16) | (ARIBTLV_VERSION_MINOR << 8) | ARIBTLV_VERSION_PATCH)
-#define ARIBTLV_C_API_VERSION 5
+#define ARIBTLV_C_API_VERSION 6
 
 typedef struct aribtlv_demuxer aribtlv_demuxer;
 typedef struct aribtlv_duration_probe aribtlv_duration_probe;
@@ -196,6 +196,122 @@ typedef struct aribtlv_damage_span {
     uint8_t recovery_random_access;
 } aribtlv_damage_span;
 
+typedef struct aribtlv_ip_data_flow {
+    uint32_t context_id;
+    uint8_t sequence_number;
+    uint8_t ip_version;
+    uint8_t source_address[16];
+    uint8_t destination_address[16];
+    uint8_t next_header;
+    uint16_t source_port;
+    uint16_t destination_port;
+    uint64_t input_offset;
+} aribtlv_ip_data_flow;
+
+typedef struct aribtlv_transport_ntp_clock {
+    uint8_t ip_version;
+    uint8_t source_address[16];
+    uint8_t destination_address[16];
+    uint16_t source_port;
+    uint16_t destination_port;
+    uint8_t leap_indicator;
+    uint8_t version;
+    uint8_t mode;
+    uint8_t stratum;
+    int8_t poll;
+    int8_t precision;
+    uint32_t root_delay;
+    uint32_t root_dispersion;
+    uint32_t reference_identification;
+    uint64_t reference_timestamp;
+    uint64_t origin_timestamp;
+    uint64_t receive_timestamp;
+    uint64_t transmit_timestamp;
+    aribtlv_timestamp transmit_time;
+    uint64_t input_offset;
+} aribtlv_transport_ntp_clock;
+
+typedef struct aribtlv_tlv_descriptor {
+    uint8_t tag;
+    const uint8_t *payload;
+    size_t payload_size;
+    uint16_t section_offset;
+} aribtlv_tlv_descriptor;
+
+typedef struct aribtlv_tlv_network_stream {
+    uint16_t tlv_stream_id;
+    uint16_t original_network_id;
+    const aribtlv_tlv_descriptor *descriptors;
+    size_t descriptor_count;
+} aribtlv_tlv_network_stream;
+
+typedef struct aribtlv_tlv_network_information {
+    uint8_t table_id;
+    uint16_t network_id;
+    uint8_t version;
+    uint8_t current_next;
+    uint8_t last_section_number;
+    const aribtlv_tlv_descriptor *network_descriptors;
+    size_t network_descriptor_count;
+    const aribtlv_tlv_network_stream *streams;
+    size_t stream_count;
+    uint64_t input_offset;
+} aribtlv_tlv_network_information;
+
+typedef struct aribtlv_address_map_service {
+    uint16_t service_id;
+    uint8_t ip_version;
+    uint8_t source_address[16];
+    uint8_t source_prefix_length;
+    uint8_t destination_address[16];
+    uint8_t destination_prefix_length;
+    const uint8_t *private_data;
+    size_t private_data_size;
+} aribtlv_address_map_service;
+
+typedef struct aribtlv_address_map {
+    uint8_t table_id;
+    uint16_t table_id_extension;
+    uint8_t version;
+    uint8_t current_next;
+    uint8_t last_section_number;
+    const aribtlv_address_map_service *services;
+    size_t service_count;
+    uint64_t input_offset;
+} aribtlv_address_map;
+
+typedef struct aribtlv_raw_signalling_table {
+    uint8_t tlv_packet_type;
+    uint8_t table_id;
+    uint16_t table_id_extension;
+    uint8_t version;
+    uint8_t current_next;
+    uint8_t section_number;
+    uint8_t last_section_number;
+    const uint8_t *data;
+    size_t size;
+    uint64_t input_offset;
+} aribtlv_raw_signalling_table;
+
+typedef enum aribtlv_descriptor_scope {
+    ARIBTLV_DESCRIPTOR_NETWORK = 0,
+    ARIBTLV_DESCRIPTOR_TLV_STREAM = 1
+} aribtlv_descriptor_scope;
+
+typedef struct aribtlv_unknown_descriptor {
+    uint8_t table_id;
+    uint8_t tag;
+    aribtlv_descriptor_scope scope;
+    uint8_t has_tlv_stream_id;
+    uint16_t tlv_stream_id;
+    uint8_t has_original_network_id;
+    uint16_t original_network_id;
+    uint16_t section_offset;
+    const uint8_t *payload;
+    size_t payload_size;
+    uint64_t input_offset;
+} aribtlv_unknown_descriptor;
+
 /* Views passed to callbacks remain valid only until that callback returns. */
 typedef struct aribtlv_callbacks {
     size_t struct_size;
@@ -205,6 +321,15 @@ typedef struct aribtlv_callbacks {
     void (*on_access_unit)(void *opaque, const aribtlv_access_unit *unit);
     void (*on_error)(void *opaque, const aribtlv_error *error);
     void (*on_damage)(void *opaque, const aribtlv_damage_span *damage);
+    void (*on_ip_data_flow)(void *opaque, const aribtlv_ip_data_flow *flow);
+    void (*on_transport_ntp_clock)(void *opaque, const aribtlv_transport_ntp_clock *clock);
+    void (*on_tlv_network_information)(
+        void *opaque, const aribtlv_tlv_network_information *information);
+    void (*on_address_map)(void *opaque, const aribtlv_address_map *map);
+    void (*on_raw_signalling_table)(
+        void *opaque, const aribtlv_raw_signalling_table *table);
+    void (*on_unknown_descriptor)(
+        void *opaque, const aribtlv_unknown_descriptor *descriptor);
 } aribtlv_callbacks;
 
 typedef struct aribtlv_config {

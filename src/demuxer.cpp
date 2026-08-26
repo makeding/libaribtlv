@@ -66,6 +66,16 @@ public:
               [this](DataTransmissionTable table) { data_transmission(std::move(table)); },
               [this](DataDirectoryTable table) { data_directory(std::move(table)); },
               [this](DataAssetManagementTable table) { data_asset_management(std::move(table)); },
+              [this](IpDataFlow flow) { sink_.onIpDataFlow(flow); },
+              [this](TransportNtpClock clock) { transport_ntp(std::move(clock)); },
+              [this](TlvNetworkInformation info) { sink_.onTlvNetworkInformation(info); },
+              [this](AddressMap map) { sink_.onAddressMap(map); },
+              [this](RawSignallingTable table) {
+                  sink_.onRawSignallingTable(std::move(table));
+              },
+              [this](UnknownDescriptor descriptor) {
+                  sink_.onUnknownDescriptor(std::move(descriptor));
+              },
               [this](const ErrorCode code, const std::uint64_t offset,
                      const bool recoverable, std::string message) {
                   error(code, offset, recoverable, std::move(message));
@@ -158,6 +168,18 @@ public:
     std::optional<BroadcastClock> broadcast_clock() const { return broadcast_clock_; }
 
 private:
+    void transport_ntp(TransportNtpClock clock) {
+        transport_ntp_ = clock;
+        sink_.onTransportNtpClock(clock);
+        if (!broadcast_clock_.has_value()) {
+            broadcast_clock_ = BroadcastClock{
+                Timestamp{0, 1000000}, clock.transmit_time,
+                clock.input_offset, false,
+            };
+            sink_.onBroadcastClock(*broadcast_clock_);
+        }
+    }
+
     void clear_service_state() {
         services_.clear();
         current_tracks_.clear();
@@ -180,6 +202,7 @@ private:
     void clear_timeline_state() {
         origin_.reset();
         broadcast_clock_.reset();
+        transport_ntp_.reset();
         last_clock_mpu_sequence_.reset();
     }
 
@@ -1037,6 +1060,7 @@ private:
     };
     std::optional<TimelineOrigin> origin_;
     std::optional<BroadcastClock> broadcast_clock_;
+    std::optional<TransportNtpClock> transport_ntp_;
     std::optional<std::uint32_t> last_clock_mpu_sequence_;
 };
 

@@ -22,6 +22,12 @@ CompressedIpParser::CompressedIpParser(const Limits& limits, ServiceCallback on_
                                        DataTransmissionCallback on_data_transmission,
                                        DataDirectoryCallback on_data_directory,
                                        DataAssetManagementCallback on_data_asset_management,
+                                       FlowCallback on_flow,
+                                       NtpCallback on_ntp,
+                                       NitCallback on_nit,
+                                       AddressMapCallback on_address_map,
+                                       RawTableCallback on_raw_table,
+                                       UnknownDescriptorCallback on_unknown_descriptor,
                                        ErrorCallback on_error)
     : limits_(limits), on_service_(std::move(on_service)), on_track_(std::move(on_track)),
       on_access_unit_(std::move(on_access_unit)),
@@ -40,11 +46,23 @@ CompressedIpParser::CompressedIpParser(const Limits& limits, ServiceCallback on_
       on_data_transmission_(std::move(on_data_transmission)),
       on_data_directory_(std::move(on_data_directory)),
       on_data_asset_management_(std::move(on_data_asset_management)),
-      on_error_(std::move(on_error)) {}
+      on_error_(std::move(on_error)),
+      transport_(std::move(on_flow),
+                 [this, callback = std::move(on_ntp)](TransportNtpClock clock) {
+                     for (auto& [id, parser] : contexts_) {
+                         (void)id;
+                         parser->seed_full_ntp(clock.transmit_timestamp);
+                     }
+                     callback(std::move(clock));
+                 },
+                 std::move(on_nit), std::move(on_address_map),
+                 std::move(on_raw_table), std::move(on_unknown_descriptor),
+                 on_error_) {}
 
 void CompressedIpParser::reset() {
     contexts_.clear();
     active_packet_states_ = 0;
+    transport_.reset();
 }
 
 void CompressedIpParser::select_service(std::optional<std::uint32_t> context_id) {
@@ -91,6 +109,7 @@ MmtpParser* CompressedIpParser::context(const std::uint32_t context_id,
         },
         on_error_);
     auto* result = parser.get();
+    if (const auto ntp = transport_.latest_ntp()) result->seed_full_ntp(*ntp);
     contexts_.emplace(context_id, std::move(parser));
     on_service_(ServiceInfo{context_id, {}});
     return result;
@@ -98,50 +117,25 @@ MmtpParser* CompressedIpParser::context(const std::uint32_t context_id,
 
 void CompressedIpParser::consume(const TlvPacketView& packet) {
     switch (packet.type) {
+    case 0x01:
+        transport_.consume_ipv4(packet);
+        break;
     case 0x02:
-        parse_ipv6(packet);
+        transport_.consume_ipv6(packet);
         break;
     case 0x03:
         parse_compressed(packet);
         break;
     case 0xfe:
+        transport_.consume_tlv_si(packet);
+        break;
     case 0xff:
+        transport_.consume_null(packet);
         break;
     default:
         on_error_(ErrorCode::UnsupportedFeature, packet.input_offset, true,
                   "unsupported TLV packet type");
         break;
-    }
-}
-
-void CompressedIpParser::parse_ipv6(const TlvPacketView& packet) {
-    if (packet.size < 48) {
-        on_error_(ErrorCode::MalformedInput, packet.input_offset, true,
-                  "truncated IPv6/UDP TLV payload");
-        return;
-    }
-    if ((packet.payload[0] >> 4U) != 6 || packet.payload[6] != 17) {
-        on_error_(ErrorCode::UnsupportedFeature, packet.input_offset, true,
-                  "unsupported IPv6 next-header in TLV payload");
-        return;
-    }
-    const auto ipv6_payload_size = static_cast<std::size_t>(read_be16(packet.payload + 4));
-    if (ipv6_payload_size != packet.size - 40) {
-        on_error_(ErrorCode::MalformedInput, packet.input_offset, true,
-                  "IPv6 payload length does not match TLV payload");
-        return;
-    }
-    const auto* udp = packet.payload + 40;
-    const auto udp_size = static_cast<std::size_t>(read_be16(udp + 4));
-    if (udp_size < 8 || udp_size != packet.size - 40) {
-        on_error_(ErrorCode::MalformedInput, packet.input_offset, true,
-                  "UDP length does not match IPv6 payload");
-        return;
-    }
-    const auto destination_port = read_be16(udp + 2);
-    if (destination_port != 123) {
-        on_error_(ErrorCode::UnsupportedFeature, packet.input_offset, true,
-                  "unsupported IPv6 UDP payload (only NTP is recognized in v1)");
     }
 }
 
@@ -151,7 +145,9 @@ void CompressedIpParser::parse_compressed(const TlvPacketView& packet) {
                   "truncated compressed-IP header");
         return;
     }
-    const auto context_id = static_cast<std::uint32_t>(read_be16(packet.payload) >> 4U);
+    const auto context_and_sequence = read_be16(packet.payload);
+    const auto context_id = static_cast<std::uint32_t>(context_and_sequence >> 4U);
+    const auto sequence_number = static_cast<std::uint8_t>(context_and_sequence & 0x0fU);
     if (selected_service_.has_value() && *selected_service_ != context_id) return;
     const auto mode = packet.payload[2];
     std::size_t cursor = 3;
@@ -169,6 +165,8 @@ void CompressedIpParser::parse_compressed(const TlvPacketView& packet) {
                   "unsupported compressed-IP context identification mode");
         return;
     }
+    if (mode == 0x60 &&
+        !transport_.observe_compressed_flow(packet, context_id, sequence_number)) return;
     if (packet.size - cursor < compressed_header_size) {
         on_error_(ErrorCode::MalformedInput, packet.input_offset, true,
                   "truncated compressed-IP context header");

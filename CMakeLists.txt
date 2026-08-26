@@ -25,6 +25,7 @@ add_library(aribtlv
     src/mmtp_signalling_tables.cpp
     src/recording.cpp
     src/tlv_parser.cpp
+    src/tlv_transport_parser.cpp
     src/video_presentation.cpp
 )
 add_library(aribtlv::aribtlv ALIAS aribtlv)
@@ -120,6 +121,9 @@ if(BUILD_TESTING)
     add_executable(aribtlv-demuxer-tests tests/demuxer_tests.cpp)
     target_link_libraries(aribtlv-demuxer-tests PRIVATE aribtlv::aribtlv)
 
+    add_executable(aribtlv-tlv-transport-tests tests/tlv_transport_tests.cpp)
+    target_link_libraries(aribtlv-tlv-transport-tests PRIVATE aribtlv::aribtlv)
+
     add_executable(aribtlv-recording-tests tests/recording_tests.cpp)
     target_link_libraries(aribtlv-recording-tests PRIVATE aribtlv::aribtlv)
 
@@ -137,6 +141,7 @@ if(BUILD_TESTING)
             aribtlv-asset-layers-tests
             aribtlv-application-resources-tests
             aribtlv-demuxer-tests
+            aribtlv-tlv-transport-tests
             aribtlv-recording-tests
             aribtlv-hlg-sdr-tone-mapping-tests
             aribtlv-package-api-tests
@@ -152,6 +157,7 @@ if(BUILD_TESTING)
     add_test(NAME aribtlv-application-resources-tests
              COMMAND aribtlv-application-resources-tests)
     add_test(NAME aribtlv-demuxer-tests COMMAND aribtlv-demuxer-tests)
+    add_test(NAME aribtlv-tlv-transport-tests COMMAND aribtlv-tlv-transport-tests)
     add_test(NAME aribtlv-recording-tests COMMAND aribtlv-recording-tests)
     add_test(NAME aribtlv-hlg-sdr-tone-mapping-tests
              COMMAND aribtlv-hlg-sdr-tone-mapping-tests)

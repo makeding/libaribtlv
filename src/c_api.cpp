@@ -314,6 +314,170 @@ public:
         callbacks_.on_damage(opaque_, &event);
     }
 
+    void onIpDataFlow(const aribtlv::IpDataFlow& source) override {
+        if (!callbacks_.on_ip_data_flow) return;
+        aribtlv_ip_data_flow event{};
+        event.context_id = source.context_id;
+        event.sequence_number = source.sequence_number;
+        event.ip_version = source.ip_version;
+        std::copy(source.source_address.begin(), source.source_address.end(),
+                  event.source_address);
+        std::copy(source.destination_address.begin(), source.destination_address.end(),
+                  event.destination_address);
+        event.next_header = source.next_header;
+        event.source_port = source.source_port;
+        event.destination_port = source.destination_port;
+        event.input_offset = source.input_offset;
+        callbacks_.on_ip_data_flow(opaque_, &event);
+    }
+
+    void onTransportNtpClock(const aribtlv::TransportNtpClock& source) override {
+        if (!callbacks_.on_transport_ntp_clock) return;
+        aribtlv_transport_ntp_clock event{};
+        event.ip_version = source.ip_version;
+        std::copy(source.source_address.begin(), source.source_address.end(),
+                  event.source_address);
+        std::copy(source.destination_address.begin(), source.destination_address.end(),
+                  event.destination_address);
+        event.source_port = source.source_port;
+        event.destination_port = source.destination_port;
+        event.leap_indicator = source.leap_indicator;
+        event.version = source.version;
+        event.mode = source.mode;
+        event.stratum = source.stratum;
+        event.poll = source.poll;
+        event.precision = source.precision;
+        event.root_delay = source.root_delay;
+        event.root_dispersion = source.root_dispersion;
+        event.reference_identification = source.reference_identification;
+        event.reference_timestamp = source.reference_timestamp;
+        event.origin_timestamp = source.origin_timestamp;
+        event.receive_timestamp = source.receive_timestamp;
+        event.transmit_timestamp = source.transmit_timestamp;
+        event.transmit_time = timestamp(source.transmit_time);
+        event.input_offset = source.input_offset;
+        callbacks_.on_transport_ntp_clock(opaque_, &event);
+    }
+
+    void onTlvNetworkInformation(
+        const aribtlv::TlvNetworkInformation& source) override {
+        if (!callbacks_.on_tlv_network_information) return;
+        std::size_t descriptor_count = source.network_descriptors.size();
+        for (const auto& stream : source.streams) {
+            descriptor_count += stream.descriptors.size();
+        }
+        tlv_descriptors_.clear();
+        tlv_descriptors_.reserve(descriptor_count);
+        for (const auto& descriptor : source.network_descriptors) {
+            tlv_descriptors_.push_back(descriptorView(descriptor));
+        }
+        std::vector<std::pair<std::size_t, std::size_t>> stream_ranges;
+        stream_ranges.reserve(source.streams.size());
+        for (const auto& stream : source.streams) {
+            const auto begin = tlv_descriptors_.size();
+            for (const auto& descriptor : stream.descriptors) {
+                tlv_descriptors_.push_back(descriptorView(descriptor));
+            }
+            stream_ranges.emplace_back(begin, stream.descriptors.size());
+        }
+        tlv_streams_.clear();
+        tlv_streams_.reserve(source.streams.size());
+        for (std::size_t index = 0; index < source.streams.size(); ++index) {
+            const auto& stream = source.streams[index];
+            const auto [begin, count] = stream_ranges[index];
+            tlv_streams_.push_back({
+                stream.tlv_stream_id,
+                stream.original_network_id,
+                count == 0 ? nullptr : tlv_descriptors_.data() + begin,
+                count,
+            });
+        }
+        const aribtlv_tlv_network_information event{
+            source.table_id,
+            source.network_id,
+            source.version,
+            static_cast<std::uint8_t>(source.current_next ? 1 : 0),
+            source.last_section_number,
+            source.network_descriptors.empty() ? nullptr : tlv_descriptors_.data(),
+            source.network_descriptors.size(),
+            tlv_streams_.empty() ? nullptr : tlv_streams_.data(),
+            tlv_streams_.size(),
+            source.input_offset,
+        };
+        callbacks_.on_tlv_network_information(opaque_, &event);
+    }
+
+    void onAddressMap(const aribtlv::AddressMap& source) override {
+        if (!callbacks_.on_address_map) return;
+        address_map_services_.clear();
+        address_map_services_.reserve(source.services.size());
+        for (const auto& service : source.services) {
+            aribtlv_address_map_service converted{};
+            converted.service_id = service.service_id;
+            converted.ip_version = service.ip_version;
+            std::copy(service.source_address.begin(), service.source_address.end(),
+                      converted.source_address);
+            converted.source_prefix_length = service.source_prefix_length;
+            std::copy(service.destination_address.begin(),
+                      service.destination_address.end(), converted.destination_address);
+            converted.destination_prefix_length = service.destination_prefix_length;
+            converted.private_data = service.private_data.empty()
+                ? nullptr : service.private_data.data();
+            converted.private_data_size = service.private_data.size();
+            address_map_services_.push_back(converted);
+        }
+        const aribtlv_address_map event{
+            source.table_id,
+            source.table_id_extension,
+            source.version,
+            static_cast<std::uint8_t>(source.current_next ? 1 : 0),
+            source.last_section_number,
+            address_map_services_.empty() ? nullptr : address_map_services_.data(),
+            address_map_services_.size(),
+            source.input_offset,
+        };
+        callbacks_.on_address_map(opaque_, &event);
+    }
+
+    void onRawSignallingTable(aribtlv::RawSignallingTable&& source) override {
+        if (!callbacks_.on_raw_signalling_table) return;
+        const aribtlv_raw_signalling_table event{
+            source.tlv_packet_type,
+            source.table_id,
+            source.table_id_extension,
+            source.version,
+            static_cast<std::uint8_t>(source.current_next ? 1 : 0),
+            source.section_number,
+            source.last_section_number,
+            source.data.empty() ? nullptr : source.data.data(),
+            source.data.size(),
+            source.input_offset,
+        };
+        callbacks_.on_raw_signalling_table(opaque_, &event);
+    }
+
+    void onUnknownDescriptor(aribtlv::UnknownDescriptor&& source) override {
+        if (!callbacks_.on_unknown_descriptor) return;
+        aribtlv_unknown_descriptor event{};
+        event.table_id = source.table_id;
+        event.tag = source.tag;
+        event.scope = source.scope == aribtlv::DescriptorScope::TlvStream
+            ? ARIBTLV_DESCRIPTOR_TLV_STREAM : ARIBTLV_DESCRIPTOR_NETWORK;
+        if (source.tlv_stream_id) {
+            event.has_tlv_stream_id = 1;
+            event.tlv_stream_id = *source.tlv_stream_id;
+        }
+        if (source.original_network_id) {
+            event.has_original_network_id = 1;
+            event.original_network_id = *source.original_network_id;
+        }
+        event.section_offset = source.section_offset;
+        event.payload = source.payload.empty() ? nullptr : source.payload.data();
+        event.payload_size = source.payload.size();
+        event.input_offset = source.input_offset;
+        callbacks_.on_unknown_descriptor(opaque_, &event);
+    }
+
     void onError(const aribtlv::Error& source) override {
         if (!source.recoverable) {
             fatal_error_ = true;
@@ -330,6 +494,16 @@ public:
     }
 
 private:
+    static aribtlv_tlv_descriptor descriptorView(
+        const aribtlv::TlvDescriptor& source) noexcept {
+        return {
+            source.tag,
+            source.payload.empty() ? nullptr : source.payload.data(),
+            source.payload.size(),
+            source.section_offset,
+        };
+    }
+
     void convertAssetGroups(const aribtlv::TrackInfo& source) {
         asset_groups_.clear();
         asset_groups_.reserve(source.asset_groups.size());
@@ -350,6 +524,9 @@ private:
     std::vector<aribtlv_asset_group_info> asset_groups_;
     std::optional<aribtlv_subtitle_info> subtitle_;
     std::vector<aribtlv_subtitle_resource> subtitle_resources_;
+    std::vector<aribtlv_tlv_descriptor> tlv_descriptors_;
+    std::vector<aribtlv_tlv_network_stream> tlv_streams_;
+    std::vector<aribtlv_address_map_service> address_map_services_;
 };
 
 } // namespace

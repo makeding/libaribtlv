@@ -43,6 +43,7 @@ void MmtpParser::install_track(TrackInfo info, AssetMetadata metadata,
     for (auto& entry : metadata.timestamps) {
         entry.second.restart_offset = input_offset;
         state.timestamps[entry.first] = entry.second;
+        has_mpt_full_ntp_ = true;
         if (!latest_full_ntp_.has_value() || entry.second.ntp > *latest_full_ntp_) {
             latest_full_ntp_ = entry.second.ntp;
         }

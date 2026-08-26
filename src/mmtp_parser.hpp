@@ -89,6 +89,9 @@ public:
     void push(const std::uint8_t* data, std::size_t size, std::uint64_t input_offset);
     void flush();
     void reset();
+    void seed_full_ntp(std::uint64_t ntp) {
+        if (!has_mpt_full_ntp_) latest_full_ntp_ = ntp;
+    }
 
     struct PacketExtensions {
         std::optional<std::size_t> authenticated_payload_size;
@@ -314,6 +317,7 @@ private:
     std::unordered_map<std::string, MhSdtAssembly> mh_sdt_staging_;
     std::unordered_map<std::string, std::vector<std::uint8_t>> committed_mh_ait_raw_;
     std::optional<std::uint64_t> latest_full_ntp_;
+    bool has_mpt_full_ntp_ = false;
 };
 
 } // namespace aribtlv::detail
