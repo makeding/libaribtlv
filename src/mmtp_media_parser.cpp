@@ -430,12 +430,12 @@ void MmtpParser::consume_complete_mfu(TrackState& track,
 //   dts_pts_offset[i]          PTS(i) - DTS(i), array indexed in decode order
 //   pts_offset[j]              PTS gap to the immediately preceding access unit in
 //                              presentation order
-// dts_offset below sums pts_offset over a *decode-order* prefix even though pts_offset
-// is a presentation-order interval. That is only sound because Table 34.1-72 fixes
-// pts_offset_type at '01', replicating one default_pts_offset across every access unit
-// in the MPU: a prefix sum of a constant does not depend on the summation order, so the
-// decode-order and presentation-order prefixes coincide. ExtendedTimestampMapping::
-// uniform_pts_offsets guards the pts_offset_type == 2 case where that no longer holds.
+// The receiver has separate recurrences for the descriptor variants.  Type 1 retains
+// its fixed-interval decode-order arithmetic.  For type 2, it starts cumulative PTS at
+// zero, gives the first AU a DTS of -mpu_decoding_time_offset, then for each following
+// AU uses cumulative PTS minus that AU's dts_pts_offset; PTS is emitted before adding
+// that AU's pts_offset.  This is deliberately a decode-order receiver contract: do not
+// replace it with a presentation-order reconstruction or reject a decreasing DTS.
 void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_sequence,
                                   std::vector<std::uint8_t> data,
                                   const bool random_access,
@@ -460,28 +460,22 @@ void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_seq
     if (timestamp != track.timestamps.end() && extended != track.extended_timestamps.end() &&
         au_index < extended->second.dts_pts_offsets.size() &&
         au_index < extended->second.pts_offsets.size()) {
-        if (!extended->second.uniform_pts_offsets) {
-            track.discontinuity = true;
-            on_error_(ErrorCode::UnsupportedFeature, input_offset, true,
-                      "dropped access unit: pts_offset_type 2 supplied a non-uniform "
-                      "pts_offset, which needs the bitstream presentation order that "
-                      "this parser does not derive");
-            return;
-        }
         output_restart_offset = std::min(
             output_restart_offset,
             std::min(timestamp->second.restart_offset,
                      extended->second.restart_offset));
-        dts_offset = -static_cast<std::int64_t>(extended->second.decoding_time_offset) +
-            static_cast<std::int64_t>(au_index) * extended->second.pts_offsets[0];
-        pts_offset = dts_offset + extended->second.dts_pts_offsets[au_index];
-        if (track.last_emitted_dts.has_value() && dts_offset < *track.last_emitted_dts) {
-            track.discontinuity = true;
-            on_error_(ErrorCode::MalformedInput, input_offset, true,
-                      "dropped access unit with a decreasing decode timestamp inside an MPU");
-            return;
+        if (extended->second.pts_offset_type == 2) {
+            for (std::size_t index = 0; index < au_index; ++index) {
+                pts_offset += extended->second.pts_offsets[index];
+            }
+            dts_offset = au_index == 0
+                ? -static_cast<std::int64_t>(extended->second.decoding_time_offset)
+                : pts_offset - static_cast<std::int64_t>(extended->second.dts_pts_offsets[au_index]);
+        } else {
+            dts_offset = -static_cast<std::int64_t>(extended->second.decoding_time_offset) +
+                static_cast<std::int64_t>(au_index) * extended->second.pts_offsets[0];
+            pts_offset = dts_offset + extended->second.dts_pts_offsets[au_index];
         }
-        track.last_emitted_dts = dts_offset;
         // TR-B39 Appendix 1 Chapter 2 (no receiver clock leap adjustment):
         // watch mpu_presentation_time_leap_indicator transitions once per MPU
         // and fold them into a persistent, cumulative correction of the NTP
@@ -783,7 +777,6 @@ void MmtpParser::parse_mpu(const std::uint16_t packet_id,
         }
         track.current_mpu_sequence = mpu_sequence;
         track.au_index = 0;
-        track.last_emitted_dts.reset();
         // The cumulative leap offset persists for the service; only the
         // once-per-MPU examination guard advances here.
         track.leap_examined_mpu.reset();

@@ -23,10 +23,10 @@ struct ExtendedTimestampMapping {
     std::uint16_t decoding_time_offset = 0;
     std::vector<std::uint16_t> dts_pts_offsets;
     std::vector<std::uint16_t> pts_offsets;
-    // false only when pts_offset_type == 2 supplied distinct per-AU pts_offset values.
-    // emit_access_unit() derives dts_offset from a single pts_offsets[0] constant and
-    // rejects access units when this is false.
-    bool uniform_pts_offsets = true;
+    // TR-B39 Table 34.1-72 value.  Type 1 carries one default interval; type 2
+    // carries an interval for each AU and therefore needs the receiver's
+    // decode-order recurrence in emit_access_unit().
+    std::uint8_t pts_offset_type = 0;
     std::uint64_t restart_offset = 0;
 };
 
@@ -166,7 +166,6 @@ private:
         std::uint64_t restart_offset = 0;
         std::optional<std::uint32_t> current_mpu_sequence;
         std::size_t au_index = 0;
-        std::optional<std::int64_t> last_emitted_dts;
         // TR-B39 Appendix 1 Chapter 2: mpu_presentation_time_leap_indicator
         // transitions (1->0 insertion, 2->0 deletion) apply a persistent,
         // cumulative correction to the NTP anchor for the rest of the service.
