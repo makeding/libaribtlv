@@ -302,7 +302,7 @@ void test_tlv_si_and_deduplication() {
     check(sink.address_maps.size() == 1 && sink.address_maps.front().services.size() == 1,
           "AMT snapshot was not decoded");
     const auto& service = sink.address_maps.front().services.front();
-    check(service.service_id == 0x65 && service.ip_version == 1 &&
+    check(service.service_id == 0x65 && service.ip_version == 6 &&
               service.source_prefix_length == 128 &&
               service.destination_prefix_length == 128 &&
               service.private_data == std::vector<std::uint8_t>({0xde, 0xad}),

@@ -409,13 +409,14 @@ TlvTransportParser::parse_address_map(const std::vector<std::uint8_t>& section,
         AddressMapService service;
         service.service_id = read_be16(section.data() + cursor);
         const auto loop_header = read_be16(section.data() + cursor + 2);
-        service.ip_version = static_cast<std::uint8_t>(loop_header >> 15U);
+        const bool ipv6 = (loop_header & 0x8000U) != 0;
+        service.ip_version = ipv6 ? 6 : 4;
         const auto loop_length = static_cast<std::size_t>(loop_header & 0x03ffU);
         cursor += 4;
         if (loop_length > payload_end - cursor) return std::nullopt;
-        const auto fixed_length = service.ip_version == 0 ? std::size_t{10} : std::size_t{34};
+        const auto fixed_length = !ipv6 ? std::size_t{10} : std::size_t{34};
         if (loop_length < fixed_length) return std::nullopt;
-        if (service.ip_version == 0) {
+        if (!ipv6) {
             std::copy_n(section.data() + cursor, 4, service.source_address.begin());
             service.source_prefix_length = section[cursor + 4];
             std::copy_n(section.data() + cursor + 5, 4, service.destination_address.begin());
