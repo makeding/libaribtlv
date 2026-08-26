@@ -262,6 +262,63 @@ void test_ntp_and_reset() {
           "transport NTP did not seed the broadcast clock");
     demuxer.reset();
     check(!demuxer.broadcastClock().has_value(), "reset retained transport clock state");
+
+    push_and_flush(demuxer, packet);
+    demuxer.reposition(aribtlv::RepositionOptions{0, true});
+    check(!demuxer.broadcastClock().has_value(),
+          "timeline-preserving reposition retained a transport-derived clock");
+}
+
+void test_resynchronization_clears_transport_state() {
+    Sink sink;
+    aribtlv::Demuxer demuxer(sink);
+    const auto flow = tlv(0x03, compressed(1, 0x60));
+    const auto null_packet = tlv(0xff, {});
+
+    auto initial = flow;
+    initial.insert(initial.end(), null_packet.begin(), null_packet.end());
+    demuxer.push(initial.data(), initial.size());
+    check(sink.flows.size() == 1, "initial flow was not observed");
+
+    std::vector<std::uint8_t> damaged{0x00, 0x01};
+    damaged.insert(damaged.end(), flow.begin(), flow.end());
+    damaged.insert(damaged.end(), null_packet.begin(), null_packet.end());
+    demuxer.push(damaged.data(), damaged.size());
+    check(sink.flows.size() == 2,
+          "TLV resynchronization retained and deduplicated the old CID flow");
+
+    const auto ntp_packet = tlv(0x02, ipv6_ntp());
+    auto clock_stream = ntp_packet;
+    clock_stream.insert(clock_stream.end(), null_packet.begin(), null_packet.end());
+    demuxer.push(clock_stream.data(), clock_stream.size());
+    check(demuxer.broadcastClock().has_value(), "transport NTP did not seed a clock");
+    std::vector<std::uint8_t> clock_damage{0x00};
+    clock_damage.insert(clock_damage.end(), null_packet.begin(), null_packet.end());
+    clock_damage.insert(clock_damage.end(), null_packet.begin(), null_packet.end());
+    demuxer.push(clock_damage.data(), clock_damage.size());
+    check(!demuxer.broadcastClock().has_value(),
+          "TLV resynchronization retained a transport-derived clock");
+
+    const auto section = nit_section();
+    const auto split = section.size() / 2;
+    auto first = tlv(0xfe, {section.begin(),
+                            section.begin() + static_cast<std::ptrdiff_t>(split)});
+    first.insert(first.end(), null_packet.begin(), null_packet.end());
+    demuxer.push(first.data(), first.size());
+    const auto before = sink.nit.size();
+    std::vector<std::uint8_t> section_damage{0x00};
+    const auto tail = tlv(0xfe, {
+        section.begin() + static_cast<std::ptrdiff_t>(split), section.end()});
+    section_damage.insert(section_damage.end(), tail.begin(), tail.end());
+    section_damage.insert(section_damage.end(), null_packet.begin(), null_packet.end());
+    demuxer.push(section_damage.data(), section_damage.size());
+    check(sink.nit.size() == before,
+          "TLV-SI section was assembled across a resynchronization boundary");
+    auto complete = tlv(0xfe, section);
+    complete.insert(complete.end(), null_packet.begin(), null_packet.end());
+    demuxer.push(complete.data(), complete.size());
+    check(sink.nit.size() == before + 1,
+          "TLV-SI parser did not recover after resynchronization");
 }
 
 void test_tlv_si_and_deduplication() {
@@ -333,6 +390,7 @@ void test_bad_crc_and_unknown_table() {
 int main() {
     test_dispatch_flow_and_reset();
     test_ntp_and_reset();
+    test_resynchronization_clears_transport_state();
     test_tlv_si_and_deduplication();
     test_bad_crc_and_unknown_table();
     std::cout << "tlv transport tests passed\n";

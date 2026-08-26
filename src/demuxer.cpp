@@ -82,6 +82,7 @@ public:
               }),
           tlv_(limits_,
                [this](const detail::TlvPacketView& packet) { ip_.consume(packet); },
+               [this](const std::uint64_t) { transport_discontinuity(); },
                [this](const ErrorCode code, const std::uint64_t offset,
                       const bool recoverable, std::string message) {
                    error(code, offset, recoverable, std::move(message));
@@ -126,6 +127,9 @@ public:
     void reposition(const RepositionOptions options) {
         tlv_.reset(options.input_offset);
         ip_.reset();
+        transport_ntp_.reset();
+        if (broadcast_clock_from_transport_) broadcast_clock_.reset();
+        broadcast_clock_from_transport_ = false;
         if (limits_.collect_application_resources) {
             application_resources_.dropTransientKeepActive();
         }
@@ -176,8 +180,16 @@ private:
                 Timestamp{0, 1000000}, clock.transmit_time,
                 clock.input_offset, false,
             };
+            broadcast_clock_from_transport_ = true;
             sink_.onBroadcastClock(*broadcast_clock_);
         }
+    }
+
+    void transport_discontinuity() {
+        ip_.reset();
+        transport_ntp_.reset();
+        if (broadcast_clock_from_transport_) broadcast_clock_.reset();
+        broadcast_clock_from_transport_ = false;
     }
 
     void clear_service_state() {
@@ -203,6 +215,7 @@ private:
         origin_.reset();
         broadcast_clock_.reset();
         transport_ntp_.reset();
+        broadcast_clock_from_transport_ = false;
         last_clock_mpu_sequence_.reset();
     }
 
@@ -878,6 +891,7 @@ private:
                     unit.input_offset,
                     unit.discontinuity,
                 };
+                broadcast_clock_from_transport_ = false;
                 if (!last_clock_mpu_sequence_.has_value() ||
                     last_clock_mpu_sequence_ != unit.mpu_sequence_number ||
                     unit.discontinuity) {
@@ -1061,6 +1075,7 @@ private:
     std::optional<TimelineOrigin> origin_;
     std::optional<BroadcastClock> broadcast_clock_;
     std::optional<TransportNtpClock> transport_ntp_;
+    bool broadcast_clock_from_transport_ = false;
     std::optional<std::uint32_t> last_clock_mpu_sequence_;
 };
 

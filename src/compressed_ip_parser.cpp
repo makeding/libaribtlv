@@ -153,8 +153,9 @@ void CompressedIpParser::parse_compressed(const TlvPacketView& packet) {
     std::size_t cursor = 3;
     std::size_t compressed_header_size = 0;
     if (mode == 0x20) {
-        // ARIB STD-B32 Part 3 3.7: partial IPv4 (16 bytes) and
-        // partial UDP (4 bytes).
+        // Existing compatibility layout: partial IPv4 (16 bytes) and
+        // partial UDP (4 bytes). This mode is not part of the receiver-derived
+        // TLV transport contract.
         compressed_header_size = 16 + 4;
     } else if (mode == 0x21) {
         compressed_header_size = 2; // IPv4 identifier

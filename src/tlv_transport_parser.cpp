@@ -236,19 +236,61 @@ void TlvTransportParser::consume_null(const TlvPacketView&) {
 }
 
 void TlvTransportParser::process_sections() {
+    const auto find_complete_boundary = [this](const std::size_t begin)
+        -> std::optional<std::size_t> {
+        for (std::size_t offset = begin; offset + 3 <= section_buffer_.size(); ++offset) {
+            if ((section_buffer_[offset + 1] & 0x80U) == 0) continue;
+            const auto length = static_cast<std::size_t>(
+                (static_cast<std::uint16_t>(section_buffer_[offset + 1] & 0x0fU) << 8U) |
+                section_buffer_[offset + 2]);
+            if (length < 9 || length > 1021) continue;
+            const auto total = 3 + length;
+            if (total > section_buffer_.size() - offset) continue;
+            if (section_buffer_[offset + 6] > section_buffer_[offset + 7]) continue;
+            if (crc32_mpeg(section_buffer_.data() + offset, total) == 0) return offset;
+        }
+        return std::nullopt;
+    };
+    const auto discard_prefix = [this](const std::size_t size, const char* message) {
+        report(ErrorCode::MalformedInput, section_origins_.front(), message);
+        section_buffer_.erase(
+            section_buffer_.begin(),
+            section_buffer_.begin() + static_cast<std::ptrdiff_t>(size));
+        section_origins_.erase(
+            section_origins_.begin(),
+            section_origins_.begin() + static_cast<std::ptrdiff_t>(size));
+    };
+
     while (section_buffer_.size() >= 3) {
         const auto section_length = static_cast<std::size_t>(
             (static_cast<std::uint16_t>(section_buffer_[1] & 0x0fU) << 8U) |
             section_buffer_[2]);
-        if (section_length < 4 || section_length > 1021) {
-            report(ErrorCode::MalformedInput, section_origins_.front(),
-                   "invalid TLV-SI section length");
-            section_buffer_.clear();
-            section_origins_.clear();
-            return;
+        if ((section_buffer_[1] & 0x80U) == 0 || section_length < 9 ||
+            section_length > 1021) {
+            const auto boundary = find_complete_boundary(1);
+            discard_prefix(boundary.value_or(1),
+                           "discarded bytes while searching for a valid TLV-SI section");
+            continue;
         }
         const auto total = 3 + section_length;
-        if (section_buffer_.size() < total) return;
+        if (section_buffer_.size() < total) {
+            const auto boundary = find_complete_boundary(1);
+            if (!boundary) return;
+            discard_prefix(*boundary,
+                           "discarded incomplete TLV-SI data before a valid section");
+            continue;
+        }
+        if (section_buffer_[6] > section_buffer_[7] ||
+            crc32_mpeg(section_buffer_.data(), total) != 0) {
+            const auto boundary = find_complete_boundary(1);
+            if (boundary) {
+                discard_prefix(*boundary,
+                               "discarded invalid TLV-SI data before a valid section");
+            } else {
+                discard_prefix(total, "TLV-SI section CRC or numbering is invalid");
+            }
+            continue;
+        }
         std::vector<std::uint8_t> section(section_buffer_.begin(),
                                           section_buffer_.begin() + static_cast<std::ptrdiff_t>(total));
         const auto input_offset = section_origins_.front();
@@ -256,11 +298,6 @@ void TlvTransportParser::process_sections() {
                               section_buffer_.begin() + static_cast<std::ptrdiff_t>(total));
         section_origins_.erase(section_origins_.begin(),
                                section_origins_.begin() + static_cast<std::ptrdiff_t>(total));
-        if (crc32_mpeg(section.data(), section.size()) != 0) {
-            report(ErrorCode::MalformedInput, input_offset,
-                   "TLV-SI section CRC is invalid");
-            continue;
-        }
         process_section(section, input_offset);
     }
 }

@@ -19,8 +19,9 @@ struct TlvPacketView {
 class TlvParser {
 public:
     using PacketCallback = std::function<void(const TlvPacketView&)>;
+    using ResyncCallback = std::function<void(std::uint64_t)>;
 
-    TlvParser(const Limits&, PacketCallback, ErrorCallback);
+    TlvParser(const Limits&, PacketCallback, ResyncCallback, ErrorCallback);
 
     void push(const std::uint8_t* data, std::size_t size);
     void flush();
@@ -37,6 +38,7 @@ private:
 
     Limits limits_;
     PacketCallback on_packet_;
+    ResyncCallback on_resync_;
     ErrorCallback on_error_;
     std::vector<std::uint8_t> buffer_;
     std::size_t cursor_ = 0;

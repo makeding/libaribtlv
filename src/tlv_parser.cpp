@@ -6,8 +6,10 @@
 
 namespace aribtlv::detail {
 
-TlvParser::TlvParser(const Limits& limits, PacketCallback on_packet, ErrorCallback on_error)
-    : limits_(limits), on_packet_(std::move(on_packet)), on_error_(std::move(on_error)) {}
+TlvParser::TlvParser(const Limits& limits, PacketCallback on_packet,
+                     ResyncCallback on_resync, ErrorCallback on_error)
+    : limits_(limits), on_packet_(std::move(on_packet)),
+      on_resync_(std::move(on_resync)), on_error_(std::move(on_error)) {}
 
 void TlvParser::push(const std::uint8_t* data, const std::size_t size) {
     if (size == 0) return;
@@ -211,6 +213,7 @@ void TlvParser::process(const bool end_of_stream) {
         if (header[0] != 0x7f) {
             on_error_(ErrorCode::MalformedInput, current_offset(), true,
                       "lost TLV synchronization");
+            on_resync_(current_offset());
             synchronized_ = false;
             consume(1);
             continue;
@@ -220,6 +223,7 @@ void TlvParser::process(const bool end_of_stream) {
         if (payload_size > limits_.max_tlv_payload) {
             on_error_(ErrorCode::ResourceLimit, current_offset(), true,
                       "TLV payload length exceeds configured limit");
+            on_resync_(current_offset());
             synchronized_ = false;
             consume(1);
             continue;
