@@ -477,7 +477,7 @@ std::vector<std::uint8_t> video_discovery_message(
 // Sibling of video_discovery_message() that lets a fixture pick the pts_offset_type
 // == 1 descriptor's access-unit count, for comparison against the pts_offset_type
 // == 2 descriptors below.
-std::vector<std::uint8_t> video_discovery_message_with_au_count(
+[[maybe_unused]] std::vector<std::uint8_t> video_discovery_message_with_au_count(
     const std::uint32_t mpu_sequence, const std::uint8_t au_count) {
     std::vector<std::uint8_t> descriptors;
     descriptor(descriptors, 0x8011, {0x00, 0x00});
@@ -497,7 +497,7 @@ std::vector<std::uint8_t> video_discovery_message_with_au_count(
     return pa;
 }
 
-std::vector<std::uint8_t> video_discovery_message_with_offsets(
+[[maybe_unused]] std::vector<std::uint8_t> video_discovery_message_with_offsets(
     const std::uint32_t mpu_sequence, const std::vector<std::uint16_t>& dts_pts_offsets,
     const std::vector<std::uint16_t>& pts_offsets,
     const std::uint16_t decoding_time_offset = 0) {
@@ -520,7 +520,7 @@ std::vector<std::uint8_t> video_discovery_message_with_offsets(
     return pa;
 }
 
-std::vector<std::uint8_t> video_discovery_message_with_reserved_pts_offset_type(
+[[maybe_unused]] std::vector<std::uint8_t> video_discovery_message_with_reserved_pts_offset_type(
     const std::uint32_t mpu_sequence, const std::vector<std::uint16_t>& dts_pts_offsets) {
     std::vector<std::uint8_t> descriptors;
     descriptor(descriptors, 0x8011, {0x00, 0x00});
@@ -540,7 +540,7 @@ std::vector<std::uint8_t> video_discovery_message_with_reserved_pts_offset_type(
     return pa;
 }
 
-std::vector<std::uint8_t> audio_discovery_message_with_offsets(
+[[maybe_unused]] std::vector<std::uint8_t> audio_discovery_message_with_offsets(
     const std::uint32_t mpu_sequence, const std::vector<std::uint16_t>& dts_pts_offsets,
     const std::vector<std::uint16_t>& pts_offsets) {
     std::vector<std::uint8_t> descriptors;
@@ -565,7 +565,7 @@ std::vector<std::uint8_t> audio_discovery_message_with_offsets(
 // Sibling of audio_discovery_message_with_offsets() that lets a fixture pick
 // the MPU's mpu_presentation_time and mpu_presentation_time_leap_indicator
 // directly, for exercising the leap-second correction in emit_access_unit().
-std::vector<std::uint8_t> audio_discovery_message_with_leap(
+[[maybe_unused]] std::vector<std::uint8_t> audio_discovery_message_with_leap(
     const std::uint32_t mpu_sequence, const std::uint64_t mpu_presentation_time,
     const std::uint8_t leap_indicator) {
     std::vector<std::uint8_t> descriptors;
@@ -698,7 +698,8 @@ std::vector<std::uint8_t> mpu_payload(const std::uint32_t mpu_sequence,
     append_u32(result, sample_number); append_u32(result, 0); result.insert(result.end(), {0, 0});
     result.insert(result.end(), mfu.begin(), mfu.end()); return result;
 }
-std::vector<std::uint8_t> non_timed_mpu_payload(const std::uint32_t mpu_sequence,
+[[maybe_unused]] std::vector<std::uint8_t> non_timed_mpu_payload(
+    const std::uint32_t mpu_sequence,
                                                 const std::vector<std::uint8_t>& mfu,
                                                 const std::uint32_t item_id = 0) {
     std::vector<std::uint8_t> result; append_u16(result, 6 + 4 + mfu.size());
