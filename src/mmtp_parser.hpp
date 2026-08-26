@@ -166,6 +166,7 @@ private:
         std::uint64_t restart_offset = 0;
         std::optional<std::uint32_t> current_mpu_sequence;
         std::size_t au_index = 0;
+        std::optional<std::int64_t> last_emitted_dts;
         // TR-B39 Appendix 1 Chapter 2: mpu_presentation_time_leap_indicator
         // transitions (1->0 insertion, 2->0 deletion) apply a persistent,
         // cumulative correction to the NTP anchor for the rest of the service.

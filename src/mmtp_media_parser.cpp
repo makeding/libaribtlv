@@ -475,6 +475,13 @@ void MmtpParser::emit_access_unit(TrackState& track, const std::uint32_t mpu_seq
             dts_offset = -static_cast<std::int64_t>(extended->second.decoding_time_offset) +
                 static_cast<std::int64_t>(au_index) * extended->second.pts_offsets[0];
             pts_offset = dts_offset + extended->second.dts_pts_offsets[au_index];
+            if (track.last_emitted_dts.has_value() && dts_offset < *track.last_emitted_dts) {
+                track.discontinuity = true;
+                on_error_(ErrorCode::MalformedInput, input_offset, true,
+                          "dropped access unit with a decreasing decode timestamp inside an MPU");
+                return;
+            }
+            track.last_emitted_dts = dts_offset;
         }
         // TR-B39 Appendix 1 Chapter 2 (no receiver clock leap adjustment):
         // watch mpu_presentation_time_leap_indicator transitions once per MPU
@@ -777,6 +784,7 @@ void MmtpParser::parse_mpu(const std::uint16_t packet_id,
         }
         track.current_mpu_sequence = mpu_sequence;
         track.au_index = 0;
+        track.last_emitted_dts.reset();
         // The cumulative leap offset persists for the service; only the
         // once-per-MPU examination guard advances here.
         track.leap_examined_mpu.reset();

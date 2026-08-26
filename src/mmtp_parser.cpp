@@ -146,6 +146,7 @@ void MmtpParser::flush() {
         track.subtitle = {};
         track.current_mpu_sequence.reset();
         track.au_index = 0;
+        track.last_emitted_dts.reset();
         track.previous_leap_indicator = 0;
         track.leap_ntp_offset = 0;
         track.leap_examined_mpu.reset();
