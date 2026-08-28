@@ -1,6 +1,8 @@
 #include <aribtlv/recording.hpp>
 #include <aribtlv/duration_probe.hpp>
 
+#include "../src/duration_probe_range.hpp"
+
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -164,6 +166,29 @@ void test_duration_probe_range_protocol() {
           "duration probe accepted a zero-sized source");
 }
 
+void test_dual_video_presentation_range_union() {
+    using aribtlv::detail::VideoPresentationBoundary;
+    using aribtlv::detail::union_video_presentation_ranges;
+    const auto check_union = [](const std::vector<VideoPresentationBoundary>& tracks,
+                                const std::int64_t start_us,
+                                const std::int64_t end_us,
+                                const char* message) {
+        const auto range = union_video_presentation_ranges(tracks);
+        check(range.has_value() && range->start_us == start_us &&
+                  range->end_us == end_us &&
+                  range->end_us - range->start_us == end_us - start_us,
+              message);
+    };
+    check_union({{200000, 9000000}, {100000, 8000000}}, 100000, 9000000,
+                "rainfall-first union lost the earlier start");
+    check_union({{100000, 8000000}, {200000, 9000000}}, 100000, 9000000,
+                "preferred-first union lost the earlier start");
+    check_union({{100000, 9000000}, {200000, 8000000}}, 100000, 9000000,
+                "preferred-later union selected the wrong end");
+    check_union({{100000, 8000000}, {200000, 9000000}}, 100000, 9000000,
+                "rainfall-later union selected the wrong end");
+}
+
 void test_recording_scanner_failure_contract() {
     aribtlv::RecordingScanner empty;
     check(empty.finish().failure == aribtlv::RecordingScanFailure::NoVideo,
@@ -183,6 +208,7 @@ int main() {
     test_recording_index();
     test_duration_uses_recording_timeline_endpoint();
     test_duration_probe_range_protocol();
+    test_dual_video_presentation_range_union();
     test_recording_scanner_failure_contract();
     std::cout << "all recording tests passed\n";
     return 0;

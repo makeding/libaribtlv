@@ -63,6 +63,8 @@ public:
     DurationProbeState state() const noexcept;
     DurationProbeFailure failure() const noexcept;
     DurationInfo duration() const noexcept;
+    std::optional<Timestamp> presentationStart() const noexcept;
+    std::optional<Timestamp> presentationEnd() const noexcept;
     std::optional<std::uint16_t> selectedVideoPacketId() const noexcept;
     std::uint64_t generation() const noexcept;
     std::uint64_t transferredBytes() const noexcept;

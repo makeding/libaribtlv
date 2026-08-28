@@ -878,6 +878,24 @@ int aribtlv_duration_probe_get_duration(const aribtlv_duration_probe* probe,
     return ARIBTLV_OK;
 }
 
+int aribtlv_duration_probe_get_presentation_start(
+    const aribtlv_duration_probe* probe, aribtlv_timestamp* presentation_start) {
+    if (!probe || !presentation_start) return ARIBTLV_ERROR_INVALID_ARGUMENT;
+    const auto value = probe->implementation.presentationStart();
+    if (!value.has_value()) return ARIBTLV_ERROR_DEMUX;
+    *presentation_start = timestamp(*value);
+    return ARIBTLV_OK;
+}
+
+int aribtlv_duration_probe_get_presentation_end(
+    const aribtlv_duration_probe* probe, aribtlv_timestamp* presentation_end) {
+    if (!probe || !presentation_end) return ARIBTLV_ERROR_INVALID_ARGUMENT;
+    const auto value = probe->implementation.presentationEnd();
+    if (!value.has_value()) return ARIBTLV_ERROR_DEMUX;
+    *presentation_end = timestamp(*value);
+    return ARIBTLV_OK;
+}
+
 uint64_t aribtlv_duration_probe_transferred_bytes(const aribtlv_duration_probe* probe) {
     return probe ? probe->implementation.transferredBytes() : 0;
 }

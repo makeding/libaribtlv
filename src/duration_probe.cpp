@@ -3,6 +3,8 @@
 
 #include <aribtlv/demuxer.hpp>
 
+#include "duration_probe_range.hpp"
+
 #include <algorithm>
 #include <limits>
 #include <string>
@@ -58,6 +60,8 @@ public:
         state_ = DurationProbeState::Idle;
         failure_ = DurationProbeFailure::None;
         duration_ = {};
+        presentation_start_.reset();
+        presentation_end_.reset();
         source_size_ = source_size;
         options_ = std::move(options);
         transferred_bytes_ = 0;
@@ -138,6 +142,12 @@ public:
     DurationProbeState state() const noexcept { return state_; }
     DurationProbeFailure failure() const noexcept { return failure_; }
     DurationInfo duration() const noexcept { return duration_; }
+    std::optional<Timestamp> presentation_start() const noexcept {
+        return presentation_start_;
+    }
+    std::optional<Timestamp> presentation_end() const noexcept {
+        return presentation_end_;
+    }
     std::optional<std::uint16_t> selected_video_packet_id() const noexcept {
         return selected_video_packet_id_;
     }
@@ -177,11 +187,13 @@ public:
         if (phase_ == Phase::Head || phase_ == Phase::SequentialTail) {
             ++found->head_count;
             observe_timestamp(pts_us, found->head_previous_pts_us,
-                              found->head_maximum_pts_us, found->head_frame_duration_us);
+                              found->head_minimum_pts_us, found->head_maximum_pts_us,
+                              found->head_frame_duration_us);
         } else if (phase_ == Phase::Tail) {
             ++found->tail_count;
             observe_timestamp(pts_us, found->tail_previous_pts_us,
-                              found->tail_maximum_pts_us, found->tail_frame_duration_us);
+                              found->tail_minimum_pts_us, found->tail_maximum_pts_us,
+                              found->tail_frame_duration_us);
         }
     }
 
@@ -196,6 +208,7 @@ private:
 
     static void observe_timestamp(const std::int64_t pts_us,
                                   std::optional<std::int64_t>& previous,
+                                  std::optional<std::int64_t>& minimum,
                                   std::optional<std::int64_t>& maximum,
                                   std::int64_t& frame_duration) noexcept {
         if (previous.has_value()) {
@@ -206,6 +219,7 @@ private:
             }
         }
         previous = pts_us;
+        if (!minimum.has_value() || pts_us < *minimum) minimum = pts_us;
         if (!maximum.has_value() || pts_us > *maximum) maximum = pts_us;
     }
 
@@ -293,18 +307,16 @@ private:
         issue_tail_request();
     }
 
-    void complete_from_statistics(const std::uint64_t count,
-                                  const std::optional<std::int64_t> maximum,
-                                  const std::int64_t frame_duration) {
-        if (count < 2 || !maximum.has_value() || frame_duration <= 0) {
+    void complete_from_range(
+        const std::optional<detail::VideoPresentationRange> range) {
+        if (!range.has_value()) {
             unknown(DurationProbeFailure::NoTailTimestamp);
             return;
         }
-        auto value = std::max<std::int64_t>(0, *maximum);
-        if (value <= std::numeric_limits<std::int64_t>::max() - frame_duration) {
-            value += frame_duration;
-        }
-        duration_ = DurationInfo{Timestamp{value, microsecond_timescale},
+        presentation_start_ = Timestamp{range->start_us, microsecond_timescale};
+        presentation_end_ = Timestamp{range->end_us, microsecond_timescale};
+        duration_ = DurationInfo{Timestamp{range->end_us - range->start_us,
+                                           microsecond_timescale},
                                  DurationStatus::Complete};
         state_ = DurationProbeState::Complete;
         failure_ = DurationProbeFailure::None;
@@ -314,16 +326,48 @@ private:
         TrackInfo info;
         std::uint64_t head_count = 0;
         std::optional<std::int64_t> head_previous_pts_us;
+        std::optional<std::int64_t> head_minimum_pts_us;
         std::optional<std::int64_t> head_maximum_pts_us;
         std::int64_t head_frame_duration_us = 0;
         std::uint64_t tail_count = 0;
         std::optional<std::int64_t> tail_previous_pts_us;
+        std::optional<std::int64_t> tail_minimum_pts_us;
         std::optional<std::int64_t> tail_maximum_pts_us;
         std::int64_t tail_frame_duration_us = 0;
     };
 
     static unsigned selection_level(const VideoCandidate& candidate) noexcept {
         return assetSelectionLevel(candidate.info).value_or(0);
+    }
+
+    bool belongs_to_selected_video_range(const VideoCandidate& candidate) const noexcept {
+        if (options_.video_packet_id.has_value()) {
+            return candidate.info.packet_id == *options_.video_packet_id;
+        }
+        if (candidates_.empty()) return false;
+        const auto grouped = std::find_if(
+            candidates_.begin(), candidates_.end(),
+            [](const VideoCandidate& item) { return !item.info.asset_groups.empty(); });
+        if (grouped == candidates_.end()) return &candidate == &candidates_.front();
+        const auto group_identification =
+            grouped->info.asset_groups.front().group_identification;
+        const auto implicit_base = candidate.info.asset_groups.empty() &&
+            candidate.info.context_id == grouped->info.context_id;
+        return implicit_base || belongsToAssetGroup(candidate.info, group_identification);
+    }
+
+    static std::optional<std::int64_t> candidate_end_us(
+        const VideoCandidate& candidate, const bool tail) noexcept {
+        const auto count = tail ? candidate.tail_count : candidate.head_count;
+        const auto maximum = tail ? candidate.tail_maximum_pts_us
+                                  : candidate.head_maximum_pts_us;
+        const auto frame_duration = tail ? candidate.tail_frame_duration_us
+                                         : candidate.head_frame_duration_us;
+        if (count < 2 || !maximum.has_value() || frame_duration <= 0 ||
+            *maximum > std::numeric_limits<std::int64_t>::max() - frame_duration) {
+            return std::nullopt;
+        }
+        return *maximum + frame_duration;
     }
 
     const VideoCandidate* choose_candidate(const bool tail) const noexcept {
@@ -354,30 +398,8 @@ private:
         };
 
         const VideoCandidate* selected = nullptr;
-        if (options_.video_packet_id.has_value()) {
-            for (const auto& candidate : candidates_) {
-                if (candidate.info.packet_id == *options_.video_packet_id &&
-                    has_stats(candidate)) return &candidate;
-            }
-            return nullptr;
-        }
-        if (candidates_.empty()) return nullptr;
-        const auto grouped = std::find_if(
-            candidates_.begin(), candidates_.end(),
-            [](const VideoCandidate& candidate) {
-                return !candidate.info.asset_groups.empty();
-            });
-        if (grouped == candidates_.end()) {
-            return has_stats(candidates_.front()) ? &candidates_.front() : nullptr;
-        }
-        const auto group_identification =
-            grouped->info.asset_groups.front().group_identification;
         for (const auto& candidate : candidates_) {
-            const auto implicit_base = candidate.info.asset_groups.empty() &&
-                candidate.info.context_id == grouped->info.context_id;
-            if ((implicit_base || belongsToAssetGroup(
-                                      candidate.info, group_identification)) &&
-                has_stats(candidate) &&
+            if (belongs_to_selected_video_range(candidate) && has_stats(candidate) &&
                 better(&candidate, selected)) {
                 selected = &candidate;
             }
@@ -403,12 +425,13 @@ private:
                          : DurationProbeFailure::NoVideo);
             return;
         }
-        const auto maximum = tail ? candidate->tail_maximum_pts_us
-                                  : candidate->head_maximum_pts_us;
-        const auto frame_duration = tail ? candidate->tail_frame_duration_us
-                                         : candidate->head_frame_duration_us;
-        complete_from_statistics(tail ? candidate->tail_count : candidate->head_count,
-                                 maximum, frame_duration);
+        std::vector<detail::VideoPresentationBoundary> boundaries;
+        for (const auto& item : candidates_) {
+            if (!belongs_to_selected_video_range(item)) continue;
+            boundaries.push_back(detail::VideoPresentationBoundary{
+                item.head_minimum_pts_us, candidate_end_us(item, tail)});
+        }
+        complete_from_range(detail::union_video_presentation_ranges(boundaries));
         if (state_ == DurationProbeState::Complete) {
             selected_video_packet_id_ = candidate->info.packet_id;
         }
@@ -418,6 +441,7 @@ private:
         for (auto& candidate : candidates_) {
             candidate.tail_count = 0;
             candidate.tail_previous_pts_us.reset();
+            candidate.tail_minimum_pts_us.reset();
             candidate.tail_maximum_pts_us.reset();
             candidate.tail_frame_duration_us = 0;
         }
@@ -433,6 +457,8 @@ private:
     void unknown(const DurationProbeFailure failure) noexcept {
         request_.reset();
         duration_ = {};
+        presentation_start_.reset();
+        presentation_end_.reset();
         state_ = DurationProbeState::Unknown;
         failure_ = failure;
     }
@@ -440,6 +466,8 @@ private:
     void fail(const DurationProbeFailure failure) noexcept {
         request_.reset();
         duration_ = {};
+        presentation_start_.reset();
+        presentation_end_.reset();
         state_ = DurationProbeState::Failed;
         failure_ = failure;
     }
@@ -449,6 +477,8 @@ private:
     DurationProbeState state_ = DurationProbeState::Idle;
     DurationProbeFailure failure_ = DurationProbeFailure::None;
     DurationInfo duration_;
+    std::optional<Timestamp> presentation_start_;
+    std::optional<Timestamp> presentation_end_;
     Phase phase_ = Phase::Head;
     std::uint64_t source_size_ = 0;
     std::uint64_t generation_ = 0;
@@ -490,6 +520,12 @@ void DurationProbe::cancel() noexcept { impl_->cancel(); }
 DurationProbeState DurationProbe::state() const noexcept { return impl_->state(); }
 DurationProbeFailure DurationProbe::failure() const noexcept { return impl_->failure(); }
 DurationInfo DurationProbe::duration() const noexcept { return impl_->duration(); }
+std::optional<Timestamp> DurationProbe::presentationStart() const noexcept {
+    return impl_->presentation_start();
+}
+std::optional<Timestamp> DurationProbe::presentationEnd() const noexcept {
+    return impl_->presentation_end();
+}
 std::optional<std::uint16_t> DurationProbe::selectedVideoPacketId() const noexcept {
     return impl_->selected_video_packet_id();
 }
