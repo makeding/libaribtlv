@@ -1,5 +1,26 @@
 # 更新日志
 
+## [0.6.1] - 2026-08-28
+
+Commit range: `7662d16..6ecf9e3`
+
+- 根据所选视频 asset layer 呈现范围的并集计算录制时长。
+- 通过 C/C++ duration probe API 暴露准确的呈现开始时间、呈现结束时间和末端视频
+  packet id。
+- 即使后续重排 sample 的 timestamp 更小，也保留第一个呈现 timestamp 作为开始边界。
+
+## [0.6.0] - 2026-08-26
+
+Commit range: `c9d9004..afda8b8`
+
+- 增加视频 transfer-characteristic 元数据和 HLG/PQ 呈现提示。
+- 增加 TLV transport 解析与重新同步，并通过 C API callback 暴露 IP flow、NTP、
+  TLV-NIT、AMT、raw signalling table 和 unknown descriptor。
+- 在输入损坏、截断或重新定位时，保留 MMTP timestamp、fragmentation、restart-offset
+  和 damage evidence。
+- 将 demuxer 测试支持拆分为职责明确的模块，并扩充 transport、timestamp、色彩、
+  package 和 C API 测试。
+
 ## [0.5.0] - 2026-08-16
 
 Commit range: `d72b3d4..4b3853a`

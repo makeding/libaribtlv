@@ -1,5 +1,28 @@
 # 変更履歴
 
+## [0.6.1] - 2026-08-28
+
+Commit range: `7662d16..6ecf9e3`
+
+- 選択された映像 asset layer の presentation range の和集合から、録画の duration を
+  算出するようにしました。
+- 正確な presentation start、presentation end、終端映像 packet id を C/C++ の
+  duration probe API から公開しました。
+- 後続の並べ替え済み sample により小さい timestamp があっても、最初の
+  presentation timestamp を開始境界として保持するようにしました。
+
+## [0.6.0] - 2026-08-26
+
+Commit range: `c9d9004..afda8b8`
+
+- 映像の transfer-characteristic metadata と HLG/PQ presentation hint を追加しました。
+- TLV transport の解析と再同期、および IP flow、NTP、TLV-NIT、AMT、raw signalling
+  table、unknown descriptor を通知する C API callback を追加しました。
+- 不正・切り詰め・再配置された入力でも、MMTP timestamp、fragmentation、
+  restart-offset、damage evidence を保持するようにしました。
+- demuxer の test support を責務ごとの module に分割し、transport、timestamp、colour、
+  package、C API のテストを拡充しました。
+
 ## [0.5.0] - 2026-08-16
 
 Commit range: `d72b3d4..4b3853a`

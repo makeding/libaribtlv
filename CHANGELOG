@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.6.1] - 2026-08-28
+
+Commit range: `7662d16..6ecf9e3`
+
+- Compute recorded duration from the union of the selected video asset
+  layers' presentation ranges.
+- Expose the exact presentation start, presentation end, and ending video
+  packet id through the C and C++ duration-probe APIs.
+- Preserve the first presentation timestamp as the start boundary even when
+  later reordered samples have a lower timestamp.
+
+## [0.6.0] - 2026-08-26
+
+Commit range: `c9d9004..afda8b8`
+
+- Add video transfer-characteristic metadata and HLG/PQ presentation hints.
+- Add TLV transport parsing, resynchronization, and C API callbacks for IP
+  flows, NTP, TLV-NIT, AMT, raw signalling tables, and unknown descriptors.
+- Preserve MMTP timestamp, fragmentation, restart-offset, and damage evidence
+  across malformed, truncated, and repositioned input.
+- Split the demuxer test support into focused modules and extend transport,
+  timestamp, colour, package, and C API coverage.
+
 ## [0.5.0] - 2026-08-16
 
 Commit range: `d72b3d4..4b3853a`

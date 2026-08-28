@@ -47,7 +47,7 @@ int main(void)
     const uint8_t incomplete_tlv[] = {0x7f, 0x03, 0x00, 0x08, 0x00};
 
     CHECK(aribtlv_version() == ARIBTLV_VERSION_INT);
-    CHECK(strcmp(aribtlv_version_string(), "0.6.0") == 0);
+    CHECK(strcmp(aribtlv_version_string(), "0.6.1") == 0);
     CHECK(ARIBTLV_C_API_VERSION == 6);
 
     aribtlv_hlg_sdr_lut_info lut_info;
