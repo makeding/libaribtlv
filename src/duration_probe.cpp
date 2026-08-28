@@ -190,13 +190,14 @@ public:
         if (!timestamp_microseconds(unit.pts, pts_us)) return;
         if (phase_ == Phase::Head || phase_ == Phase::SequentialTail) {
             ++found->head_count;
+            if (!found->head_first_pts_us.has_value()) found->head_first_pts_us = pts_us;
             observe_timestamp(pts_us, found->head_previous_pts_us,
-                              found->head_minimum_pts_us, found->head_maximum_pts_us,
+                              found->head_maximum_pts_us,
                               found->head_frame_duration_us);
         } else if (phase_ == Phase::Tail) {
             ++found->tail_count;
             observe_timestamp(pts_us, found->tail_previous_pts_us,
-                              found->tail_minimum_pts_us, found->tail_maximum_pts_us,
+                              found->tail_maximum_pts_us,
                               found->tail_frame_duration_us);
         }
     }
@@ -212,7 +213,6 @@ private:
 
     static void observe_timestamp(const std::int64_t pts_us,
                                   std::optional<std::int64_t>& previous,
-                                  std::optional<std::int64_t>& minimum,
                                   std::optional<std::int64_t>& maximum,
                                   std::int64_t& frame_duration) noexcept {
         if (previous.has_value()) {
@@ -223,7 +223,6 @@ private:
             }
         }
         previous = pts_us;
-        if (!minimum.has_value() || pts_us < *minimum) minimum = pts_us;
         if (!maximum.has_value() || pts_us > *maximum) maximum = pts_us;
     }
 
@@ -329,13 +328,12 @@ private:
     struct VideoCandidate {
         TrackInfo info;
         std::uint64_t head_count = 0;
+        std::optional<std::int64_t> head_first_pts_us;
         std::optional<std::int64_t> head_previous_pts_us;
-        std::optional<std::int64_t> head_minimum_pts_us;
         std::optional<std::int64_t> head_maximum_pts_us;
         std::int64_t head_frame_duration_us = 0;
         std::uint64_t tail_count = 0;
         std::optional<std::int64_t> tail_previous_pts_us;
-        std::optional<std::int64_t> tail_minimum_pts_us;
         std::optional<std::int64_t> tail_maximum_pts_us;
         std::int64_t tail_frame_duration_us = 0;
     };
@@ -415,10 +413,10 @@ private:
         const VideoCandidate* selected = nullptr;
         for (const auto& candidate : candidates_) {
             if (!belongs_to_selected_video_range(candidate) ||
-                !candidate.head_minimum_pts_us.has_value()) continue;
+                !candidate.head_first_pts_us.has_value()) continue;
             if (selected == nullptr ||
-                *candidate.head_minimum_pts_us < *selected->head_minimum_pts_us ||
-                (*candidate.head_minimum_pts_us == *selected->head_minimum_pts_us &&
+                *candidate.head_first_pts_us < *selected->head_first_pts_us ||
+                (*candidate.head_first_pts_us == *selected->head_first_pts_us &&
                  selection_level(candidate) < selection_level(*selected))) {
                 selected = &candidate;
             }
@@ -448,7 +446,7 @@ private:
         for (const auto& item : candidates_) {
             if (!belongs_to_selected_video_range(item)) continue;
             boundaries.push_back(detail::VideoPresentationBoundary{
-                item.head_minimum_pts_us, candidate_end_us(item, tail)});
+                item.head_first_pts_us, candidate_end_us(item, tail)});
         }
         complete_from_range(detail::union_video_presentation_ranges(boundaries));
         if (state_ == DurationProbeState::Complete) {
@@ -464,7 +462,6 @@ private:
         for (auto& candidate : candidates_) {
             candidate.tail_count = 0;
             candidate.tail_previous_pts_us.reset();
-            candidate.tail_minimum_pts_us.reset();
             candidate.tail_maximum_pts_us.reset();
             candidate.tail_frame_duration_us = 0;
         }
