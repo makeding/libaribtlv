@@ -72,6 +72,7 @@ public:
         candidates_.clear();
         reset_tail_statistics();
         selected_video_packet_id_.reset();
+        presentation_end_video_packet_id_.reset();
         demuxer_.reset();
 
         if (source_size_ == 0 || options_.initial_range_size == 0 ||
@@ -150,6 +151,9 @@ public:
     }
     std::optional<std::uint16_t> selected_video_packet_id() const noexcept {
         return selected_video_packet_id_;
+    }
+    std::optional<std::uint16_t> presentation_end_video_packet_id() const noexcept {
+        return presentation_end_video_packet_id_;
     }
     std::uint64_t generation() const noexcept { return generation_; }
     std::uint64_t transferred_bytes() const noexcept { return transferred_bytes_; }
@@ -407,6 +411,21 @@ private:
         return selected;
     }
 
+    const VideoCandidate* choose_start_candidate() const noexcept {
+        const VideoCandidate* selected = nullptr;
+        for (const auto& candidate : candidates_) {
+            if (!belongs_to_selected_video_range(candidate) ||
+                !candidate.head_minimum_pts_us.has_value()) continue;
+            if (selected == nullptr ||
+                *candidate.head_minimum_pts_us < *selected->head_minimum_pts_us ||
+                (*candidate.head_minimum_pts_us == *selected->head_minimum_pts_us &&
+                 selection_level(candidate) < selection_level(*selected))) {
+                selected = &candidate;
+            }
+        }
+        return selected;
+    }
+
     bool has_head_video() const noexcept {
         return std::any_of(candidates_.begin(), candidates_.end(),
                            [](const VideoCandidate& candidate) {
@@ -433,7 +452,11 @@ private:
         }
         complete_from_range(detail::union_video_presentation_ranges(boundaries));
         if (state_ == DurationProbeState::Complete) {
-            selected_video_packet_id_ = candidate->info.packet_id;
+            const auto* start_candidate = choose_start_candidate();
+            selected_video_packet_id_ = start_candidate != nullptr
+                ? std::optional<std::uint16_t>{start_candidate->info.packet_id}
+                : std::optional<std::uint16_t>{candidate->info.packet_id};
+            presentation_end_video_packet_id_ = candidate->info.packet_id;
         }
     }
 
@@ -490,6 +513,7 @@ private:
     std::uint64_t tail_window_ = 0;
     std::vector<VideoCandidate> candidates_;
     std::optional<std::uint16_t> selected_video_packet_id_;
+    std::optional<std::uint16_t> presentation_end_video_packet_id_;
 };
 
 DurationProbe::DurationProbe() : impl_(std::make_unique<Impl>()) {}
@@ -528,6 +552,9 @@ std::optional<Timestamp> DurationProbe::presentationEnd() const noexcept {
 }
 std::optional<std::uint16_t> DurationProbe::selectedVideoPacketId() const noexcept {
     return impl_->selected_video_packet_id();
+}
+std::optional<std::uint16_t> DurationProbe::presentationEndVideoPacketId() const noexcept {
+    return impl_->presentation_end_video_packet_id();
 }
 std::uint64_t DurationProbe::generation() const noexcept { return impl_->generation(); }
 std::uint64_t DurationProbe::transferredBytes() const noexcept {

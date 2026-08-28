@@ -497,6 +497,8 @@ ARIBTLV_API int aribtlv_duration_probe_get_presentation_start(
     const aribtlv_duration_probe *probe, aribtlv_timestamp *presentation_start);
 ARIBTLV_API int aribtlv_duration_probe_get_presentation_end(
     const aribtlv_duration_probe *probe, aribtlv_timestamp *presentation_end);
+ARIBTLV_API int aribtlv_duration_probe_get_presentation_end_video_packet_id(
+    const aribtlv_duration_probe *probe, uint16_t *video_packet_id);
 ARIBTLV_API uint64_t aribtlv_duration_probe_transferred_bytes(
     const aribtlv_duration_probe *probe);
 

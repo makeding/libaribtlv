@@ -896,6 +896,15 @@ int aribtlv_duration_probe_get_presentation_end(
     return ARIBTLV_OK;
 }
 
+int aribtlv_duration_probe_get_presentation_end_video_packet_id(
+    const aribtlv_duration_probe* probe, uint16_t* video_packet_id) {
+    if (!probe || !video_packet_id) return ARIBTLV_ERROR_INVALID_ARGUMENT;
+    const auto value = probe->implementation.presentationEndVideoPacketId();
+    if (!value.has_value()) return ARIBTLV_ERROR_DEMUX;
+    *video_packet_id = *value;
+    return ARIBTLV_OK;
+}
+
 uint64_t aribtlv_duration_probe_transferred_bytes(const aribtlv_duration_probe* probe) {
     return probe ? probe->implementation.transferredBytes() : 0;
 }
